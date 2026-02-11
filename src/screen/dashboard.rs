@@ -337,7 +337,10 @@ impl Dashboard {
                             self.streams.extend(streams.iter());
 
                             for stream in &streams {
-                                if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
+                                if matches!(
+                                    stream,
+                                    StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                                ) {
                                     return (
                                         kline_fetch_task(*layout_id, pane_id, *stream, None, None),
                                         None,
@@ -689,7 +692,10 @@ impl Dashboard {
             self.streams.extend(streams.iter());
 
             for stream in &streams {
-                if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
+                if matches!(
+                    stream,
+                    StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                ) {
                     return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
@@ -725,7 +731,10 @@ impl Dashboard {
             self.streams.extend(streams.iter());
 
             for stream in &streams {
-                if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
+                if matches!(
+                    stream,
+                    StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                ) {
                     return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
@@ -839,7 +848,11 @@ impl Dashboard {
                     }
                 }
             }
-            FetchedData::Klines { data, req_id } => {
+            FetchedData::Klines {
+                data,
+                req_id,
+                microstructure,
+            } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
@@ -851,7 +864,12 @@ impl Dashboard {
                             pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
                         }
                         StreamKind::RangeBarKline { ticker_info, .. } => {
-                            pane_state.insert_range_bar_klines(req_id, ticker_info, &data);
+                            pane_state.insert_range_bar_klines(
+                                req_id,
+                                ticker_info,
+                                &data,
+                                microstructure.as_deref(),
+                            );
                         }
                         _ => {}
                     }
@@ -1132,7 +1150,10 @@ fn request_fetch(
                     Some((s, pane_id))
                 } else {
                     state.streams.find_ready_map(|stream| {
-                        if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
+                        if matches!(
+                            stream,
+                            StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                        ) {
                             Some((*stream, pane_id))
                         } else {
                             None
@@ -1157,7 +1178,10 @@ fn request_fetch(
                     Some((s, pane_id))
                 } else {
                     state.streams.find_ready_map(|stream| {
-                        if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
+                        if matches!(
+                            stream,
+                            StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }
+                        ) {
                             Some((*stream, pane_id))
                         } else {
                             None
@@ -1301,6 +1325,7 @@ fn kline_fetch_task(
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
+                        microstructure: None,
                     };
                     Message::DistributeFetchedData {
                         layout_id,
@@ -1318,13 +1343,14 @@ fn kline_fetch_task(
             ticker_info,
             threshold_dbps,
         } => Task::perform(
-            adapter::fetch_klines_range_bar(ticker_info, threshold_dbps, range)
+            adapter::fetch_klines_range_bar_with_microstructure(ticker_info, threshold_dbps, range)
                 .map_err(|err| err.to_user_message()),
             move |result| match result {
-                Ok(klines) => {
+                Ok((klines, micro)) => {
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
+                        microstructure: Some(micro),
                     };
                     Message::DistributeFetchedData {
                         layout_id,

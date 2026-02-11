@@ -97,10 +97,9 @@ impl ResolvedStream {
     pub fn into_waiting(self) -> Vec<PersistStreamKind> {
         match self {
             ResolvedStream::Waiting { streams, .. } => streams,
-            ResolvedStream::Ready(streams) => streams
-                .into_iter()
-                .map(PersistStreamKind::from)
-                .collect(),
+            ResolvedStream::Ready(streams) => {
+                streams.into_iter().map(PersistStreamKind::from).collect()
+            }
         }
     }
 }
@@ -739,6 +738,15 @@ pub async fn fetch_klines_range_bar(
     range: Option<(u64, u64)>,
 ) -> Result<Vec<Kline>, AdapterError> {
     clickhouse::fetch_klines(ticker_info, threshold_dbps, range).await
+}
+
+/// Fetch klines + microstructure from ClickHouse range bar cache.
+pub async fn fetch_klines_range_bar_with_microstructure(
+    ticker_info: TickerInfo,
+    threshold_dbps: u32,
+    range: Option<(u64, u64)>,
+) -> Result<(Vec<Kline>, Vec<Option<clickhouse::ChMicrostructure>>), AdapterError> {
+    clickhouse::fetch_klines_with_microstructure(ticker_info, threshold_dbps, range).await
 }
 
 pub async fn fetch_open_interest(

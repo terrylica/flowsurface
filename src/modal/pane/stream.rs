@@ -368,11 +368,17 @@ impl Modifier {
                     | ModifierKind::Comparison(_) => false,
                 };
 
-                let allows_range_bar_basis =
-                    matches!(kind, ModifierKind::Candlestick(_) | ModifierKind::RangeBarChart(_));
+                let allows_range_bar_basis = matches!(
+                    kind,
+                    ModifierKind::Candlestick(_) | ModifierKind::RangeBarChart(_)
+                );
 
                 if selected_basis.is_some() {
-                    let (timeframe_tab_is_selected, tick_count_tab_is_selected, range_bar_tab_is_selected) = match self.tab {
+                    let (
+                        timeframe_tab_is_selected,
+                        tick_count_tab_is_selected,
+                        range_bar_tab_is_selected,
+                    ) = match self.tab {
                         SelectedTab::Timeframe => (true, false, false),
                         SelectedTab::TickCount { .. } => (false, true, false),
                         SelectedTab::RangeBar => (false, false, true),
@@ -577,12 +583,11 @@ impl Modifier {
                         let range_bar_grid = modifiers_grid(
                             &options,
                             selected_threshold.map(Basis::RangeBar),
-                            |b| Message::BasisSelected(b),
+                            Message::BasisSelected,
                             &create_button,
                             2,
                         );
-                        basis_selection_column =
-                            basis_selection_column.push(range_bar_grid);
+                        basis_selection_column = basis_selection_column.push(range_bar_grid);
                     }
                 }
 

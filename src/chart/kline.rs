@@ -4,7 +4,7 @@ use super::{
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::{modal::pane::settings::study, style};
-use data::aggr::ticks::TickAggr;
+use data::aggr::ticks::{RangeBarMicrostructure, TickAggr};
 use data::aggr::time::TimeSeries;
 use data::chart::Autoscale;
 use data::chart::kline::ClusterScaling;
@@ -344,7 +344,7 @@ impl KlineChart {
                     last_tick: Instant::now(),
                 }
             }
-            Basis::RangeBar(_) => {
+            Basis::RangeBar(threshold_dbps) => {
                 // Range bars use TickBased storage (Vec indexed by position) with
                 // index-based rendering, matching the Tick coordinate system.
                 // Data comes from ClickHouse as precomputed klines.
@@ -352,7 +352,10 @@ impl KlineChart {
 
                 let tick_aggr = TickAggr::from_klines(step, klines_raw);
 
-                let cell_width = 4.0;
+                // Scale cell width with threshold: larger thresholds have fewer bars
+                // covering the same time span, so each bar deserves more horizontal space.
+                // Reference: 250 dbps → 4.0 px. 500 → 8.0, 1000 → 16.0.
+                let cell_width = 4.0_f32 * (threshold_dbps as f32 / 250.0);
                 let cell_height = 8.0;
 
                 let mut chart = ViewState::new(
@@ -393,6 +396,97 @@ impl KlineChart {
                     last_tick: Instant::now(),
                 }
             }
+        }
+    }
+
+    /// Like `new()` but accepts optional microstructure sidecar from ClickHouse.
+    /// Converts `ChMicrostructure` → `RangeBarMicrostructure` at the crate boundary.
+    pub fn new_with_microstructure(
+        layout: ViewConfig,
+        basis: Basis,
+        tick_size: f32,
+        klines_raw: &[Kline],
+        raw_trades: Vec<Trade>,
+        enabled_indicators: &[KlineIndicator],
+        ticker_info: TickerInfo,
+        kind: &KlineChartKind,
+        microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
+    ) -> Self {
+        // For non-RangeBar bases or missing microstructure, delegate to plain new()
+        if !matches!(basis, Basis::RangeBar(_)) || microstructure.is_none() {
+            return Self::new(
+                layout,
+                basis,
+                tick_size,
+                klines_raw,
+                raw_trades,
+                enabled_indicators,
+                ticker_info,
+                kind,
+            );
+        }
+
+        let micro_slice = microstructure.unwrap();
+        let step = PriceStep::from_f32(tick_size);
+
+        // Convert ChMicrostructure → RangeBarMicrostructure
+        let micro: Vec<Option<RangeBarMicrostructure>> = micro_slice
+            .iter()
+            .map(|m| {
+                m.map(|cm| RangeBarMicrostructure {
+                    trade_count: cm.trade_count,
+                    ofi: cm.ofi,
+                    trade_intensity: cm.trade_intensity,
+                })
+            })
+            .collect();
+
+        let tick_aggr = TickAggr::from_klines_with_microstructure(step, klines_raw, &micro);
+
+        // Scale cell width with threshold (see non-microstructure constructor)
+        let threshold_dbps = match basis {
+            Basis::RangeBar(t) => t,
+            _ => 250,
+        };
+        let cell_width = 4.0_f32 * (threshold_dbps as f32 / 250.0);
+        let cell_height = 8.0;
+
+        let mut chart = ViewState::new(
+            basis,
+            step,
+            count_decimals(tick_size),
+            ticker_info,
+            ViewConfig {
+                splits: layout.splits,
+                autoscale: Some(Autoscale::FitToVisible),
+            },
+            cell_width,
+            cell_height,
+        );
+
+        let x_translation =
+            0.5 * (chart.bounds.width / chart.scaling) - (8.0 * chart.cell_width / chart.scaling);
+        chart.translation.x = x_translation;
+
+        let data_source = PlotData::TickBased(tick_aggr);
+
+        let mut indicators = EnumMap::default();
+        for &i in enabled_indicators {
+            let mut indi = indicator::kline::make_empty(i);
+            indi.rebuild_from_source(&data_source);
+            indicators[i] = Some(indi);
+        }
+
+        KlineChart {
+            chart,
+            data_source,
+            raw_trades,
+            indicators,
+            fetching_trades: (false, None),
+            request_handler: RequestHandler::new(),
+            kind: kind.clone(),
+            study_configurator: study::Configurator::new(),
+            last_tick: Instant::now(),
         }
     }
 
@@ -759,19 +853,69 @@ impl KlineChart {
     }
 
     /// Insert older range bar klines into the TickBased data source (historical scroll-back).
-    pub fn insert_range_bar_hist_klines(&mut self, req_id: uuid::Uuid, klines: &[Kline]) {
+    pub fn insert_range_bar_hist_klines(
+        &mut self,
+        req_id: uuid::Uuid,
+        klines: &[Kline],
+        microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
+    ) {
+        log::info!(
+            "[RB-HIST] insert_range_bar_hist_klines: {} klines, micro={}, datasource=TickBased?{}",
+            klines.len(),
+            microstructure.is_some(),
+            matches!(self.data_source, PlotData::TickBased(_)),
+        );
         match &mut self.data_source {
             PlotData::TickBased(tick_aggr) => {
+                let before_len = tick_aggr.datapoints.len();
                 if klines.is_empty() {
                     self.request_handler
                         .mark_failed(req_id, "No data received".to_string());
                 } else {
-                    tick_aggr.prepend_klines(klines);
+                    let micro: Option<Vec<Option<RangeBarMicrostructure>>> =
+                        microstructure.map(|ms| {
+                            ms.iter()
+                                .map(|m| {
+                                    m.map(|cm| RangeBarMicrostructure {
+                                        trade_count: cm.trade_count,
+                                        ofi: cm.ofi,
+                                        trade_intensity: cm.trade_intensity,
+                                    })
+                                })
+                                .collect()
+                        });
+                    tick_aggr.prepend_klines_with_microstructure(klines, micro.as_deref());
                     self.request_handler.mark_completed(req_id);
                 }
+                let after_len = tick_aggr.datapoints.len();
+                let micro_count = tick_aggr
+                    .datapoints
+                    .iter()
+                    .filter(|dp| dp.microstructure.is_some())
+                    .count();
+                log::info!(
+                    "[RB-HIST] TickAggr: {} -> {} datapoints, {} with microstructure",
+                    before_len,
+                    after_len,
+                    micro_count,
+                );
+
+                // Rebuild all indicators from updated data source
+                let indicator_count = self.indicators.values().filter(|v| v.is_some()).count();
+                log::info!(
+                    "[RB-HIST] Rebuilding {} indicators from source",
+                    indicator_count
+                );
+                self.indicators
+                    .values_mut()
+                    .filter_map(Option::as_mut)
+                    .for_each(|indi| indi.rebuild_from_source(&self.data_source));
+
                 self.invalidate(None);
             }
-            PlotData::TimeBased(_) => {}
+            PlotData::TimeBased(_) => {
+                log::warn!("[RB-HIST] data_source is TimeBased — range bar klines ignored!");
+            }
         }
     }
 

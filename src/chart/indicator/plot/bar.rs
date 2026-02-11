@@ -20,13 +20,14 @@ pub enum Baseline {
 }
 
 #[derive(Clone, Copy)]
-/// What kind of bar to render, and whether it carries a signed overlay.
-/// The sign of `overlay` selects up (success) vs down (danger).
+/// What kind of bar to render.
 pub enum BarClass {
     /// draw a single bar using secondary strong color
     Single,
-    /// draw two bars, a success/danger colored (alpha) and an overlay using full color.
-    Overlay { overlay: f32 }, // signed; sign decides color
+    /// Stacked buy (success) + sell (danger) bar. Bottom = sell, top = buy.
+    BuySell { buy: f32, sell: f32 },
+    /// Solid bar colored by sign: positive = success, negative = danger.
+    Signed,
 }
 
 pub struct BarPlot<V, CL, T> {
@@ -34,7 +35,7 @@ pub struct BarPlot<V, CL, T> {
     pub value: V,
     pub bar_width_factor: f32,
     pub padding: f32,
-    pub classify: CL, // Single vs Overlay with signed overlay
+    pub classify: CL, // Single, BuySell, or Signed
     pub tooltip: Option<TooltipFn<T>>,
     pub baseline: Baseline,
     _phantom: std::marker::PhantomData<T>,
@@ -100,18 +101,27 @@ where
             n += 1;
         });
 
-        if n == 0 || (max_v <= 0.0 && matches!(self.baseline, Baseline::Zero)) {
+        if n == 0 {
             return None;
         }
 
         let min_ext = match self.baseline {
-            Baseline::Zero => 0.0,
+            Baseline::Zero => min_v.min(0.0), // allow negative for bidirectional bars
             Baseline::Min => min_v,
             Baseline::Fixed(v) => v,
         };
 
+        let max_ext = match self.baseline {
+            Baseline::Zero => max_v.max(0.0), // always include zero line
+            _ => max_v,
+        };
+
+        if min_ext >= max_ext && max_ext <= 0.0 && !matches!(self.baseline, Baseline::Zero) {
+            return None;
+        }
+
         let lowest = min_ext;
-        let mut highest = max_v.max(min_ext + f32::EPSILON);
+        let mut highest = max_ext.max(lowest + f32::EPSILON);
         if highest > lowest && self.padding > 0.0 {
             highest *= 1.0 + self.padding;
         }
@@ -149,6 +159,11 @@ where
                 let y_total = scale.to_y(total);
                 let h = (y_base - y_total).max(0.0);
                 (y_total, h)
+            } else if rel < 0.0 {
+                // Negative bar: draw below baseline
+                let y_total = scale.to_y(total);
+                let h = (y_total - y_base).max(0.0);
+                (y_base, h)
             } else {
                 (y_base, 0.0)
             };
@@ -164,28 +179,46 @@ where
                         palette.secondary.strong.color,
                     );
                 }
-                BarClass::Overlay { overlay } => {
-                    let base_color = if overlay >= 0.0 {
+                BarClass::Signed => {
+                    let color = if rel >= 0.0 {
                         palette.success.base.color
                     } else {
                         palette.danger.base.color
                     };
-
                     frame.fill_rectangle(
                         Point::new(left, top_y),
                         Size::new(bar_width, h_total),
-                        base_color.scale_alpha(0.3),
+                        color,
                     );
+                }
+                BarClass::BuySell { buy, sell } => {
+                    // Stacked bar: sell (red) on bottom, buy (green) on top
+                    let buy_color = palette.success.base.color;
+                    let sell_color = palette.danger.base.color;
 
-                    let ov_abs = overlay.abs().max(0.0);
-                    if ov_abs > 0.0 {
-                        let y_overlay = scale.to_y(baseline_value + ov_abs);
-                        let h_overlay = (y_base - y_overlay).max(0.0);
-                        if h_overlay > 0.0 {
+                    // Sell portion: from baseline up to sell height
+                    if sell > 0.0 {
+                        let y_sell_top = scale.to_y(sell);
+                        let h_sell = (y_base - y_sell_top).max(0.0);
+                        if h_sell > 0.0 {
                             frame.fill_rectangle(
-                                Point::new(left, y_overlay),
-                                Size::new(bar_width, h_overlay),
-                                base_color,
+                                Point::new(left, y_sell_top),
+                                Size::new(bar_width, h_sell),
+                                sell_color,
+                            );
+                        }
+                    }
+
+                    // Buy portion: stacked on top of sell
+                    if buy > 0.0 {
+                        let y_buy_top = scale.to_y(sell + buy);
+                        let y_buy_bottom = scale.to_y(sell);
+                        let h_buy = (y_buy_bottom - y_buy_top).max(0.0);
+                        if h_buy > 0.0 {
+                            frame.fill_rectangle(
+                                Point::new(left, y_buy_top),
+                                Size::new(bar_width, h_buy),
+                                buy_color,
                             );
                         }
                     }

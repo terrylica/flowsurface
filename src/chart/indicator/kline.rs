@@ -6,7 +6,11 @@ use data::chart::kline::KlineDataPoint;
 use exchange::fetcher::FetchRange;
 use exchange::{Kline, Timeframe, Trade};
 
+pub mod delta;
+pub mod ofi;
 pub mod open_interest;
+pub mod trade_count;
+pub mod trade_intensity;
 pub mod volume;
 
 pub trait KlineIndicatorImpl {
@@ -62,6 +66,14 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
+        }
+        KlineIndicator::Delta => Box::new(super::kline::delta::DeltaIndicator::new()),
+        KlineIndicator::TradeCount => {
+            Box::new(super::kline::trade_count::TradeCountIndicator::new())
+        }
+        KlineIndicator::OFI => Box::new(super::kline::ofi::OFIIndicator::new()),
+        KlineIndicator::TradeIntensity => {
+            Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
         }
     }
 }

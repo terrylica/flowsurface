@@ -2,3 +2,10 @@
 /target
 /.vscode
 *.log
+
+# App bundle (built artifact)
+Flowsurface.app/
+
+# Generated assets
+assets/icon_1024.png
+assets/flowsurface.icns

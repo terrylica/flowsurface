@@ -5,7 +5,7 @@ use crate::chart::{
         kline::KlineIndicatorImpl,
         plot::{
             PlotTooltip,
-            bar::{BarClass, BarPlot},
+            bar::{BarClass, BarPlot, Baseline},
         },
     },
 };
@@ -17,12 +17,14 @@ use exchange::{Kline, Trade};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-pub struct VolumeIndicator {
+/// Delta indicator: buy_volume - sell_volume per bar.
+/// Positive = buy pressure (green), negative = sell pressure (red).
+pub struct DeltaIndicator {
     cache: Caches,
-    data: BTreeMap<u64, (f32, f32)>,
+    data: BTreeMap<u64, f32>,
 }
 
-impl VolumeIndicator {
+impl DeltaIndicator {
     pub fn new() -> Self {
         Self {
             cache: Caches::default(),
@@ -35,37 +37,25 @@ impl VolumeIndicator {
         main_chart: &'a ViewState,
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
-        let tooltip = |&(buy, sell): &(f32, f32), _next: Option<&(f32, f32)>| {
-            if buy == -1.0 {
-                PlotTooltip::new(format!("Volume: {}", format_with_commas(sell)))
-            } else {
-                let buy_t = format!("Buy Volume: {}", format_with_commas(buy));
-                let sell_t = format!("Sell Volume: {}", format_with_commas(sell));
-                PlotTooltip::new(format!("{buy_t}\n{sell_t}"))
-            }
+        let tooltip = |value: &f32, _next: Option<&f32>| {
+            let sign = if *value >= 0.0 { "+" } else { "" };
+            PlotTooltip::new(format!("Delta: {sign}{}", format_with_commas(*value)))
         };
 
-        let bar_kind = |&(buy, sell): &(f32, f32)| {
-            if buy == -1.0 {
-                BarClass::Single // bybit workaround: single bar
-            } else {
-                BarClass::BuySell { buy, sell }
-            }
-        };
+        let bar_kind = |_value: &f32| BarClass::Signed;
 
-        let value_fn = |&(buy, sell): &(f32, f32)| {
-            if buy == -1.0 { sell } else { buy + sell }
-        };
+        let value_fn = |v: &f32| *v;
 
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
+            .baseline(Baseline::Zero)
             .with_tooltip(tooltip);
 
         indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
     }
 }
 
-impl KlineIndicatorImpl for VolumeIndicator {
+impl KlineIndicatorImpl for DeltaIndicator {
     fn clear_all_caches(&mut self) {
         self.cache.clear_all();
     }
@@ -85,10 +75,14 @@ impl KlineIndicatorImpl for VolumeIndicator {
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         match source {
             PlotData::TimeBased(timeseries) => {
-                self.data = timeseries.volume_data();
+                self.data = timeseries
+                    .volume_data()
+                    .into_iter()
+                    .map(|(k, (buy, sell))| (k, buy - sell))
+                    .collect();
             }
             PlotData::TickBased(tickseries) => {
-                self.data = tickseries.volume_data();
+                self.data = tickseries.delta_data();
             }
         }
         self.clear_all_caches();
@@ -97,7 +91,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
     fn on_insert_klines(&mut self, klines: &[Kline]) {
         for kline in klines {
             self.data
-                .insert(kline.time, (kline.volume.0, kline.volume.1));
+                .insert(kline.time, kline.volume.0 - kline.volume.1);
         }
         self.clear_all_caches();
     }
@@ -114,7 +108,7 @@ impl KlineIndicatorImpl for VolumeIndicator {
                 let start_idx = old_dp_len.saturating_sub(1);
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
                     self.data
-                        .insert(idx as u64, (dp.kline.volume.0, dp.kline.volume.1));
+                        .insert(idx as u64, dp.kline.volume.0 - dp.kline.volume.1);
                 }
             }
         }

@@ -265,9 +265,7 @@ impl PaneSetup {
             ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
                 Some(current_basis.unwrap_or(Basis::Time(Timeframe::M15)))
             }
-            ContentKind::RangeBarChart => {
-                Some(current_basis.unwrap_or(Basis::RangeBar(250)))
-            }
+            ContentKind::RangeBarChart => Some(current_basis.unwrap_or(Basis::RangeBar(250))),
             ContentKind::Starter | ContentKind::TimeAndSales => None,
         };
 

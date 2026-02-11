@@ -14,6 +14,10 @@ pub trait Indicator: PartialEq + Display + 'static {
 pub enum KlineIndicator {
     Volume,
     OpenInterest,
+    Delta,
+    TradeCount,
+    OFI,
+    TradeIntensity,
 }
 
 impl Indicator for KlineIndicator {
@@ -29,9 +33,22 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 1] = [KlineIndicator::Volume];
+    const FOR_SPOT: [KlineIndicator; 5] = [
+        KlineIndicator::Volume,
+        KlineIndicator::Delta,
+        KlineIndicator::TradeCount,
+        KlineIndicator::OFI,
+        KlineIndicator::TradeIntensity,
+    ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 2] = [KlineIndicator::Volume, KlineIndicator::OpenInterest];
+    const FOR_PERPS: [KlineIndicator; 6] = [
+        KlineIndicator::Volume,
+        KlineIndicator::OpenInterest,
+        KlineIndicator::Delta,
+        KlineIndicator::TradeCount,
+        KlineIndicator::OFI,
+        KlineIndicator::TradeIntensity,
+    ];
 }
 
 impl Display for KlineIndicator {
@@ -39,6 +56,10 @@ impl Display for KlineIndicator {
         match self {
             KlineIndicator::Volume => write!(f, "Volume"),
             KlineIndicator::OpenInterest => write!(f, "Open Interest"),
+            KlineIndicator::Delta => write!(f, "Delta"),
+            KlineIndicator::TradeCount => write!(f, "Trade Count"),
+            KlineIndicator::OFI => write!(f, "OFI"),
+            KlineIndicator::TradeIntensity => write!(f, "Trade Intensity"),
         }
     }
 }

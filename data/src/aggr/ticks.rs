@@ -5,11 +5,21 @@ use exchange::{Kline, Trade};
 
 use std::collections::BTreeMap;
 
+/// Microstructure data from precomputed range bars (ClickHouse).
+/// Separate from Kline to avoid polluting the shared exchange type.
+#[derive(Debug, Clone, Copy)]
+pub struct RangeBarMicrostructure {
+    pub trade_count: u32,
+    pub ofi: f32,
+    pub trade_intensity: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
     pub tick_count: usize,
     pub kline: Kline,
     pub footprint: KlineTrades,
+    pub microstructure: Option<RangeBarMicrostructure>,
 }
 
 impl TickAccumulation {
@@ -33,6 +43,7 @@ impl TickAccumulation {
             tick_count: 1,
             kline,
             footprint,
+            microstructure: None,
         }
     }
 
@@ -212,6 +223,7 @@ impl TickAggr {
                 tick_count: 1,
                 kline: *kline,
                 footprint: KlineTrades::new(),
+                microstructure: None,
             })
             .collect();
 
@@ -222,22 +234,94 @@ impl TickAggr {
         }
     }
 
+    /// Create a TickAggr from precomputed klines with microstructure sidecar data.
+    /// `micro` must be the same length as `klines`.
+    pub fn from_klines_with_microstructure(
+        tick_size: PriceStep,
+        klines: &[Kline],
+        micro: &[Option<RangeBarMicrostructure>],
+    ) -> Self {
+        let datapoints: Vec<TickAccumulation> = klines
+            .iter()
+            .zip(micro.iter())
+            .map(|(kline, m)| TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: *m,
+            })
+            .collect();
+
+        Self {
+            datapoints,
+            interval: aggr::TickCount(1),
+            tick_size,
+        }
+    }
+
+    /// Delta (buy_volume - sell_volume) per bar, keyed by index.
+    pub fn delta_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .map(|(idx, dp)| (idx as u64, dp.kline.volume.0 - dp.kline.volume.1))
+            .collect()
+    }
+
+    /// Individual trade count per bar from microstructure sidecar.
+    pub fn trade_count_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .map(|m| (idx as u64, m.trade_count as f32))
+            })
+            .collect()
+    }
+
+    /// Order flow imbalance [-1, 1] per bar from microstructure sidecar.
+    pub fn ofi_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| dp.microstructure.map(|m| (idx as u64, m.ofi)))
+            .collect()
+    }
+
+    /// Trade intensity (trades/sec) per bar from microstructure sidecar.
+    pub fn trade_intensity_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| dp.microstructure.map(|m| (idx as u64, m.trade_intensity)))
+            .collect()
+    }
+
     /// Prepend older klines to the datapoints (for historical data loading).
     /// Klines should be in ascending timestamp order.
     /// Older data goes at the beginning (index 0) since datapoints is oldest-first.
     /// Filters out any klines whose timestamp already exists in datapoints.
     pub fn prepend_klines(&mut self, klines: &[Kline]) {
+        self.prepend_klines_with_microstructure(klines, None);
+    }
+
+    pub fn prepend_klines_with_microstructure(
+        &mut self,
+        klines: &[Kline],
+        micro: Option<&[Option<RangeBarMicrostructure>]>,
+    ) {
         // Deduplicate: only prepend klines older than the current oldest bar
         let oldest_existing_ts = self.datapoints.first().map(|dp| dp.kline.time);
         let new_entries: Vec<TickAccumulation> = klines
             .iter()
-            .filter(|kline| {
-                oldest_existing_ts.is_none_or(|oldest| kline.time < oldest)
-            })
-            .map(|kline| TickAccumulation {
+            .enumerate()
+            .filter(|(_, kline)| oldest_existing_ts.is_none_or(|oldest| kline.time < oldest))
+            .map(|(i, kline)| TickAccumulation {
                 tick_count: 1,
                 kline: *kline,
                 footprint: KlineTrades::new(),
+                microstructure: micro.and_then(|m| m.get(i).copied().flatten()),
             })
             .collect();
 
@@ -255,6 +339,7 @@ impl TickAggr {
                 tick_count: 1,
                 kline: *kline,
                 footprint: KlineTrades::new(),
+                microstructure: None,
             });
         }
     }

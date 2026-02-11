@@ -545,9 +545,8 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                                     exchange::Timeframe::MS100,
                                 )
                             };
-                            labels.push(AxisLabel::new_x(
-                                snap_x, label_text, bounds, false, palette,
-                            ));
+                            labels
+                                .push(AxisLabel::new_x(snap_x, label_text, bounds, false, palette));
                         }
                     }
                 }

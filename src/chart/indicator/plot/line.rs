@@ -127,7 +127,7 @@ where
         // Polyline
         let mut prev: Option<(f32, f32)> = None;
         datapoints.for_each_in(range.clone(), |x, y| {
-            let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
+            let sx = ctx.interval_to_x(x);
             let vy = (self.value)(y);
             let sy = scale.to_y(vy);
             if let Some((px, py)) = prev {
@@ -142,7 +142,7 @@ where
         if self.show_points {
             let radius = (ctx.cell_width * self.point_radius_factor).min(5.0);
             datapoints.for_each_in(range, |x, y| {
-                let sx = ctx.interval_to_x(x) - (ctx.cell_width / 2.0);
+                let sx = ctx.interval_to_x(x);
                 let sy = scale.to_y((self.value)(y));
                 frame.fill(&Path::circle(iced::Point::new(sx, sy), radius), color);
             });

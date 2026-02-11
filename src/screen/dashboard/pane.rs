@@ -454,6 +454,7 @@ impl State {
         req_id: Option<uuid::Uuid>,
         ticker_info: TickerInfo,
         klines: &[Kline],
+        microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
     ) {
         match &mut self.content {
             Content::Kline {
@@ -465,14 +466,14 @@ impl State {
 
                 if let Some(id) = req_id {
                     // Historical data load — prepend older klines to TickAggr
-                    chart.insert_range_bar_hist_klines(id, klines);
+                    chart.insert_range_bar_hist_klines(id, klines, microstructure);
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
                     let basis = chart.basis();
                     let kind = chart.kind().clone();
 
-                    *chart = KlineChart::new(
+                    *chart = KlineChart::new_with_microstructure(
                         layout,
                         basis,
                         tick_size,
@@ -481,6 +482,7 @@ impl State {
                         indicators,
                         ticker_info,
                         &kind,
+                        microstructure,
                     );
                 }
             }
@@ -891,10 +893,8 @@ impl State {
                             stream_info_element = stream_info_element.push(modifiers);
                         }
                         data::chart::KlineChartKind::RangeBar => {
-                            let selected_basis = self
-                                .settings
-                                .selected_basis
-                                .unwrap_or(Basis::RangeBar(250));
+                            let selected_basis =
+                                self.settings.selected_basis.unwrap_or(Basis::RangeBar(250));
                             let kind = ModifierKind::RangeBarChart(selected_basis);
 
                             let modifiers =
@@ -1304,51 +1304,47 @@ impl State {
                                             }
                                         }
                                     }
-                                    Content::Comparison(Some(c)) => {
-                                        match new_basis {
-                                            Basis::Time(tf) => {
-                                                let streams: Vec<StreamKind> = c
-                                                    .selected_tickers()
-                                                    .iter()
-                                                    .copied()
-                                                    .map(|ti| StreamKind::Kline {
-                                                        ticker_info: ti,
-                                                        timeframe: tf,
-                                                    })
-                                                    .collect();
+                                    Content::Comparison(Some(c)) => match new_basis {
+                                        Basis::Time(tf) => {
+                                            let streams: Vec<StreamKind> = c
+                                                .selected_tickers()
+                                                .iter()
+                                                .copied()
+                                                .map(|ti| StreamKind::Kline {
+                                                    ticker_info: ti,
+                                                    timeframe: tf,
+                                                })
+                                                .collect();
 
-                                                self.streams = ResolvedStream::Ready(streams);
-                                                let action = c.set_basis(new_basis);
+                                            self.streams = ResolvedStream::Ready(streams);
+                                            let action = c.set_basis(new_basis);
 
-                                                if let Some(chart::Action::RequestFetch(fetch)) =
-                                                    action
-                                                {
-                                                    effect = Some(Effect::RequestFetch(fetch));
-                                                }
+                                            if let Some(chart::Action::RequestFetch(fetch)) = action
+                                            {
+                                                effect = Some(Effect::RequestFetch(fetch));
                                             }
-                                            Basis::RangeBar(threshold) => {
-                                                let streams: Vec<StreamKind> = c
-                                                    .selected_tickers()
-                                                    .iter()
-                                                    .copied()
-                                                    .map(|ti| StreamKind::RangeBarKline {
-                                                        ticker_info: ti,
-                                                        threshold_dbps: threshold,
-                                                    })
-                                                    .collect();
-
-                                                self.streams = ResolvedStream::Ready(streams);
-                                                let action = c.set_basis(new_basis);
-
-                                                if let Some(chart::Action::RequestFetch(fetch)) =
-                                                    action
-                                                {
-                                                    effect = Some(Effect::RequestFetch(fetch));
-                                                }
-                                            }
-                                            _ => {}
                                         }
-                                    }
+                                        Basis::RangeBar(threshold) => {
+                                            let streams: Vec<StreamKind> = c
+                                                .selected_tickers()
+                                                .iter()
+                                                .copied()
+                                                .map(|ti| StreamKind::RangeBarKline {
+                                                    ticker_info: ti,
+                                                    threshold_dbps: threshold,
+                                                })
+                                                .collect();
+
+                                            self.streams = ResolvedStream::Ready(streams);
+                                            let action = c.set_basis(new_basis);
+
+                                            if let Some(chart::Action::RequestFetch(fetch)) = action
+                                            {
+                                                effect = Some(Effect::RequestFetch(fetch));
+                                            }
+                                        }
+                                        _ => {}
+                                    },
                                     _ => {}
                                 }
                             }
@@ -1951,7 +1947,13 @@ impl Content {
             },
             ContentKind::RangeBarChart => Content::Kline {
                 chart: None,
-                indicators: vec![KlineIndicator::Volume],
+                indicators: vec![
+                    KlineIndicator::Volume,
+                    KlineIndicator::Delta,
+                    KlineIndicator::TradeCount,
+                    KlineIndicator::OFI,
+                    KlineIndicator::TradeIntensity,
+                ],
                 kind: data::chart::KlineChartKind::RangeBar,
                 layout: ViewConfig {
                     splits: vec![],

@@ -1,4 +1,5 @@
 use crate::adapter::StreamKind;
+use crate::adapter::clickhouse::ChMicrostructure;
 use crate::{Kline, OpenInterest, Trade};
 
 use smallvec::SmallVec;
@@ -25,6 +26,7 @@ pub enum FetchedData {
     Klines {
         data: Vec<Kline>,
         req_id: Option<uuid::Uuid>,
+        microstructure: Option<Vec<Option<ChMicrostructure>>>,
     },
     OI {
         data: Vec<OpenInterest>,
