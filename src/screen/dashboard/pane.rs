@@ -130,7 +130,8 @@ impl State {
     pub fn stream_pair(&self) -> Option<TickerInfo> {
         self.streams.find_ready_map(|stream| match stream {
             StreamKind::DepthAndTrades { ticker_info, .. }
-            | StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
+            | StreamKind::Kline { ticker_info, .. }
+            | StreamKind::RangeBarKline { ticker_info, .. } => Some(*ticker_info),
         })
     }
 
@@ -219,6 +220,15 @@ impl State {
                             ]
                         },
                         || vec![depth_stream(&derived_plan)],
+                        |threshold| {
+                            vec![
+                                depth_stream(&derived_plan),
+                                StreamKind::RangeBarKline {
+                                    ticker_info: derived_plan.ticker_info,
+                                    threshold_dbps: threshold,
+                                },
+                            ]
+                        },
                     );
 
                     (content, streams)
@@ -250,8 +260,32 @@ impl State {
                             };
                             vec![depth_stream(&temp)]
                         },
+                        |threshold| {
+                            vec![StreamKind::RangeBarKline {
+                                ticker_info: derived_plan.ticker_info,
+                                threshold_dbps: threshold,
+                            }]
+                        },
                     );
 
+                    (content, streams)
+                }
+                ContentKind::RangeBarChart => {
+                    let content = Content::new_kline(
+                        kind,
+                        &self.content,
+                        derived_plan.ticker_info,
+                        &self.settings,
+                        base_ticker.min_ticksize.into(),
+                    );
+                    let threshold = match derived_plan.basis {
+                        Some(Basis::RangeBar(t)) => t,
+                        _ => 250,
+                    };
+                    let streams = vec![StreamKind::RangeBarKline {
+                        ticker_info: derived_plan.ticker_info,
+                        threshold_dbps: threshold,
+                    }];
                     (content, streams)
                 }
                 ContentKind::TimeAndSales => {
@@ -307,6 +341,16 @@ impl State {
                                 .collect()
                         },
                         || todo!("WIP: ComparisonChart does not support tick basis"),
+                        |threshold| {
+                            tickers
+                                .iter()
+                                .copied()
+                                .map(|ti| StreamKind::RangeBarKline {
+                                    ticker_info: ti,
+                                    threshold_dbps: threshold,
+                                })
+                                .collect()
+                        },
                     );
 
                     (content, streams)
@@ -401,6 +445,47 @@ impl State {
             }
             _ => {
                 log::error!("pane content not candlestick or footprint");
+            }
+        }
+    }
+
+    pub fn insert_range_bar_klines(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        klines: &[Kline],
+    ) {
+        match &mut self.content {
+            Content::Kline {
+                chart, indicators, ..
+            } => {
+                let Some(chart) = chart else {
+                    panic!("chart wasn't initialized when inserting range bar klines");
+                };
+
+                if let Some(id) = req_id {
+                    // Historical data load — prepend older klines to TickAggr
+                    chart.insert_range_bar_hist_klines(id, klines);
+                } else {
+                    let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
+                    let layout = chart.chart_layout();
+                    let basis = chart.basis();
+                    let kind = chart.kind().clone();
+
+                    *chart = KlineChart::new(
+                        layout,
+                        basis,
+                        tick_size,
+                        klines,
+                        raw_trades,
+                        indicators,
+                        ticker_info,
+                        &kind,
+                    );
+                }
+            }
+            _ => {
+                log::error!("pane content not candlestick for range bar klines");
             }
         }
     }
@@ -805,6 +890,19 @@ impl State {
 
                             stream_info_element = stream_info_element.push(modifiers);
                         }
+                        data::chart::KlineChartKind::RangeBar => {
+                            let selected_basis = self
+                                .settings
+                                .selected_basis
+                                .unwrap_or(Basis::RangeBar(250));
+                            let kind = ModifierKind::RangeBarChart(selected_basis);
+
+                            let modifiers =
+                                row![basis_modifier(id, selected_basis, modifier, kind),]
+                                    .spacing(4);
+
+                            stream_info_element = stream_info_element.push(modifiers);
+                        }
                     }
 
                     let base = chart::view(chart, indicators, timezone).map(move |message| {
@@ -843,6 +941,7 @@ impl State {
                 } else {
                     let content_kind = match chart_kind {
                         data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
+                        data::chart::KlineChartKind::RangeBar => ContentKind::RangeBarChart,
                         data::chart::KlineChartKind::Footprint { .. } => {
                             ContentKind::FootprintChart
                         }
@@ -1086,7 +1185,7 @@ impl State {
                                                 Basis::Time(tf) => {
                                                     *push_freq = exchange::PushFrequency::Custom(tf)
                                                 }
-                                                Basis::Tick(_) => {
+                                                Basis::Tick(_) | Basis::RangeBar(_) => {
                                                     *push_freq =
                                                         exchange::PushFrequency::ServerDefault
                                                 }
@@ -1162,28 +1261,92 @@ impl State {
                                                     c.set_basis(new_basis);
                                                     effect = Some(Effect::RefreshStreams);
                                                 }
+                                                Basis::RangeBar(threshold) => {
+                                                    let rb_stream = StreamKind::RangeBarKline {
+                                                        ticker_info: base_ticker,
+                                                        threshold_dbps: threshold,
+                                                    };
+                                                    let mut streams = vec![rb_stream];
+
+                                                    if matches!(
+                                                        c.kind,
+                                                        data::chart::KlineChartKind::Footprint { .. }
+                                                    ) {
+                                                        let depth_aggr = if base_ticker
+                                                            .exchange()
+                                                            .is_depth_client_aggr()
+                                                        {
+                                                            StreamTicksize::Client
+                                                        } else {
+                                                            StreamTicksize::ServerSide(
+                                                                self.settings
+                                                                    .tick_multiply
+                                                                    .unwrap_or(TickMultiplier(1)),
+                                                            )
+                                                        };
+                                                        streams.push(StreamKind::DepthAndTrades {
+                                                            ticker_info: base_ticker,
+                                                            depth_aggr,
+                                                            push_freq: exchange::PushFrequency::ServerDefault,
+                                                        });
+                                                    }
+
+                                                    self.streams = ResolvedStream::Ready(streams);
+                                                    let action = c.set_basis(new_basis);
+
+                                                    if let Some(chart::Action::RequestFetch(
+                                                        fetch,
+                                                    )) = action
+                                                    {
+                                                        effect = Some(Effect::RequestFetch(fetch));
+                                                    }
+                                                }
                                             }
                                         }
                                     }
                                     Content::Comparison(Some(c)) => {
-                                        if let Basis::Time(tf) = new_basis {
-                                            let streams: Vec<StreamKind> = c
-                                                .selected_tickers()
-                                                .iter()
-                                                .copied()
-                                                .map(|ti| StreamKind::Kline {
-                                                    ticker_info: ti,
-                                                    timeframe: tf,
-                                                })
-                                                .collect();
+                                        match new_basis {
+                                            Basis::Time(tf) => {
+                                                let streams: Vec<StreamKind> = c
+                                                    .selected_tickers()
+                                                    .iter()
+                                                    .copied()
+                                                    .map(|ti| StreamKind::Kline {
+                                                        ticker_info: ti,
+                                                        timeframe: tf,
+                                                    })
+                                                    .collect();
 
-                                            self.streams = ResolvedStream::Ready(streams);
-                                            let action = c.set_basis(new_basis);
+                                                self.streams = ResolvedStream::Ready(streams);
+                                                let action = c.set_basis(new_basis);
 
-                                            if let Some(chart::Action::RequestFetch(fetch)) = action
-                                            {
-                                                effect = Some(Effect::RequestFetch(fetch));
+                                                if let Some(chart::Action::RequestFetch(fetch)) =
+                                                    action
+                                                {
+                                                    effect = Some(Effect::RequestFetch(fetch));
+                                                }
                                             }
+                                            Basis::RangeBar(threshold) => {
+                                                let streams: Vec<StreamKind> = c
+                                                    .selected_tickers()
+                                                    .iter()
+                                                    .copied()
+                                                    .map(|ti| StreamKind::RangeBarKline {
+                                                        ticker_info: ti,
+                                                        threshold_dbps: threshold,
+                                                    })
+                                                    .collect();
+
+                                                self.streams = ResolvedStream::Ready(streams);
+                                                let action = c.set_basis(new_basis);
+
+                                                if let Some(chart::Action::RequestFetch(fetch)) =
+                                                    action
+                                                {
+                                                    effect = Some(Effect::RequestFetch(fetch));
+                                                }
+                                            }
+                                            _ => {}
                                         }
                                     }
                                     _ => {}
@@ -1685,6 +1848,7 @@ impl Content {
                     }),
             ),
             ContentKind::CandlestickChart => (Timeframe::M15, data::chart::KlineChartKind::Candles),
+            ContentKind::RangeBarChart => (Timeframe::M15, data::chart::KlineChartKind::RangeBar),
             _ => unreachable!("invalid content kind for kline chart"),
         };
 
@@ -1783,6 +1947,15 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
+                },
+            },
+            ContentKind::RangeBarChart => Content::Kline {
+                chart: None,
+                indicators: vec![KlineIndicator::Volume],
+                kind: data::chart::KlineChartKind::RangeBar,
+                layout: ViewConfig {
+                    splits: vec![],
+                    autoscale: Some(data::chart::Autoscale::FitToVisible),
                 },
             },
             ContentKind::ComparisonChart => Content::Comparison(None),
@@ -1935,6 +2108,7 @@ impl Content {
             Content::Kline { kind, .. } => match kind {
                 data::chart::KlineChartKind::Footprint { .. } => ContentKind::FootprintChart,
                 data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
+                data::chart::KlineChartKind::RangeBar => ContentKind::RangeBarChart,
             },
             Content::TimeAndSales(_) => ContentKind::TimeAndSales,
             Content::Ladder(_) => ContentKind::Ladder,
@@ -2065,9 +2239,11 @@ fn by_basis_default<T>(
     default_tf: Timeframe,
     on_time: impl FnOnce(Timeframe) -> T,
     on_tick: impl FnOnce() -> T,
+    on_range_bar: impl FnOnce(u32) -> T,
 ) -> T {
     match basis.unwrap_or(Basis::Time(default_tf)) {
         Basis::Time(tf) => on_time(tf),
         Basis::Tick(_) => on_tick(),
+        Basis::RangeBar(threshold) => on_range_bar(threshold),
     }
 }

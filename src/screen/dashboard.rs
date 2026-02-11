@@ -337,7 +337,7 @@ impl Dashboard {
                             self.streams.extend(streams.iter());
 
                             for stream in &streams {
-                                if let StreamKind::Kline { .. } = stream {
+                                if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
                                     return (
                                         kline_fetch_task(*layout_id, pane_id, *stream, None, None),
                                         None,
@@ -689,7 +689,7 @@ impl Dashboard {
             self.streams.extend(streams.iter());
 
             for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
+                if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
                     return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
@@ -725,7 +725,7 @@ impl Dashboard {
             self.streams.extend(streams.iter());
 
             for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
+                if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
                     return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
@@ -843,12 +843,17 @@ impl Dashboard {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
-                    if let StreamKind::Kline {
-                        timeframe,
-                        ticker_info,
-                    } = stream_type
-                    {
-                        pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
+                    match stream_type {
+                        StreamKind::Kline {
+                            timeframe,
+                            ticker_info,
+                        } => {
+                            pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
+                        }
+                        StreamKind::RangeBarKline { ticker_info, .. } => {
+                            pane_state.insert_range_bar_klines(req_id, ticker_info, &data);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1090,6 +1095,10 @@ impl Dashboard {
                     subs.push(kline_subscription(exchange, kline_params));
                 }
 
+                for (ticker_info, threshold_dbps) in &specs.range_bar_kline {
+                    subs.push(rangebar_kline_subscription(*ticker_info, *threshold_dbps));
+                }
+
                 subs
             })
             .collect::<Vec<Subscription<exchange::Event>>>();
@@ -1123,7 +1132,7 @@ fn request_fetch(
                     Some((s, pane_id))
                 } else {
                     state.streams.find_ready_map(|stream| {
-                        if let StreamKind::Kline { .. } = stream {
+                        if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
                             Some((*stream, pane_id))
                         } else {
                             None
@@ -1148,7 +1157,7 @@ fn request_fetch(
                     Some((s, pane_id))
                 } else {
                     state.streams.find_ready_map(|stream| {
-                        if let StreamKind::Kline { .. } = stream {
+                        if matches!(stream, StreamKind::Kline { .. } | StreamKind::RangeBarKline { .. }) {
                             Some((*stream, pane_id))
                         } else {
                             None
@@ -1305,6 +1314,30 @@ fn kline_fetch_task(
                 }
             },
         ),
+        StreamKind::RangeBarKline {
+            ticker_info,
+            threshold_dbps,
+        } => Task::perform(
+            adapter::fetch_klines_range_bar(ticker_info, threshold_dbps, range)
+                .map_err(|err| err.to_user_message()),
+            move |result| match result {
+                Ok(klines) => {
+                    let data = FetchedData::Klines {
+                        data: klines,
+                        req_id,
+                    };
+                    Message::DistributeFetchedData {
+                        layout_id,
+                        pane_id,
+                        data,
+                        stream,
+                    }
+                }
+                Err(err) => {
+                    Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(err.to_string()))
+                }
+            },
+        ),
         _ => Task::none(),
     };
 
@@ -1406,4 +1439,21 @@ pub fn kline_subscription(
             Subscription::run_with(config, builder)
         }
     }
+}
+
+pub fn rangebar_kline_subscription(
+    ticker_info: TickerInfo,
+    threshold_dbps: u32,
+) -> Subscription<exchange::Event> {
+    let exchange = ticker_info.exchange();
+    let config = StreamConfig::new(
+        (ticker_info, threshold_dbps),
+        exchange,
+        None,
+        PushFrequency::ServerDefault,
+    );
+    let builder = |cfg: &StreamConfig<(TickerInfo, u32)>| {
+        adapter::clickhouse::connect_kline_stream(cfg.id.0, cfg.id.1)
+    };
+    Subscription::run_with(config, builder)
 }

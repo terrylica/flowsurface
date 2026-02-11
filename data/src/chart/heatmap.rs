@@ -152,7 +152,7 @@ impl HistoricalDepth {
             price_levels: BTreeMap::new(),
             aggr_time: match basis {
                 Basis::Time(interval) => interval.into(),
-                Basis::Tick(_) => unimplemented!(),
+                Basis::Tick(_) | Basis::RangeBar(_) => unimplemented!(),
             },
             tick_size,
             min_order_qty,

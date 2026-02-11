@@ -48,6 +48,50 @@ impl UserTimezone {
         }
     }
 
+    /// Formats a timestamp for range bar axis labels.
+    /// `label_span_ms` is the time span between adjacent labels (not between bars).
+    pub fn format_range_bar_label(&self, timestamp: i64, label_span_ms: u64) -> String {
+        if let Some(datetime) = DateTime::from_timestamp(timestamp, 0) {
+            match self {
+                UserTimezone::Local => {
+                    let dt = datetime.with_timezone(&chrono::Local);
+                    Self::format_range_bar_dt(&dt, label_span_ms)
+                }
+                UserTimezone::Utc => {
+                    let dt = datetime.with_timezone(&chrono::Utc);
+                    Self::format_range_bar_dt(&dt, label_span_ms)
+                }
+            }
+        } else {
+            String::new()
+        }
+    }
+
+    fn format_range_bar_dt<Tz: chrono::TimeZone>(
+        datetime: &DateTime<Tz>,
+        label_span_ms: u64,
+    ) -> String
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        if label_span_ms >= 30 * 86_400_000 {
+            // Labels > 30 days apart: show month + year
+            datetime.format("%b %Y").to_string()
+        } else if label_span_ms >= 86_400_000 {
+            // Labels > 1 day apart: show month + day
+            datetime.format("%b %-d").to_string()
+        } else if label_span_ms >= 3_600_000 {
+            // Labels > 1 hour apart: show day + time
+            datetime.format("%b %-d %H:%M").to_string()
+        } else if label_span_ms >= 60_000 {
+            // Labels > 1 minute apart: show time
+            datetime.format("%H:%M").to_string()
+        } else {
+            // Labels < 1 minute apart: show time with seconds
+            datetime.format("%H:%M:%S").to_string()
+        }
+    }
+
     /// Formats a `DateTime` with detailed format for crosshair display
     pub fn format_crosshair_timestamp(&self, timestamp_millis: i64, interval: u64) -> String {
         if let Some(datetime) = DateTime::from_timestamp_millis(timestamp_millis) {

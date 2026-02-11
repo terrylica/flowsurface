@@ -464,7 +464,7 @@ pub fn kline_cfg_view<'a>(
     basis: data::chart::Basis,
 ) -> Element<'a, Message> {
     let content = match kind {
-        KlineChartKind::Candles => column![text(
+        KlineChartKind::Candles | KlineChartKind::RangeBar => column![text(
             "This chart type doesn't have any configurations, WIP..."
         )],
         KlineChartKind::Footprint {
@@ -780,7 +780,7 @@ pub mod study {
         ) -> Element<'a, Message<Self>> {
             let interval_ms = match basis {
                 data::chart::Basis::Time(interval) => interval.to_milliseconds(),
-                data::chart::Basis::Tick(_) => {
+                data::chart::Basis::Tick(_) | data::chart::Basis::RangeBar(_) => {
                     return iced::widget::center(text(
                         "Heatmap studies are not supported for tick-based charts",
                     ))

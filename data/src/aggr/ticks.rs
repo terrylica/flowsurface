@@ -197,6 +197,68 @@ impl TickAggr {
         }
     }
 
+    /// Create a TickAggr from precomputed klines (e.g., range bars from ClickHouse).
+    /// Each kline becomes one TickAccumulation entry.
+    /// The `interval` is set to TickCount(1) since each entry is already a complete bar.
+    ///
+    /// Klines are stored in ascending order (oldest at index 0, newest at end).
+    /// `render_data_source` calls `.iter().rev().enumerate()` which gives
+    /// (0, newest), (1, ...), ..., (N-1, oldest) — matching `interval_to_x`
+    /// where index 0 maps to x=0 (rightmost = newest).
+    pub fn from_klines(tick_size: PriceStep, klines: &[Kline]) -> Self {
+        let datapoints: Vec<TickAccumulation> = klines
+            .iter()
+            .map(|kline| TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+            })
+            .collect();
+
+        Self {
+            datapoints,
+            interval: aggr::TickCount(1),
+            tick_size,
+        }
+    }
+
+    /// Prepend older klines to the datapoints (for historical data loading).
+    /// Klines should be in ascending timestamp order.
+    /// Older data goes at the beginning (index 0) since datapoints is oldest-first.
+    /// Filters out any klines whose timestamp already exists in datapoints.
+    pub fn prepend_klines(&mut self, klines: &[Kline]) {
+        // Deduplicate: only prepend klines older than the current oldest bar
+        let oldest_existing_ts = self.datapoints.first().map(|dp| dp.kline.time);
+        let new_entries: Vec<TickAccumulation> = klines
+            .iter()
+            .filter(|kline| {
+                oldest_existing_ts.is_none_or(|oldest| kline.time < oldest)
+            })
+            .map(|kline| TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+            })
+            .collect();
+
+        if !new_entries.is_empty() {
+            self.datapoints.splice(0..0, new_entries);
+        }
+    }
+
+    /// Append a newer kline to the end of datapoints (for streaming updates).
+    /// Skips if the timestamp already exists (dedup against streaming overlap).
+    pub fn append_kline(&mut self, kline: &Kline) {
+        let newest_ts = self.datapoints.last().map(|dp| dp.kline.time);
+        if newest_ts.is_none_or(|ts| kline.time > ts) {
+            self.datapoints.push(TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+            });
+        }
+    }
+
     pub fn min_max_price_in_range_prices(
         &self,
         earliest: usize,

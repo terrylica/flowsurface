@@ -11,6 +11,7 @@ use std::{collections::HashMap, str::FromStr, sync::Arc, time::Instant};
 
 pub mod binance;
 pub mod bybit;
+pub mod clickhouse;
 pub mod hyperliquid;
 pub mod okex;
 
@@ -98,24 +99,7 @@ impl ResolvedStream {
             ResolvedStream::Waiting { streams, .. } => streams,
             ResolvedStream::Ready(streams) => streams
                 .into_iter()
-                .map(|s| match s {
-                    StreamKind::DepthAndTrades {
-                        ticker_info,
-                        depth_aggr,
-                        push_freq,
-                    } => PersistStreamKind::DepthAndTrades(PersistDepth {
-                        ticker: ticker_info.ticker,
-                        depth_aggr,
-                        push_freq,
-                    }),
-                    StreamKind::Kline {
-                        ticker_info,
-                        timeframe,
-                    } => PersistStreamKind::Kline(PersistKline {
-                        ticker: ticker_info.ticker,
-                        timeframe,
-                    }),
-                })
+                .map(PersistStreamKind::from)
                 .collect(),
         }
     }
@@ -204,6 +188,10 @@ pub enum StreamKind {
         ticker_info: TickerInfo,
         timeframe: Timeframe,
     },
+    RangeBarKline {
+        ticker_info: TickerInfo,
+        threshold_dbps: u32,
+    },
     DepthAndTrades {
         ticker_info: TickerInfo,
         #[serde(default = "default_depth_aggr")]
@@ -216,6 +204,7 @@ impl StreamKind {
     pub fn ticker_info(&self) -> TickerInfo {
         match self {
             StreamKind::Kline { ticker_info, .. }
+            | StreamKind::RangeBarKline { ticker_info, .. }
             | StreamKind::DepthAndTrades { ticker_info, .. } => *ticker_info,
         }
     }
@@ -240,6 +229,16 @@ impl StreamKind {
             _ => None,
         }
     }
+
+    pub fn as_range_bar_kline_stream(&self) -> Option<(TickerInfo, u32)> {
+        match self {
+            StreamKind::RangeBarKline {
+                ticker_info,
+                threshold_dbps,
+            } => Some((*ticker_info, *threshold_dbps)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -260,6 +259,7 @@ impl UniqueStreams {
     pub fn add(&mut self, stream: StreamKind) {
         let (exchange, ticker_info) = match stream {
             StreamKind::Kline { ticker_info, .. }
+            | StreamKind::RangeBarKline { ticker_info, .. }
             | StreamKind::DepthAndTrades { ticker_info, .. } => {
                 (ticker_info.exchange(), ticker_info)
             }
@@ -283,10 +283,12 @@ impl UniqueStreams {
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
         let kline_streams = self.kline_streams(Some(exchange));
+        let range_bar_kline_streams = self.range_bar_kline_streams(Some(exchange));
 
         self.specs[exchange] = Some(StreamSpecs {
             depth: depth_streams,
             kline: kline_streams,
+            range_bar_kline: range_bar_kline_streams,
         });
     }
 
@@ -321,6 +323,15 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_kline_stream())
     }
 
+    pub fn range_bar_kline_streams(
+        &self,
+        exchange_filter: Option<Exchange>,
+    ) -> Vec<(TickerInfo, u32)> {
+        self.streams(exchange_filter, |_, stream| {
+            stream.as_range_bar_kline_stream()
+        })
+    }
+
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
         self.specs
             .iter()
@@ -335,6 +346,7 @@ impl UniqueStreams {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum PersistStreamKind {
     Kline(PersistKline),
+    RangeBarKline(PersistRangeBarKline),
     DepthAndTrades(PersistDepth),
 }
 
@@ -353,6 +365,12 @@ pub struct PersistKline {
     pub timeframe: Timeframe,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PersistRangeBarKline {
+    pub ticker: Ticker,
+    pub threshold_dbps: u32,
+}
+
 impl From<StreamKind> for PersistStreamKind {
     fn from(s: StreamKind) -> Self {
         match s {
@@ -362,6 +380,13 @@ impl From<StreamKind> for PersistStreamKind {
             } => PersistStreamKind::Kline(PersistKline {
                 ticker: ticker_info.ticker,
                 timeframe,
+            }),
+            StreamKind::RangeBarKline {
+                ticker_info,
+                threshold_dbps,
+            } => PersistStreamKind::RangeBarKline(PersistRangeBarKline {
+                ticker: ticker_info.ticker,
+                threshold_dbps,
             }),
             StreamKind::DepthAndTrades {
                 ticker_info,
@@ -390,6 +415,12 @@ impl PersistStreamKind {
                     timeframe: k.timeframe,
                 })
                 .ok_or_else(|| format!("TickerInfo not found for {}", k.ticker)),
+            PersistStreamKind::RangeBarKline(r) => resolver(&r.ticker)
+                .map(|ti| StreamKind::RangeBarKline {
+                    ticker_info: ti,
+                    threshold_dbps: r.threshold_dbps,
+                })
+                .ok_or_else(|| format!("TickerInfo not found for {}", r.ticker)),
             PersistStreamKind::DepthAndTrades(d) => resolver(&d.ticker)
                 .map(|ti| StreamKind::DepthAndTrades {
                     ticker_info: ti,
@@ -420,6 +451,7 @@ fn default_push_freq() -> PushFrequency {
 pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
+    pub range_bar_kline: Vec<(TickerInfo, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -700,6 +732,15 @@ pub async fn fetch_klines(
     }
 }
 
+/// Fetch klines from ClickHouse range bar cache with a specific threshold.
+pub async fn fetch_klines_range_bar(
+    ticker_info: TickerInfo,
+    threshold_dbps: u32,
+    range: Option<(u64, u64)>,
+) -> Result<Vec<Kline>, AdapterError> {
+    clickhouse::fetch_klines(ticker_info, threshold_dbps, range).await
+}
+
 pub async fn fetch_open_interest(
     ticker: Ticker,
     timeframe: Timeframe,
@@ -715,6 +756,8 @@ pub async fn fetch_open_interest(
         Exchange::OkexLinear | Exchange::OkexInverse => {
             okex::fetch_historical_oi(ticker, range, timeframe).await
         }
-        _ => Err(AdapterError::InvalidRequest("Invalid exchange".to_string())),
+        _ => Err(AdapterError::InvalidRequest(
+            "Open interest not available for this exchange".to_string(),
+        )),
     }
 }

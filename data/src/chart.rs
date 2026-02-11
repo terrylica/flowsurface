@@ -69,11 +69,33 @@ pub enum Basis {
     ///
     /// The u16 value represents the number of trades per aggregation unit.
     Tick(aggr::TickCount),
+
+    /// Percentage range bar aggregation where each bar closes when price moves
+    /// by a fixed percentage from the bar's open.
+    ///
+    /// The u32 value is `threshold_decimal_bps` (e.g., 250 = 25 basis points = 0.25%).
+    /// Uses index-based rendering (like Tick) since bars have non-uniform time spacing.
+    RangeBar(u32),
 }
+
+pub const RANGE_BAR_THRESHOLDS: [u32; 4] = [250, 500, 750, 1000];
 
 impl Basis {
     pub fn is_time(&self) -> bool {
         matches!(self, Basis::Time(_))
+    }
+
+    pub fn is_range_bar(&self) -> bool {
+        matches!(self, Basis::RangeBar(_))
+    }
+
+    pub fn range_bar_options() -> [Basis; 4] {
+        [
+            Basis::RangeBar(250),
+            Basis::RangeBar(500),
+            Basis::RangeBar(750),
+            Basis::RangeBar(1000),
+        ]
     }
 
     pub fn default_heatmap_time(ticker_info: Option<exchange::TickerInfo>) -> Self {
@@ -97,6 +119,10 @@ impl std::fmt::Display for Basis {
         match self {
             Basis::Time(timeframe) => write!(f, "{timeframe}"),
             Basis::Tick(count) => write!(f, "{count}"),
+            Basis::RangeBar(dbps) => {
+                let bps = dbps / 10;
+                write!(f, "BPR{bps}")
+            }
         }
     }
 }

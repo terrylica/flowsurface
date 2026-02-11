@@ -38,6 +38,25 @@ use std::{borrow::Cow, collections::HashMap, vec};
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
 
+    std::panic::set_hook(Box::new(|info| {
+        let location = info.location().map_or_else(
+            || "unknown location".to_string(),
+            |loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()),
+        );
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        log::error!("PANIC at {location}: {msg}");
+        eprintln!("PANIC at {location}: {msg}");
+        // Also print a backtrace
+        let bt = std::backtrace::Backtrace::force_capture();
+        eprintln!("Backtrace:\n{bt}");
+    }));
+
     std::thread::spawn(data::cleanup_old_market_data);
 
     let _ = iced::daemon(Flowsurface::new, Flowsurface::update, Flowsurface::view)

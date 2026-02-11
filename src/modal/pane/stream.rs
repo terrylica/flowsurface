@@ -27,6 +27,7 @@ const TICK_MULTIPLIER_MAX: u16 = 2000;
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum ModifierKind {
     Candlestick(Basis),
+    RangeBarChart(Basis),
     Footprint(Basis, TickMultiplier),
     Heatmap(Basis, TickMultiplier),
     Orderbook(Basis, TickMultiplier),
@@ -122,6 +123,7 @@ pub enum SelectedTab {
         parsed_input: Option<data::aggr::TickCount>,
         is_input_valid: bool,
     },
+    RangeBar,
 }
 
 pub enum Action {
@@ -205,6 +207,9 @@ impl Modifier {
             ModifierKind::Orderbook(_, ticksize) => {
                 self.kind = ModifierKind::Orderbook(basis, ticksize);
             }
+            ModifierKind::RangeBarChart(_) => {
+                self.kind = ModifierKind::RangeBarChart(basis);
+            }
         }
     }
 
@@ -225,7 +230,7 @@ impl Modifier {
         match message {
             Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
             Message::BasisSelected(basis) => match basis {
-                Basis::Time(_) => Some(Action::BasisSelected(basis)),
+                Basis::Time(_) | Basis::RangeBar(_) => Some(Action::BasisSelected(basis)),
                 Basis::Tick(new_tc) => {
                     if let SelectedTab::TickCount {
                         raw_input_buf,
@@ -328,9 +333,9 @@ impl Modifier {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
-            ModifierKind::Candlestick(basis) | ModifierKind::Comparison(basis) => {
-                (Some(basis), None)
-            }
+            ModifierKind::Candlestick(basis)
+            | ModifierKind::RangeBarChart(basis)
+            | ModifierKind::Comparison(basis) => (Some(basis), None),
             ModifierKind::Footprint(basis, ticksize)
             | ModifierKind::Heatmap(basis, ticksize)
             | ModifierKind::Orderbook(basis, ticksize) => (Some(basis), Some(ticksize)),
@@ -357,21 +362,28 @@ impl Modifier {
 
                 let allows_tick_basis = match kind {
                     ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
-                    ModifierKind::Heatmap(_, _)
+                    ModifierKind::RangeBarChart(_)
+                    | ModifierKind::Heatmap(_, _)
                     | ModifierKind::Orderbook(_, _)
                     | ModifierKind::Comparison(_) => false,
                 };
 
+                let allows_range_bar_basis =
+                    matches!(kind, ModifierKind::Candlestick(_) | ModifierKind::RangeBarChart(_));
+
                 if selected_basis.is_some() {
-                    let (timeframe_tab_is_selected, tick_count_tab_is_selected) = match self.tab {
-                        SelectedTab::Timeframe => (true, false),
-                        SelectedTab::TickCount { .. } => (false, true),
+                    let (timeframe_tab_is_selected, tick_count_tab_is_selected, range_bar_tab_is_selected) = match self.tab {
+                        SelectedTab::Timeframe => (true, false, false),
+                        SelectedTab::TickCount { .. } => (false, true, false),
+                        SelectedTab::RangeBar => (false, false, true),
                     };
 
                     let tabs_row = {
                         if allows_tick_basis {
                             let is_timeframe_selected =
                                 matches!(selected_basis, Some(Basis::Time(_)));
+                            let is_range_bar_selected =
+                                matches!(selected_basis, Some(Basis::RangeBar(_)));
 
                             let tab_button =
                                 |content: iced::widget::text::Text<'a>,
@@ -400,7 +412,7 @@ impl Modifier {
                                     }
                                 };
 
-                            row![
+                            let mut tabs = row![
                                 tab_button(
                                     text("Timeframe"),
                                     if timeframe_tab_is_selected {
@@ -435,10 +447,25 @@ impl Modifier {
                                         Some(Message::TabSelected(tick_count_tab))
                                     },
                                     !tick_count_tab_is_selected,
-                                    !is_timeframe_selected,
+                                    !is_timeframe_selected && !is_range_bar_selected,
                                 ),
                             ]
-                            .spacing(4)
+                            .spacing(4);
+
+                            if allows_range_bar_basis {
+                                tabs = tabs.push(tab_button(
+                                    text("Range"),
+                                    if range_bar_tab_is_selected {
+                                        None
+                                    } else {
+                                        Some(Message::TabSelected(SelectedTab::RangeBar))
+                                    },
+                                    !range_bar_tab_is_selected,
+                                    is_range_bar_selected,
+                                ));
+                            }
+
+                            tabs
                         } else {
                             let text_content = match kind {
                                 ModifierKind::Comparison(_) => "Timeframe",
@@ -539,6 +566,23 @@ impl Modifier {
                         };
                         basis_selection_column = basis_selection_column.push(custom_input);
                         basis_selection_column = basis_selection_column.push(tick_count_grid);
+                    }
+                    SelectedTab::RangeBar => {
+                        let selected_threshold = match selected_basis {
+                            Some(Basis::RangeBar(t)) => Some(t),
+                            _ => None,
+                        };
+
+                        let options = data::chart::Basis::range_bar_options();
+                        let range_bar_grid = modifiers_grid(
+                            &options,
+                            selected_threshold.map(Basis::RangeBar),
+                            |b| Message::BasisSelected(b),
+                            &create_button,
+                            2,
+                        );
+                        basis_selection_column =
+                            basis_selection_column.push(range_bar_grid);
                     }
                 }
 
@@ -720,11 +764,13 @@ impl From<&ModifierKind> for SelectedTab {
     fn from(kind: &ModifierKind) -> Self {
         match kind {
             ModifierKind::Candlestick(basis)
+            | ModifierKind::RangeBarChart(basis)
             | ModifierKind::Footprint(basis, _)
             | ModifierKind::Heatmap(basis, _)
             | ModifierKind::Orderbook(basis, _)
             | ModifierKind::Comparison(basis) => match basis {
                 Basis::Time(_) => SelectedTab::Timeframe,
+                Basis::RangeBar(_) => SelectedTab::RangeBar,
                 Basis::Tick(tc) => SelectedTab::TickCount {
                     raw_input_buf: if tc.is_custom() {
                         NumericInput::from_tick_count(*tc)

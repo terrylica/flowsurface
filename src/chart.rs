@@ -408,7 +408,7 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
 
                         state.interval_to_x(cursor_time)
                     }
-                    Basis::Tick(_) => {
+                    Basis::Tick(_) | Basis::RangeBar(_) => {
                         let tick_index = cursor_chart_x / state.cell_width;
                         state.cell_width = new_width;
 
@@ -714,7 +714,7 @@ impl ViewState {
 
     fn interval_range(&self, region: &Rectangle) -> (u64, u64) {
         match self.basis {
-            Basis::Tick(_) => (
+            Basis::Tick(_) | Basis::RangeBar(_) => (
                 self.x_to_interval(region.x + region.width),
                 self.x_to_interval(region.x),
             ),
@@ -745,7 +745,7 @@ impl ViewState {
                 let diff = value as f64 - self.latest_x as f64;
                 (diff / interval * cell_width) as f32
             }
-            Basis::Tick(_) => -((value as f32) * self.cell_width),
+            Basis::Tick(_) | Basis::RangeBar(_) => -((value as f32) * self.cell_width),
         }
     }
 
@@ -762,7 +762,7 @@ impl ViewState {
                     self.latest_x.saturating_add(diff)
                 }
             }
-            Basis::Tick(_) => {
+            Basis::Tick(_) | Basis::RangeBar(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
@@ -770,15 +770,20 @@ impl ViewState {
     }
 
     fn price_to_y(&self, price: Price) -> f32 {
-        if self.tick_size.units == 0 {
+        let result = if self.tick_size.units == 0 {
             let one = Self::price_unit() as f32;
             let delta_units = (self.base_price_y.units - price.units) as f32;
-            return (delta_units / one) * self.cell_height;
-        }
+            (delta_units / one) * self.cell_height
+        } else {
+            let delta_units = self.base_price_y.units - price.units;
+            let ticks = (delta_units as f32) / (self.tick_size.units as f32);
+            ticks * self.cell_height
+        };
 
-        let delta_units = self.base_price_y.units - price.units;
-        let ticks = (delta_units as f32) / (self.tick_size.units as f32);
-        ticks * self.cell_height
+        if !result.is_finite() {
+            return 0.0;
+        }
+        result
     }
 
     fn y_to_price(&self, y: f32) -> Price {
@@ -818,9 +823,14 @@ impl ViewState {
             let snap_y = |y: f32| {
                 let ratio = y / bounds.height;
                 let price = highest + ratio * (lowest - highest);
+                let price_range = lowest - highest;
 
                 let rounded_price_p = if self.tick_size.units == 0 {
-                    Price::from_f32_lossy((price / tick_size).round() * tick_size)
+                    if tick_size > 0.0 {
+                        Price::from_f32_lossy((price / tick_size).round() * tick_size)
+                    } else {
+                        Price::from_f32_lossy(price)
+                    }
                 } else {
                     let p = Price::from_f32_lossy(price);
                     let tick_units = self.tick_size.units;
@@ -828,7 +838,11 @@ impl ViewState {
                     Price::from_units(tick_index * tick_units)
                 };
                 let rounded_price = rounded_price_p.to_f32_lossy();
-                let snap_ratio = (rounded_price - highest) / (lowest - highest);
+                let snap_ratio = if price_range.abs() > f32::EPSILON {
+                    (rounded_price - highest) / price_range
+                } else {
+                    0.5
+                };
                 snap_ratio * bounds.height
             };
 
@@ -866,6 +880,13 @@ impl ViewState {
 
                     let tick_diff = tick1.abs_diff(tick2);
                     format!("{} ticks", tick_diff)
+                }
+                Basis::RangeBar(_) => {
+                    let (idx1, _) = self.snap_x_to_index(p1.x, bounds, region);
+                    let (idx2, _) = self.snap_x_to_index(p2.x, bounds, region);
+
+                    let bar_diff = idx1.abs_diff(idx2);
+                    format!("{} bars", bar_diff)
                 }
             };
 
@@ -925,6 +946,13 @@ impl ViewState {
                     let tick_diff = tick1.abs_diff(tick2);
                     let datapoints = (tick_diff / u64::from(aggregation.0)).max(1);
                     format!("{} bars", datapoints)
+                }
+                Basis::RangeBar(_) => {
+                    let (idx1, _) = self.snap_x_to_index(p1.x, bounds, region);
+                    let (idx2, _) = self.snap_x_to_index(p2.x, bounds, region);
+
+                    let bar_diff = idx1.abs_diff(idx2).max(1);
+                    format!("{} bars", bar_diff)
                 }
             };
 
@@ -987,16 +1015,27 @@ impl ViewState {
         let crosshair_ratio = cursor_position.y / bounds.height;
         let crosshair_price = highest + crosshair_ratio * (lowest - highest);
 
-        let rounded_price = (crosshair_price / tick_size).round() * tick_size;
-        let snap_ratio = (rounded_price - highest) / (lowest - highest);
+        let price_range = lowest - highest;
+        let rounded_price = if tick_size > 0.0 {
+            (crosshair_price / tick_size).round() * tick_size
+        } else {
+            crosshair_price
+        };
+        let snap_ratio = if price_range.abs() > f32::EPSILON {
+            (rounded_price - highest) / price_range
+        } else {
+            0.5
+        };
 
-        frame.stroke(
-            &Path::line(
-                Point::new(0.0, snap_ratio * bounds.height),
-                Point::new(bounds.width, snap_ratio * bounds.height),
-            ),
-            dashed_line,
-        );
+        if snap_ratio.is_finite() {
+            frame.stroke(
+                &Path::line(
+                    Point::new(0.0, snap_ratio * bounds.height),
+                    Point::new(bounds.width, snap_ratio * bounds.height),
+                ),
+                dashed_line,
+            );
+        }
 
         // Vertical time/tick line
         match self.basis {
@@ -1015,23 +1054,57 @@ impl ViewState {
             }
             Basis::Tick(aggregation) => {
                 let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
-                let crosshair_pos = chart_x_min + (cursor_position.x / bounds.width) * region.width;
+                let x_range = chart_x_max - chart_x_min;
+                let crosshair_pos = chart_x_min + (cursor_position.x / bounds.width) * x_range;
 
                 let cell_index = (crosshair_pos / self.cell_width).round();
 
                 let snapped_crosshair = cell_index * self.cell_width;
-                let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
+                let snap_ratio = if x_range.abs() > f32::EPSILON {
+                    (snapped_crosshair - chart_x_min) / x_range
+                } else {
+                    0.5
+                };
 
                 let rounded_tick = (-cell_index as u64) * (u64::from(aggregation.0));
 
-                frame.stroke(
-                    &Path::line(
-                        Point::new(snap_ratio * bounds.width, 0.0),
-                        Point::new(snap_ratio * bounds.width, bounds.height),
-                    ),
-                    dashed_line,
-                );
+                if snap_ratio.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(snap_ratio * bounds.width, 0.0),
+                            Point::new(snap_ratio * bounds.width, bounds.height),
+                        ),
+                        dashed_line,
+                    );
+                }
                 (rounded_price, rounded_tick)
+            }
+            Basis::RangeBar(_) => {
+                let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
+                let x_range = chart_x_max - chart_x_min;
+                let crosshair_pos = chart_x_min + (cursor_position.x / bounds.width) * x_range;
+
+                let cell_index = (crosshair_pos / self.cell_width).round();
+
+                let snapped_crosshair = cell_index * self.cell_width;
+                let snap_ratio = if x_range.abs() > f32::EPSILON {
+                    (snapped_crosshair - chart_x_min) / x_range
+                } else {
+                    0.5
+                };
+
+                let rounded_index = -cell_index as u64;
+
+                if snap_ratio.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(snap_ratio * bounds.width, 0.0),
+                            Point::new(snap_ratio * bounds.width, bounds.height),
+                        ),
+                        dashed_line,
+                    );
+                }
+                (rounded_price, rounded_index)
             }
         }
     }
@@ -1122,6 +1195,23 @@ impl ViewState {
                 let rounded_tick = (-cell_index as u64) * u64::from(aggregation.0);
 
                 (rounded_tick, snap_ratio)
+            }
+            Basis::RangeBar(_) => {
+                let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
+                let chart_x = chart_x_min + x_ratio * (chart_x_max - chart_x_min);
+
+                let cell_index = (chart_x / self.cell_width).round();
+                let snapped_x = cell_index * self.cell_width;
+
+                let snap_ratio = if chart_x_max - chart_x_min > 0.0 {
+                    (snapped_x - chart_x_min) / (chart_x_max - chart_x_min)
+                } else {
+                    0.5
+                };
+
+                let rounded_index = -cell_index as u64;
+
+                (rounded_index, snap_ratio)
             }
         }
     }

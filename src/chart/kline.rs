@@ -95,6 +95,21 @@ impl Chart for KlineChart {
             Basis::Tick(_) => {
                 unimplemented!()
             }
+            Basis::RangeBar(_) => {
+                // Range bars use TickBased storage (Vec, oldest-first).
+                // Return the full timestamp range of loaded data.
+                if let PlotData::TickBased(tick_aggr) = &self.data_source {
+                    if tick_aggr.datapoints.is_empty() {
+                        return None;
+                    }
+                    // oldest is at index 0, newest at end
+                    let earliest_ts = tick_aggr.datapoints.first().unwrap().kline.time;
+                    let latest_ts = tick_aggr.datapoints.last().unwrap().kline.time;
+                    Some((earliest_ts, latest_ts))
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -117,7 +132,7 @@ impl Chart for KlineChart {
             KlineChartKind::Footprint { .. } => {
                 0.5 * (chart.bounds.width / chart.scaling) - (chart.cell_width / chart.scaling)
             }
-            KlineChartKind::Candles => {
+            KlineChartKind::Candles | KlineChartKind::RangeBar => {
                 0.5 * (chart.bounds.width / chart.scaling)
                     - (8.0 * chart.cell_width / chart.scaling)
             }
@@ -202,7 +217,7 @@ impl KlineChart {
                 let (scale_high, scale_low) = timeseries.price_scale({
                     match kind {
                         KlineChartKind::Footprint { .. } => 12,
-                        KlineChartKind::Candles => 60,
+                        KlineChartKind::Candles | KlineChartKind::RangeBar => 60,
                     }
                 });
 
@@ -216,11 +231,11 @@ impl KlineChart {
 
                 let cell_width = match kind {
                     KlineChartKind::Footprint { .. } => 80.0,
-                    KlineChartKind::Candles => 4.0,
+                    KlineChartKind::Candles | KlineChartKind::RangeBar => 4.0,
                 };
                 let cell_height = match kind {
                     KlineChartKind::Footprint { .. } => 800.0 / y_ticks,
-                    KlineChartKind::Candles => 200.0 / y_ticks,
+                    KlineChartKind::Candles | KlineChartKind::RangeBar => 200.0 / y_ticks,
                 };
 
                 let mut chart = ViewState::new(
@@ -243,7 +258,7 @@ impl KlineChart {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (chart.cell_width / chart.scaling)
                     }
-                    KlineChartKind::Candles => {
+                    KlineChartKind::Candles | KlineChartKind::RangeBar => {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (8.0 * chart.cell_width / chart.scaling)
                     }
@@ -276,11 +291,11 @@ impl KlineChart {
 
                 let cell_width = match kind {
                     KlineChartKind::Footprint { .. } => 80.0,
-                    KlineChartKind::Candles => 4.0,
+                    KlineChartKind::Candles | KlineChartKind::RangeBar => 4.0,
                 };
                 let cell_height = match kind {
                     KlineChartKind::Footprint { .. } => 90.0,
-                    KlineChartKind::Candles => 8.0,
+                    KlineChartKind::Candles | KlineChartKind::RangeBar => 8.0,
                 };
 
                 let mut chart = ViewState::new(
@@ -301,7 +316,7 @@ impl KlineChart {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (chart.cell_width / chart.scaling)
                     }
-                    KlineChartKind::Candles => {
+                    KlineChartKind::Candles | KlineChartKind::RangeBar => {
                         0.5 * (chart.bounds.width / chart.scaling)
                             - (8.0 * chart.cell_width / chart.scaling)
                     }
@@ -309,6 +324,55 @@ impl KlineChart {
                 chart.translation.x = x_translation;
 
                 let data_source = PlotData::TickBased(TickAggr::new(interval, step, &raw_trades));
+
+                let mut indicators = EnumMap::default();
+                for &i in enabled_indicators {
+                    let mut indi = indicator::kline::make_empty(i);
+                    indi.rebuild_from_source(&data_source);
+                    indicators[i] = Some(indi);
+                }
+
+                KlineChart {
+                    chart,
+                    data_source,
+                    raw_trades,
+                    indicators,
+                    fetching_trades: (false, None),
+                    request_handler: RequestHandler::new(),
+                    kind: kind.clone(),
+                    study_configurator: study::Configurator::new(),
+                    last_tick: Instant::now(),
+                }
+            }
+            Basis::RangeBar(_) => {
+                // Range bars use TickBased storage (Vec indexed by position) with
+                // index-based rendering, matching the Tick coordinate system.
+                // Data comes from ClickHouse as precomputed klines.
+                let step = PriceStep::from_f32(tick_size);
+
+                let tick_aggr = TickAggr::from_klines(step, klines_raw);
+
+                let cell_width = 4.0;
+                let cell_height = 8.0;
+
+                let mut chart = ViewState::new(
+                    basis,
+                    step,
+                    count_decimals(tick_size),
+                    ticker_info,
+                    ViewConfig {
+                        splits: layout.splits,
+                        autoscale: Some(Autoscale::FitToVisible),
+                    },
+                    cell_width,
+                    cell_height,
+                );
+
+                let x_translation = 0.5 * (chart.bounds.width / chart.scaling)
+                    - (8.0 * chart.cell_width / chart.scaling);
+                chart.translation.x = x_translation;
+
+                let data_source = PlotData::TickBased(tick_aggr);
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
@@ -350,7 +414,14 @@ impl KlineChart {
 
                 chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
             }
-            PlotData::TickBased(_) => {}
+            PlotData::TickBased(ref mut tick_aggr) => {
+                if self.chart.basis.is_range_bar() {
+                    // Range bar streaming update — append new kline at front (newest)
+                    tick_aggr.append_kline(kline);
+                    let chart = self.mut_state();
+                    chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
+                }
+            }
         }
     }
 
@@ -430,8 +501,32 @@ impl KlineChart {
                     }
                 }
             }
-            PlotData::TickBased(_) => {
-                // TODO: implement trade fetch
+            PlotData::TickBased(tick_aggr) => {
+                if self.chart.basis.is_range_bar() {
+                    if tick_aggr.datapoints.is_empty() {
+                        // Initial fetch — get latest 500 bars
+                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                        let range = FetchRange::Kline(0, now_ms);
+                        return request_fetch(&mut self.request_handler, range);
+                    }
+
+                    // Request older data when scrolling left.
+                    // TickAggr stores oldest-first; render iterates .rev().enumerate()
+                    // so index 0 = newest (rightmost), index N-1 = oldest (leftmost).
+                    let oldest_ts = tick_aggr.datapoints.first().unwrap().kline.time;
+
+                    let visible_region = self.chart.visible_region(self.chart.bounds.size());
+                    let (_earliest_idx, latest_idx) = self.chart.interval_range(&visible_region);
+                    let total_bars = tick_aggr.datapoints.len() as u64;
+
+                    // latest_idx is the left edge (oldest visible bar index).
+                    // Fetch when it reaches 80% of loaded bars for smooth scrolling.
+                    let fetch_threshold = total_bars.saturating_sub(total_bars / 5);
+                    if latest_idx >= fetch_threshold {
+                        let range = FetchRange::Kline(0, oldest_ts);
+                        return request_fetch(&mut self.request_handler, range);
+                    }
+                }
             }
         }
 
@@ -559,6 +654,11 @@ impl KlineChart {
                 let tick_aggr = TickAggr::new(tick_count, step, &self.raw_trades);
                 self.data_source = PlotData::TickBased(tick_aggr);
             }
+            Basis::RangeBar(_) => {
+                let step = self.chart.tick_size;
+                let tick_aggr = TickAggr::from_klines(step, &[]);
+                self.data_source = PlotData::TickBased(tick_aggr);
+            }
         }
 
         self.indicators
@@ -658,6 +758,23 @@ impl KlineChart {
         }
     }
 
+    /// Insert older range bar klines into the TickBased data source (historical scroll-back).
+    pub fn insert_range_bar_hist_klines(&mut self, req_id: uuid::Uuid, klines: &[Kline]) {
+        match &mut self.data_source {
+            PlotData::TickBased(tick_aggr) => {
+                if klines.is_empty() {
+                    self.request_handler
+                        .mark_failed(req_id, "No data received".to_string());
+                } else {
+                    tick_aggr.prepend_klines(klines);
+                    self.request_handler.mark_completed(req_id);
+                }
+                self.invalidate(None);
+            }
+            PlotData::TimeBased(_) => {}
+        }
+    }
+
     pub fn insert_open_interest(&mut self, req_id: Option<uuid::Uuid>, oi_data: &[OIData]) {
         if let Some(req_id) = req_id {
             if oi_data.is_empty() {
@@ -724,7 +841,7 @@ impl KlineChart {
                             0.5 * (chart.bounds.width / chart.scaling)
                                 - (chart.cell_width / chart.scaling)
                         }
-                        KlineChartKind::Candles => {
+                        KlineChartKind::Candles | KlineChartKind::RangeBar => {
                             0.5 * (chart.bounds.width / chart.scaling)
                                 - (8.0 * chart.cell_width / chart.scaling)
                         }
@@ -964,7 +1081,7 @@ impl canvas::Program<Message> for KlineChart {
                         },
                     );
                 }
-                KlineChartKind::Candles => {
+                KlineChartKind::Candles | KlineChartKind::RangeBar => {
                     let candle_width = chart.cell_width * 0.8;
 
                     render_data_source(

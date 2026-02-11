@@ -287,6 +287,47 @@ impl AxisLabelsX<'_> {
                     ));
                 }
             }
+            Basis::RangeBar(_) => {
+                let Some(interval_keys) = &self.interval_keys else {
+                    return None;
+                };
+
+                let (crosshair_pos, _, cell_index) = self.calc_crosshair_pos(cursor_pos, region);
+
+                let chart_x_min = region.x;
+                let chart_x_max = region.x + region.width;
+
+                let snapped_position = (crosshair_pos / self.cell_width).round() * self.cell_width;
+                let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
+                let snap_x = snap_ratio * bounds.width;
+
+                if snap_x.is_nan() || snap_x < 0.0 || snap_x > bounds.width {
+                    return None;
+                }
+
+                let last_index = interval_keys.len() - 1;
+                let offset = i64::from(-cell_index) as usize;
+                if offset > last_index {
+                    return None;
+                }
+
+                let array_index = last_index - offset;
+
+                if let Some(timestamp) = interval_keys.get(array_index) {
+                    // Range bars have real timestamps — use large interval for date+time format
+                    let text_content = self
+                        .timezone
+                        .format_crosshair_timestamp(*timestamp as i64, 60_000);
+
+                    return Some(AxisLabel::new_x(
+                        snap_x,
+                        text_content,
+                        bounds,
+                        true,
+                        palette,
+                    ));
+                }
+            }
             Basis::Time(timeframe) => {
                 let (_, crosshair_ratio, _) = self.calc_crosshair_pos(cursor_pos, region);
 
@@ -354,7 +395,7 @@ impl AxisLabelsX<'_> {
                     self.max.saturating_add(diff)
                 }
             }
-            Basis::Tick(_) => {
+            Basis::Tick(_) | Basis::RangeBar(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
@@ -454,9 +495,13 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
             let mut labels: Vec<AxisLabel> = Vec::with_capacity(label_count + 1); // +1 for crosshair
 
             match self.basis {
-                Basis::Tick(_) => {
+                Basis::Tick(_) | Basis::RangeBar(_) => {
                     if let Some(interval_keys) = &self.interval_keys {
                         let last_idx = interval_keys.len() - 1;
+                        let is_range_bar = matches!(self.basis, Basis::RangeBar(_));
+
+                        // First pass: collect visible label positions and timestamps
+                        let mut visible_labels: Vec<(f32, u64)> = Vec::new();
                         let mut last_x: Option<f32> = None;
                         for (i, timestamp) in interval_keys.iter().enumerate() {
                             let cell_index = -(last_idx as i32) + i as i32;
@@ -472,15 +517,37 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                             let snap_x = snap_ratio * bounds.width;
 
                             if last_x.is_none_or(|lx| (snap_x - lx).abs() >= target_spacing) {
-                                let label_text = self.timezone.format_timestamp(
-                                    (*timestamp / 1000) as i64,
-                                    exchange::Timeframe::MS100,
-                                );
-                                labels.push(AxisLabel::new_x(
-                                    snap_x, label_text, bounds, false, palette,
-                                ));
+                                visible_labels.push((snap_x, *timestamp));
                                 last_x = Some(snap_x);
                             }
+                        }
+
+                        // Compute label_span_ms from visible labels only
+                        let label_span_ms = if visible_labels.len() >= 2 {
+                            let first = visible_labels.first().unwrap().1;
+                            let last = visible_labels.last().unwrap().1;
+                            let span = last.saturating_sub(first);
+                            span / (visible_labels.len() as u64).max(1)
+                        } else {
+                            60_000
+                        };
+
+                        // Second pass: format and emit labels
+                        for (snap_x, timestamp) in visible_labels {
+                            let label_text = if is_range_bar {
+                                self.timezone.format_range_bar_label(
+                                    (timestamp / 1000) as i64,
+                                    label_span_ms,
+                                )
+                            } else {
+                                self.timezone.format_timestamp(
+                                    (timestamp / 1000) as i64,
+                                    exchange::Timeframe::MS100,
+                                )
+                            };
+                            labels.push(AxisLabel::new_x(
+                                snap_x, label_text, bounds, false, palette,
+                            ));
                         }
                     }
                 }
@@ -690,7 +757,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                             None
                         }
                     }
-                    Basis::Tick(_) => None,
+                    Basis::Tick(_) | Basis::RangeBar(_) => None,
                 };
 
                 let (price, color) = label.get_with_color(palette);

@@ -93,7 +93,7 @@ pub enum AnySeries<'a, Y> {
 impl<'a, Y> AnySeries<'a, Y> {
     pub fn for_basis(basis: Basis, data: &'a BTreeMap<u64, Y>) -> Self {
         match basis {
-            Basis::Tick(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
+            Basis::Tick(_) | Basis::RangeBar(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
             Basis::Time(_) => Self::Forward(data),
         }
     }
@@ -288,23 +288,29 @@ where
                         };
                         (rx, sr)
                     }
-                    Basis::Tick(_) => {
+                    Basis::Tick(_) | Basis::RangeBar(_) => {
                         let world_x = region.x + (cursor_position.x / bounds.width) * region.width;
                         let snapped_world_x = (world_x / ctx.cell_width).round() * ctx.cell_width;
 
-                        let sr = (snapped_world_x - region.x) / region.width;
+                        let sr = if region.width.abs() > f32::EPSILON {
+                            (snapped_world_x - region.x) / region.width
+                        } else {
+                            0.5
+                        };
                         let rx = ctx.x_to_interval(snapped_world_x);
                         (rx, sr)
                     }
                 };
 
-                frame.stroke(
-                    &Path::line(
-                        Point::new(snap_ratio * bounds.width, 0.0),
-                        Point::new(snap_ratio * bounds.width, bounds.height),
-                    ),
-                    dashed,
-                );
+                if snap_ratio.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(snap_ratio * bounds.width, 0.0),
+                            Point::new(snap_ratio * bounds.width, bounds.height),
+                        ),
+                        dashed,
+                    );
+                }
 
                 // tooltip text
                 if let Some(y) = self.series.at(rounded_x) {
@@ -318,20 +324,27 @@ where
                 // horizontal snap uses label extents
                 let highest = self.max_for_labels;
                 let lowest = self.min_for_labels;
-                let tick = guesstimate_ticks(highest - lowest);
+                let label_range = lowest - highest;
+                let tick = guesstimate_ticks(label_range);
 
                 let ratio = cursor_position.y / bounds.height;
-                let value = highest + ratio * (lowest - highest);
+                let value = highest + ratio * label_range;
                 let rounded = round_to_tick(value, tick);
-                let snap_ratio = (rounded - highest) / (lowest - highest);
+                let snap_ratio = if label_range.abs() > f32::EPSILON {
+                    (rounded - highest) / label_range
+                } else {
+                    0.5
+                };
 
-                frame.stroke(
-                    &Path::line(
-                        Point::new(0.0, snap_ratio * bounds.height),
-                        Point::new(bounds.width, snap_ratio * bounds.height),
-                    ),
-                    dashed,
-                );
+                if snap_ratio.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(0.0, snap_ratio * bounds.height),
+                            Point::new(bounds.width, snap_ratio * bounds.height),
+                        ),
+                        dashed,
+                    );
+                }
             }
         });
 
