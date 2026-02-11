@@ -30,6 +30,27 @@ pub struct ChMicrostructure {
     pub trade_intensity: f32,
 }
 
+/// Range bar symbols available in ClickHouse cache.
+/// Parsed from FLOWSURFACE_RANGE_BAR_SYMBOLS env var (comma-separated).
+/// Empty vec when unset = no filtering (show all tickers).
+static RANGE_BAR_SYMBOLS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    std::env::var("FLOWSURFACE_RANGE_BAR_SYMBOLS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(',').map(|sym| sym.trim().to_string()).collect())
+        .unwrap_or_default()
+});
+
+/// Returns the range bar symbol allowlist, or None if filtering is disabled.
+pub fn range_bar_symbol_filter() -> Option<&'static [String]> {
+    let symbols = &*RANGE_BAR_SYMBOLS;
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(symbols.as_slice())
+    }
+}
+
 static CLICKHOUSE_HOST: LazyLock<String> = LazyLock::new(|| {
     std::env::var("FLOWSURFACE_CH_HOST").unwrap_or_else(|_| "bigblack".to_string())
 });

@@ -61,6 +61,7 @@ impl MiniPanel {
         table: &'a TickersTable,
         selected_tickers: Option<&'a [TickerInfo]>,
         base_ticker: Option<TickerInfo>,
+        allowed_symbols: Option<&'a [String]>,
     ) -> Element<'a, Message> {
         iced::widget::responsive(move |bounds| {
             table.view_compact_with(
@@ -73,6 +74,7 @@ impl MiniPanel {
                 Message::Scrolled,
                 selected_tickers,
                 base_ticker,
+                allowed_symbols,
             )
         })
         .into()

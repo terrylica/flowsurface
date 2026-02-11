@@ -1562,8 +1562,22 @@ impl State {
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
+                // Filter tickers to range bar symbols when in range bar chart mode
+                let range_bar_filter = match &self.content {
+                    Content::Kline {
+                        kind: data::chart::KlineChartKind::RangeBar,
+                        ..
+                    } => exchange::adapter::clickhouse::range_bar_symbol_filter(),
+                    _ => None,
+                };
+
                 let mini_list = panel
-                    .view(tickers_table, selected_tickers, self.stream_pair())
+                    .view(
+                        tickers_table,
+                        selected_tickers,
+                        self.stream_pair(),
+                        range_bar_filter,
+                    )
                     .map(move |msg| {
                         Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
                     });

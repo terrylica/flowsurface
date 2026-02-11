@@ -346,6 +346,7 @@ impl TickersTable {
         on_scroll: FScroll,
         selected_tickers: Option<&'a [TickerInfo]>,
         base_ticker: Option<TickerInfo>,
+        allowed_symbols: Option<&'a [String]>,
     ) -> Element<'a, M>
     where
         M: 'a + Clone,
@@ -364,7 +365,8 @@ impl TickersTable {
             selected_set.insert(bt.ticker);
         }
 
-        let (fav_rows, rest_rows) = self.filtered_rows_compact(&injected_q, &selected_set);
+        let (fav_rows, rest_rows) =
+            self.filtered_rows_compact(&injected_q, &selected_set, allowed_symbols);
 
         let base_ticker_id = base_ticker.map(|bt| bt.ticker);
         let selected_list: Vec<TickerInfo> = selected_tickers
@@ -1023,12 +1025,19 @@ impl TickersTable {
         &'a self,
         search_upper: &str,
         excluded: Option<&FxHashSet<Ticker>>,
+        allowed_symbols: Option<&[String]>,
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
         let matches_market =
             |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
         let matches_exchange = |row: &TickerRowData| {
             self.selected_exchanges
                 .contains(&ExchangeInclusive::of(row.exchange))
+        };
+        let matches_allowlist = |row: &TickerRowData| {
+            allowed_symbols.map_or(true, |symbols| {
+                let sym = row.ticker.to_string();
+                symbols.iter().any(|s| s == &sym)
+            })
         };
 
         // Collect fav_rows with search ranks
@@ -1040,6 +1049,7 @@ impl TickersTable {
                         && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
                         && matches_market(row)
                         && matches_exchange(row)
+                        && matches_allowlist(row)
                 })
                 .filter_map(|row| calc_search_rank(row, search_upper).map(|rank| (row, rank)))
                 .collect()
@@ -1076,6 +1086,7 @@ impl TickersTable {
                     && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
                     && matches_market(row)
                     && matches_exchange(row)
+                    && matches_allowlist(row)
             })
             .filter_map(|row| calc_search_rank(row, search_upper).map(|rank| (row, rank)))
             .collect();
@@ -1104,15 +1115,16 @@ impl TickersTable {
     }
 
     fn filtered_rows_main(&self) -> (Vec<&TickerRowData>, Vec<&TickerRowData>) {
-        self.filtered_rows(&self.search_query, None)
+        self.filtered_rows(&self.search_query, None, None)
     }
 
     fn filtered_rows_compact<'a>(
         &'a self,
         injected_q: &str,
         excluded: &FxHashSet<Ticker>,
+        allowed_symbols: Option<&[String]>,
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
-        self.filtered_rows(injected_q, Some(excluded))
+        self.filtered_rows(injected_q, Some(excluded), allowed_symbols)
     }
 }
 
