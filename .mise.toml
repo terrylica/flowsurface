@@ -1,0 +1,20 @@
+# Flowsurface — fork-specific mise configuration
+# Upstream: https://github.com/flowsurface-rs/flowsurface
+# Fork: https://github.com/terrylica/flowsurface
+min_version = "2024.9.5"
+
+[tools]
+rust = "1.93.0"
+
+[env]
+FLOWSURFACE_CH_HOST = "localhost"
+FLOWSURFACE_CH_PORT = "18123"
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+
+[task_config]
+includes = [
+  ".mise/tasks/dev.toml",
+  ".mise/tasks/release.toml",
+  ".mise/tasks/upstream.toml",
+  ".mise/tasks/infra.toml",
+]

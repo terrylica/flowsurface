@@ -1,0 +1,48 @@
+# Release and packaging tasks for flowsurface
+
+["release:macos"]
+description = "Build universal macOS binary (x86_64 + aarch64 fat binary via lipo)"
+run = "bash scripts/build-macos.sh universal"
+
+["release:macos-arm64"]
+description = "Build macOS aarch64-only release binary"
+run = "bash scripts/build-macos.sh aarch64"
+
+["release:macos-x86"]
+description = "Build macOS x86_64-only release binary"
+run = "bash scripts/build-macos.sh x86_64"
+
+["release:app-bundle"]
+description = "Build release binary, update .app bundle, register icon with LaunchServices"
+depends = ["release:macos-arm64"]
+run = """
+cp target/aarch64-apple-darwin/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+cat > Flowsurface.app/Contents/MacOS/flowsurface << 'LAUNCHER'
+#!/bin/bash
+export FLOWSURFACE_CH_HOST="${FLOWSURFACE_CH_HOST:-localhost}"
+export FLOWSURFACE_CH_PORT="${FLOWSURFACE_CH_PORT:-18123}"
+# Auto-start SSH tunnel to bigblack if not running
+if ! lsof -ti:18123 >/dev/null 2>&1; then
+  ssh -fNL 18123:localhost:8123 bigblack 2>/dev/null
+fi
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/flowsurface.bin" "$@"
+LAUNCHER
+chmod +x Flowsurface.app/Contents/MacOS/flowsurface
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f Flowsurface.app
+echo "Flowsurface.app bundle updated. Launch with: open Flowsurface.app"
+"""
+
+["icon:generate"]
+description = "Generate 1024x1024 app icon PNG using Pillow"
+run = "python3 assets/generate_icon.py"
+
+["icon:convert"]
+description = "Convert icon PNG to macOS .icns and update .app bundle"
+depends = ["icon:generate"]
+run = """
+~/fork-tools/png-to-icns/png_to_icns.sh -i assets/icon_1024.png
+mv icon.icns assets/flowsurface.icns
+cp assets/flowsurface.icns Flowsurface.app/Contents/Resources/flowsurface.icns
+echo "Icon updated: assets/flowsurface.icns"
+"""

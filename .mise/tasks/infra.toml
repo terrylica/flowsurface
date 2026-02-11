@@ -1,0 +1,109 @@
+# Infrastructure tasks for flowsurface
+# SSH tunnel to bigblack ClickHouse for range bar data
+
+["tunnel:start"]
+description = "Start SSH tunnel to bigblack ClickHouse (localhost:18123 → bigblack:8123)"
+run = """
+if lsof -ti:18123 >/dev/null 2>&1; then
+  echo "Tunnel already running on port 18123"
+  exit 0
+fi
+echo "Starting SSH tunnel to bigblack..."
+ssh -fNL 18123:localhost:8123 bigblack
+echo "SSH tunnel started: localhost:18123 → bigblack:8123"
+"""
+
+["tunnel:stop"]
+description = "Stop SSH tunnel to bigblack ClickHouse"
+run = """
+PID=$(lsof -ti:18123 2>/dev/null)
+if [ -n "$PID" ]; then
+  kill $PID
+  echo "Tunnel stopped (pid $PID)"
+else
+  echo "No tunnel running on port 18123"
+fi
+"""
+
+["tunnel:status"]
+description = "Check SSH tunnel status and verify ClickHouse connectivity"
+run = """
+PID=$(lsof -ti:18123 2>/dev/null)
+if [ -n "$PID" ]; then
+  echo "Tunnel UP (pid $PID, port 18123)"
+  RESULT=$(curl -sf --connect-timeout 2 "http://localhost:18123" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1)
+  if [ "$RESULT" = "ok" ]; then
+    echo "ClickHouse reachable via tunnel"
+    curl -s "http://localhost:18123" --data "SELECT threshold_decimal_bps, count(*) as bars FROM rangebar_cache.range_bars WHERE symbol = 'BTCUSDT' GROUP BY threshold_decimal_bps ORDER BY threshold_decimal_bps FORMAT TabSeparated"
+  else
+    echo "WARNING: Tunnel exists but ClickHouse not responding"
+  fi
+else
+  echo "Tunnel DOWN (port 18123 not open)"
+fi
+"""
+
+[preflight]
+description = "Establish tunnel + validate ClickHouse connectivity and data before app launch"
+depends = ["tunnel:start"]
+run = """
+set -e
+
+CH="http://localhost:18123"
+MAX_RETRIES=3
+RETRY_DELAY=2
+
+echo "=== Flowsurface Preflight ==="
+
+# 1. Verify ClickHouse responds
+echo ""
+echo "[1/3] Checking ClickHouse connectivity..."
+for i in $(seq 1 $MAX_RETRIES); do
+  RESULT=$(curl -sf --connect-timeout 3 "$CH" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1) && break
+  echo "  Attempt $i/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+  sleep $RETRY_DELAY
+done
+if [ "$RESULT" != "ok" ]; then
+  echo "FATAL: ClickHouse not responding on port 18123 after $MAX_RETRIES attempts"
+  echo "  Is bigblack online? Check: ssh bigblack 'clickhouse client -q \"SELECT 1\"'"
+  exit 1
+fi
+echo "  ClickHouse responding"
+
+# 2. Verify rangebar_cache database and table exist
+echo ""
+echo "[2/3] Checking rangebar_cache schema..."
+TABLE_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='rangebar_cache' AND name='range_bars' FORMAT TabSeparated" 2>&1)
+if [ "$TABLE_EXISTS" != "1" ]; then
+  echo "FATAL: rangebar_cache.range_bars table not found"
+  echo "  Run populate_cache_resumable() from rangebar-py first"
+  exit 1
+fi
+echo "  rangebar_cache.range_bars exists"
+
+# 3. Verify data is present for at least one symbol/threshold
+echo ""
+echo "[3/3] Checking range bar data..."
+DATA=$(curl -sf "$CH" --data "
+  SELECT threshold_decimal_bps, count(*) as bars
+  FROM rangebar_cache.range_bars
+  WHERE symbol = 'BTCUSDT'
+  GROUP BY threshold_decimal_bps
+  ORDER BY threshold_decimal_bps
+  FORMAT TabSeparated
+" 2>&1)
+
+if [ -z "$DATA" ]; then
+  echo "FATAL: No range bar data found for BTCUSDT"
+  echo "  Populate cache on bigblack first"
+  exit 1
+fi
+
+echo "  BTCUSDT thresholds available:"
+echo "$DATA" | while IFS=$'\t' read -r threshold bars; do
+  printf "    BPR%-4s  %s bars\n" "$((threshold / 10))" "$bars"
+done
+
+echo ""
+echo "=== Preflight PASSED ==="
+"""

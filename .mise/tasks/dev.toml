@@ -1,0 +1,39 @@
+# Development tasks for flowsurface
+
+[build]
+description = "Build debug binary"
+run = "cargo build"
+
+["build:release"]
+description = "Build optimized release binary for current platform"
+run = "cargo build --release"
+
+[run]
+description = "Build and run flowsurface with ClickHouse range bar support"
+depends = ["preflight"]
+run = "cargo run"
+
+["run:app"]
+description = "Launch Flowsurface.app bundle (pre-built binary, dock icon)"
+depends = ["preflight"]
+run = "open Flowsurface.app"
+
+[check]
+description = "Run cargo check (fast type-check without codegen)"
+run = "cargo check --workspace"
+
+[clippy]
+description = "Run clippy lints across all workspace crates"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[fmt]
+description = "Format all Rust code"
+run = "cargo fmt --all"
+
+["fmt:check"]
+description = "Check Rust formatting without modifying files"
+run = "cargo fmt --all -- --check"
+
+[lint]
+description = "Run format check + clippy (matches CI)"
+depends = ["fmt:check", "clippy"]
