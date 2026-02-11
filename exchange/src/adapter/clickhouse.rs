@@ -19,7 +19,8 @@ use iced_futures::{
 };
 use serde::Deserialize;
 
-use std::{sync::LazyLock, time::Duration};
+use std::sync::{LazyLock, OnceLock};
+use std::time::Duration;
 
 /// Microstructure fields from ClickHouse range bar cache.
 /// Kept in exchange crate to avoid circular dependency with data crate.
@@ -30,25 +31,42 @@ pub struct ChMicrostructure {
     pub trade_intensity: f32,
 }
 
-/// Range bar symbols available in ClickHouse cache.
-/// Parsed from FLOWSURFACE_RANGE_BAR_SYMBOLS env var (comma-separated).
-/// Empty vec when unset = no filtering (show all tickers).
-static RANGE_BAR_SYMBOLS: LazyLock<Vec<String>> = LazyLock::new(|| {
-    std::env::var("FLOWSURFACE_RANGE_BAR_SYMBOLS")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.split(',').map(|sym| sym.trim().to_string()).collect())
-        .unwrap_or_default()
-});
+/// Range bar symbols fetched from ClickHouse at startup.
+/// Populated by `init_range_bar_symbols()`, accessed synchronously from view code.
+static RANGE_BAR_SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Returns the range bar symbol allowlist, or None if filtering is disabled.
-pub fn range_bar_symbol_filter() -> Option<&'static [String]> {
-    let symbols = &*RANGE_BAR_SYMBOLS;
-    if symbols.is_empty() {
-        None
-    } else {
-        Some(symbols.as_slice())
+/// Fetch available range bar symbols from ClickHouse and cache them.
+/// Called once at startup; gracefully returns empty vec on failure.
+pub async fn init_range_bar_symbols() -> Vec<String> {
+    let sql = "SELECT DISTINCT symbol FROM rangebar_cache.range_bars ORDER BY symbol FORMAT TabSeparated";
+    match query(sql).await {
+        Ok(body) => {
+            let symbols: Vec<String> = body
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect();
+            let count = symbols.len();
+            if RANGE_BAR_SYMBOLS.set(symbols).is_err() {
+                log::warn!("range bar symbol cache already initialized");
+            } else {
+                log::info!("cached {count} range bar symbols from ClickHouse");
+            }
+        }
+        Err(e) => {
+            log::warn!("failed to fetch range bar symbols from ClickHouse: {e}");
+        }
     }
+    RANGE_BAR_SYMBOLS.get().cloned().unwrap_or_default()
+}
+
+/// Returns the range bar symbol allowlist, or None if not yet loaded or empty.
+pub fn range_bar_symbol_filter() -> Option<&'static [String]> {
+    RANGE_BAR_SYMBOLS
+        .get()
+        .filter(|v| !v.is_empty())
+        .map(|v| v.as_slice())
 }
 
 static CLICKHOUSE_HOST: LazyLock<String> = LazyLock::new(|| {

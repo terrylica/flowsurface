@@ -170,12 +170,19 @@ impl Flowsurface {
         );
         let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
+        // Fetch available range bar symbols from ClickHouse (non-blocking)
+        let init_range_bar_symbols = Task::perform(
+            exchange::adapter::clickhouse::init_range_bar_symbols(),
+            |_| Message::Tick(std::time::Instant::now()),
+        );
+
         (
             state,
             open_main_window
                 .discard()
                 .chain(load_layout)
-                .chain(launch_sidebar.map(Message::Sidebar)),
+                .chain(launch_sidebar.map(Message::Sidebar))
+                .chain(init_range_bar_symbols),
         )
     }
 

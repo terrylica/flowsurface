@@ -108,8 +108,8 @@ echo ""
 echo "=== Preflight PASSED ==="
 """
 
-["symbols:sync"]
-description = "Query ClickHouse for available range bar symbols and validate .mise.toml"
+["symbols:list"]
+description = "List range bar symbols available in ClickHouse (SSoT for ticker filtering)"
 depends = ["tunnel:start"]
 run = """
 CH="http://localhost:18123"
@@ -128,29 +128,6 @@ if [ -z "$SYMBOLS" ]; then
 fi
 
 COUNT=$(echo "$SYMBOLS" | wc -l | tr -d ' ')
-echo "Found $COUNT symbols in ClickHouse:"
+echo "Found $COUNT symbols in ClickHouse (app queries this at startup):"
 echo "$SYMBOLS" | while read -r sym; do printf "  %s\\n" "$sym"; done
-
-# Generate env var line for .mise.toml
-CSV=$(echo "$SYMBOLS" | tr '\\n' ',' | sed 's/,$//')
-echo ""
-echo "=== Copy to .mise.toml [env] ==="
-echo "FLOWSURFACE_RANGE_BAR_SYMBOLS = \\"$CSV\\""
-
-# Validate current .mise.toml if env var is set
-if [ -n "$FLOWSURFACE_RANGE_BAR_SYMBOLS" ]; then
-  echo ""
-  echo "=== Validation ==="
-  CURRENT=$(echo "$FLOWSURFACE_RANGE_BAR_SYMBOLS" | tr ',' '\\n' | sort)
-  ACTUAL=$(echo "$SYMBOLS" | sort)
-  if [ "$CURRENT" = "$ACTUAL" ]; then
-    echo "OK: .mise.toml matches ClickHouse ($COUNT symbols)"
-  else
-    echo "MISMATCH: .mise.toml differs from ClickHouse"
-    echo "  In .mise.toml but not ClickHouse:"
-    comm -23 <(echo "$CURRENT") <(echo "$ACTUAL") | sed 's/^/    /'
-    echo "  In ClickHouse but not .mise.toml:"
-    comm -13 <(echo "$CURRENT") <(echo "$ACTUAL") | sed 's/^/    /'
-  fi
-fi
 """

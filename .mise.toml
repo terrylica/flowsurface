@@ -10,10 +10,6 @@ rust = "1.93.0"
 FLOWSURFACE_CH_HOST = "localhost"
 FLOWSURFACE_CH_PORT = "18123"
 MACOSX_DEPLOYMENT_TARGET = "11.0"
-# Range bar symbols available in ClickHouse cache (from rangebar-py symbols.toml)
-# Comment out to disable ticker filtering in range bar chart mode
-# Sync with: mise run symbols:sync
-FLOWSURFACE_RANGE_BAR_SYMBOLS = "BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,SOLUSDT,DOTUSDT,SHIBUSDT,AVAXUSDT,LTCUSDT,LINKUSDT,ATOMUSDT,UNIUSDT,ETCUSDT,XLMUSDT,NEARUSDT,AAVEUSDT,BCHUSDT,FILUSDT,SUIUSDT,WIFUSDT,WLDUSDT"
 
 [task_config]
 includes = [

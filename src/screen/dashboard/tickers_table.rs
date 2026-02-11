@@ -1034,7 +1034,7 @@ impl TickersTable {
                 .contains(&ExchangeInclusive::of(row.exchange))
         };
         let matches_allowlist = |row: &TickerRowData| {
-            allowed_symbols.map_or(true, |symbols| {
+            allowed_symbols.is_none_or(|symbols| {
                 let sym = row.ticker.to_string();
                 symbols.iter().any(|s| s == &sym)
             })
