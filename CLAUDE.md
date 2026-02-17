@@ -60,6 +60,16 @@ ClickHouse rangebar_cache.range_bars (HTTP on port 18123)
           → Index-based rendering (newest bars rightmost)
 ```
 
+**Three-layer data pipeline** (rangebar-py owns all layers, flowsurface polls ClickHouse):
+
+| Layer         | Source                  | Latency | Status  | Tracking                                                             |
+| ------------- | ----------------------- | ------- | ------- | -------------------------------------------------------------------- |
+| L1 Historical | Binance Vision archives | Batch   | Working | —                                                                    |
+| L2 Recent     | REST API backfill       | Minutes | Planned | [rangebar-py#92](https://github.com/terrylica/rangebar-py/issues/92) |
+| L3 Live       | WebSocket `@aggTrade`   | ~5s     | Planned | [rangebar-py#91](https://github.com/terrylica/rangebar-py/issues/91) |
+
+flowsurface polls `connect_kline_stream()` every 5s. All layers merge into `rangebar_cache.range_bars`. See also [rangebar-py#93](https://github.com/terrylica/rangebar-py/issues/93) for crash recovery.
+
 **Key types**:
 
 | Type                       | Location                             | Purpose                                    |

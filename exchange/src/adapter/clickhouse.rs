@@ -298,7 +298,9 @@ pub fn connect_kline_stream(
         };
 
         loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+            // 5s polling for near-real-time range bar updates (from 60s)
+            tokio::time::sleep(Duration::from_secs(5)).await;
 
             let sql = format!(
                 "SELECT timestamp_ms, open, high, low, close, buy_volume, sell_volume, \

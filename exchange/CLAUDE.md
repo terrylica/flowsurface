@@ -61,7 +61,7 @@ FORMAT JSONEachRow
 
 ### Streaming (Polling)
 
-`connect_kline_stream()` polls ClickHouse every 60 seconds for new bars with `timestamp_ms > last_ts`. Uses ASC ordering for incremental updates.
+`connect_kline_stream()` polls ClickHouse every 5 seconds for new bars with `timestamp_ms > last_ts`. Uses ASC ordering for incremental updates. The 5s interval is designed for near-real-time range bar updates once rangebar-py's streaming sidecar (terrylica/rangebar-py#91) writes live bars to ClickHouse.
 
 ### Key Types
 
