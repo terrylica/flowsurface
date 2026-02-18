@@ -1,3 +1,5 @@
+// FILE-SIZE-OK: upstream file, splitting out of scope for this fork
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
 use super::{
     Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, TEXT_SIZE, ViewState,
     indicator, request_fetch, scale::linear::PriceInfoLabel,
@@ -350,7 +352,8 @@ impl KlineChart {
                 // Data comes from ClickHouse as precomputed klines.
                 let step = PriceStep::from_f32(tick_size);
 
-                let tick_aggr = TickAggr::from_klines(step, klines_raw);
+                let mut tick_aggr = TickAggr::from_klines(step, klines_raw);
+                tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
 
                 // Scale cell width with threshold: larger thresholds have fewer bars
                 // covering the same time span, so each bar deserves more horizontal space.
@@ -441,13 +444,14 @@ impl KlineChart {
             })
             .collect();
 
-        let tick_aggr = TickAggr::from_klines_with_microstructure(step, klines_raw, &micro);
+        let mut tick_aggr = TickAggr::from_klines_with_microstructure(step, klines_raw, &micro);
 
         // Scale cell width with threshold (see non-microstructure constructor)
         let threshold_dbps = match basis {
             Basis::RangeBar(t) => t,
             _ => 250,
         };
+        tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
         let cell_width = 4.0_f32 * (threshold_dbps as f32 / 250.0);
         let cell_height = 8.0;
 
@@ -510,8 +514,9 @@ impl KlineChart {
             }
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_range_bar() {
-                    // Range bar streaming update — append new kline at front (newest)
-                    tick_aggr.append_kline(kline);
+                    // Range bar streaming update — reconcile ClickHouse completed bar
+                    // with locally-constructed forming bar. ClickHouse is authoritative.
+                    tick_aggr.replace_or_append_kline(kline);
                     let chart = self.mut_state();
                     chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
                 }
@@ -748,9 +753,10 @@ impl KlineChart {
                 let tick_aggr = TickAggr::new(tick_count, step, &self.raw_trades);
                 self.data_source = PlotData::TickBased(tick_aggr);
             }
-            Basis::RangeBar(_) => {
+            Basis::RangeBar(threshold_dbps) => {
                 let step = self.chart.tick_size;
-                let tick_aggr = TickAggr::from_klines(step, &[]);
+                let mut tick_aggr = TickAggr::from_klines(step, &[]);
+                tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
                 self.data_source = PlotData::TickBased(tick_aggr);
             }
         }

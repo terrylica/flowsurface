@@ -119,6 +119,13 @@ pub struct RangeBarMicrostructure {
 }
 ```
 
+**Bar completion dispatch**: `TickAggr.range_bar_threshold_dbps: Option<u32>` controls `insert_trades()` behavior:
+
+- `None` → tick-count based: `is_full(tick_count)` (Tick basis)
+- `Some(dbps)` → price-range based: `is_full_range_bar(dbps)` uses integer `Price.units` math (RangeBar basis)
+
+**ClickHouse reconciliation**: `replace_or_append_kline()` replaces the locally-built forming bar with the authoritative ClickHouse completed bar when timestamps match.
+
 **Extraction methods** on `TickAggr`:
 
 | Method                   | Returns                    | Used By        |

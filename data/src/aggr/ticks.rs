@@ -1,3 +1,4 @@
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
 use exchange::util::{Price, PriceStep};
@@ -83,6 +84,19 @@ impl TickAccumulation {
         self.tick_count >= interval.0 as usize
     }
 
+    /// Range bar completion: `|close - open| / open >= threshold_dbps / 1_000_000`
+    /// Uses integer Price units (i64, scale 10^8) for precision.
+    pub fn is_full_range_bar(&self, threshold_dbps: u32) -> bool {
+        let open = self.kline.open.units;
+        if open == 0 {
+            return false;
+        }
+        let diff = (self.kline.close.units - open).unsigned_abs();
+        // deviation = diff / open, threshold = dbps / 1_000_000
+        // => diff * 1_000_000 >= dbps * open
+        diff as u128 * 1_000_000 >= threshold_dbps as u128 * open.unsigned_abs() as u128
+    }
+
     pub fn poc_price(&self) -> Option<Price> {
         self.footprint.poc_price()
     }
@@ -100,6 +114,9 @@ pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,
     pub tick_size: PriceStep,
+    /// When set, `insert_trades()` uses price-based range bar completion
+    /// instead of tick-count. Value is threshold in dbps.
+    pub range_bar_threshold_dbps: Option<u32>,
 }
 
 impl TickAggr {
@@ -108,6 +125,7 @@ impl TickAggr {
             datapoints: Vec::new(),
             interval,
             tick_size,
+            range_bar_threshold_dbps: None,
         };
 
         if !raw_trades.is_empty() {
@@ -149,7 +167,11 @@ impl TickAggr {
             } else {
                 let last_idx = self.datapoints.len() - 1;
 
-                if self.datapoints[last_idx].is_full(self.interval) {
+                let bar_complete = match self.range_bar_threshold_dbps {
+                    Some(dbps) => self.datapoints[last_idx].is_full_range_bar(dbps),
+                    None => self.datapoints[last_idx].is_full(self.interval),
+                };
+                if bar_complete {
                     self.datapoints
                         .push(TickAccumulation::new(trade, self.tick_size));
                     updated_indices.push(self.datapoints.len() - 1);
@@ -231,6 +253,7 @@ impl TickAggr {
             datapoints,
             interval: aggr::TickCount(1),
             tick_size,
+            range_bar_threshold_dbps: None,
         }
     }
 
@@ -256,6 +279,7 @@ impl TickAggr {
             datapoints,
             interval: aggr::TickCount(1),
             tick_size,
+            range_bar_threshold_dbps: None,
         }
     }
 
@@ -335,6 +359,34 @@ impl TickAggr {
     pub fn append_kline(&mut self, kline: &Kline) {
         let newest_ts = self.datapoints.last().map(|dp| dp.kline.time);
         if newest_ts.is_none_or(|ts| kline.time > ts) {
+            self.datapoints.push(TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: None,
+            });
+        }
+    }
+
+    /// Replace the last datapoint if timestamps match, otherwise append.
+    /// Used for reconciling ClickHouse completed bars with locally-built forming bars.
+    /// - Same timestamp → replace OHLCV with authoritative ClickHouse data
+    /// - Newer timestamp → append as new completed bar
+    /// - Older timestamp → ignore (stale)
+    pub fn replace_or_append_kline(&mut self, kline: &Kline) {
+        if let Some(last) = self.datapoints.last_mut() {
+            if kline.time == last.kline.time {
+                last.kline = *kline;
+                last.microstructure = None;
+            } else if kline.time > last.kline.time {
+                self.datapoints.push(TickAccumulation {
+                    tick_count: 1,
+                    kline: *kline,
+                    footprint: KlineTrades::new(),
+                    microstructure: None,
+                });
+            }
+        } else {
             self.datapoints.push(TickAccumulation {
                 tick_count: 1,
                 kline: *kline,

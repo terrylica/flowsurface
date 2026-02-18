@@ -49,15 +49,19 @@ flowsurface/                 Main crate — GUI, chart rendering, event handling
 
 ## Range Bar Integration (Fork-Specific)
 
-Data flows from rangebar-py's ClickHouse cache to the chart:
+Range bar panes use **dual-stream architecture**: historical/completed bars from ClickHouse + live trades from Binance WebSocket.
 
 ```
-ClickHouse rangebar_cache.range_bars (HTTP on port 18123)
-  → exchange::adapter::clickhouse::fetch_klines()
-    → ChKline (serde deserialization)
-      → exchange::Kline (native type)
-        → TickAggr (Vec<TickAccumulation>, oldest-first)
-          → Index-based rendering (newest bars rightmost)
+Stream 1: ClickHouse (completed bars, 5s poll)
+  → fetch_klines() → ChKline → Kline → TickAggr
+  → update_latest_kline() → replace_or_append_kline()
+
+Stream 2: Binance @aggTrade WebSocket (live trades)
+  → DepthAndTrades → insert_trades_buffer()
+  → TickAggr::insert_trades() → is_full_range_bar(threshold_dbps)
+  → Forming bar oscillates until threshold breach → bar completes
+
+Reconciliation: ClickHouse bar replaces locally-built bar (authoritative)
 ```
 
 **Three-layer data pipeline** (rangebar-py owns all layers, flowsurface polls ClickHouse):

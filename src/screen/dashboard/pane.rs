@@ -1,3 +1,4 @@
+// FILE-SIZE-OK: upstream file, splitting out of scope for this fork
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
     modal::{
@@ -270,6 +271,7 @@ impl State {
 
                     (content, streams)
                 }
+                // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
                 ContentKind::RangeBarChart => {
                     let content = Content::new_kline(
                         kind,
@@ -282,10 +284,13 @@ impl State {
                         Some(Basis::RangeBar(t)) => t,
                         _ => 250,
                     };
-                    let streams = vec![StreamKind::RangeBarKline {
-                        ticker_info: derived_plan.ticker_info,
-                        threshold_dbps: threshold,
-                    }];
+                    let streams = vec![
+                        StreamKind::RangeBarKline {
+                            ticker_info: derived_plan.ticker_info,
+                            threshold_dbps: threshold,
+                        },
+                        depth_stream(&derived_plan),
+                    ];
                     (content, streams)
                 }
                 ContentKind::TimeAndSales => {
