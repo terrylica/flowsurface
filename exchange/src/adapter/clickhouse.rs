@@ -9,9 +9,10 @@
 //!   FLOWSURFACE_CH_PORT (default: 8123)
 
 use super::{
-    super::{Kline, TickerInfo},
+    super::{Kline, TickerInfo, Trade},
     AdapterError, Event, StreamKind,
 };
+use crate::util::MinTicksize;
 
 use iced_futures::{
     futures::{SinkExt, Stream},
@@ -22,6 +23,8 @@ use serde::Deserialize;
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 
+pub use rangebar_core::{FixedPoint, RangeBar, RangeBarProcessor};
+
 /// Microstructure fields from ClickHouse range bar cache.
 /// Kept in exchange crate to avoid circular dependency with data crate.
 #[derive(Debug, Clone, Copy)]
@@ -29,6 +32,53 @@ pub struct ChMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
     pub trade_intensity: f32,
+}
+
+// === rangebar-core in-process integration ===
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+
+/// Convert a flowsurface Trade into a rangebar-core AggTrade.
+///
+/// Both Price and FixedPoint use i64 with 10^8 scale, so price conversion
+/// is a direct copy of the underlying units. Volume uses f32→FixedPoint
+/// via string round-trip for precision.
+pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> rangebar_core::AggTrade {
+    rangebar_core::AggTrade {
+        agg_trade_id: seq_id,
+        price: FixedPoint(trade.price.units),
+        volume: FixedPoint((trade.qty as f64 * 1e8) as i64),
+        first_trade_id: seq_id,
+        last_trade_id: seq_id,
+        timestamp: (trade.time as i64) * 1000, // ms → µs
+        is_buyer_maker: trade.is_sell,
+        is_best_match: None,
+    }
+}
+
+/// Convert a completed rangebar-core RangeBar into a flowsurface Kline.
+pub fn range_bar_to_kline(bar: &RangeBar, min_tick: MinTicksize) -> Kline {
+    let scale = rangebar_core::fixed_point::SCALE as f64;
+    Kline::new(
+        (bar.close_time / 1000) as u64, // µs → ms
+        bar.open.to_f64() as f32,
+        bar.high.to_f64() as f32,
+        bar.low.to_f64() as f32,
+        bar.close.to_f64() as f32,
+        (
+            (bar.buy_volume as f64 / scale) as f32,
+            (bar.sell_volume as f64 / scale) as f32,
+        ),
+        min_tick,
+    )
+}
+
+/// Extract microstructure indicators from a completed RangeBar.
+pub fn range_bar_to_microstructure(bar: &RangeBar) -> ChMicrostructure {
+    ChMicrostructure {
+        trade_count: bar.individual_trade_count,
+        ofi: bar.ofi as f32,
+        trade_intensity: bar.trade_intensity as f32,
+    }
 }
 
 /// Range bar symbols fetched from ClickHouse at startup.

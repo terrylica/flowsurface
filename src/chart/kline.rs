@@ -19,6 +19,7 @@ use data::util::{abbr_large_numbers, count_decimals};
 use exchange::util::{Price, PriceStep};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
+    adapter::clickhouse::{RangeBarProcessor, range_bar_to_kline, range_bar_to_microstructure, trade_to_agg_trade},
     fetcher::{FetchRange, RequestHandler},
 };
 
@@ -194,6 +195,11 @@ pub struct KlineChart {
     request_handler: RequestHandler,
     study_configurator: study::Configurator<FootprintStudy>,
     last_tick: Instant,
+    /// In-process range bar processor (rangebar-core). Produces completed bars
+    /// from raw WebSocket trades, eliminating the ClickHouse live polling path.
+    range_bar_processor: Option<RangeBarProcessor>,
+    /// Monotonic counter for AggTrade IDs fed to the range bar processor.
+    next_agg_id: i64,
 }
 
 impl KlineChart {
@@ -286,6 +292,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    range_bar_processor: None,
+                    next_agg_id: 0,
                 }
             }
             Basis::Tick(interval) => {
@@ -344,6 +352,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    range_bar_processor: None,
+                    next_agg_id: 0,
                 }
             }
             Basis::RangeBar(threshold_dbps) => {
@@ -387,6 +397,10 @@ impl KlineChart {
                     indicators[i] = Some(indi);
                 }
 
+                let range_bar_processor = RangeBarProcessor::new(threshold_dbps)
+                    .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
+                    .ok();
+
                 KlineChart {
                     chart,
                     data_source,
@@ -397,6 +411,8 @@ impl KlineChart {
                     kind: kind.clone(),
                     study_configurator: study::Configurator::new(),
                     last_tick: Instant::now(),
+                    range_bar_processor,
+                    next_agg_id: 0,
                 }
             }
         }
@@ -481,6 +497,10 @@ impl KlineChart {
             indicators[i] = Some(indi);
         }
 
+        let range_bar_processor = RangeBarProcessor::new(threshold_dbps)
+            .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
+            .ok();
+
         KlineChart {
             chart,
             data_source,
@@ -491,6 +511,8 @@ impl KlineChart {
             kind: kind.clone(),
             study_configurator: study::Configurator::new(),
             last_tick: Instant::now(),
+            range_bar_processor,
+            next_agg_id: 0,
         }
     }
 
@@ -805,18 +827,76 @@ impl KlineChart {
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_range_bar() {
-                    // Range bars: only update live price line from trades.
-                    // Completed bars come exclusively from ClickHouse polling
-                    // via update_latest_kline(). Do NOT call insert_trades()
-                    // which would create spurious micro-bars from raw trades.
-                    if let Some(last_trade) = trades_buffer.last() {
-                        let last_kline = tick_aggr
-                            .datapoints
-                            .last()
-                            .map(|dp| dp.kline.open)
-                            .unwrap_or(last_trade.price);
-                        self.chart.last_price =
-                            Some(PriceInfoLabel::new(last_trade.price, last_kline));
+                    // In-process range bar computation via rangebar-core.
+                    // Feed each WebSocket trade into the processor; completed
+                    // bars are appended to the chart, replacing ClickHouse
+                    // polling as the live data source.
+                    if let Some(ref mut processor) = self.range_bar_processor {
+                        let min_tick = self.chart.ticker_info.min_ticksize;
+                        let old_dp_len = tick_aggr.datapoints.len();
+                        let mut new_bars = 0u32;
+
+                        for trade in trades_buffer {
+                            let agg = trade_to_agg_trade(trade, self.next_agg_id);
+                            self.next_agg_id += 1;
+
+                            match processor.process_single_trade(agg) {
+                                Ok(Some(completed)) => {
+                                    let kline = range_bar_to_kline(&completed, min_tick);
+                                    let micro = range_bar_to_microstructure(&completed);
+                                    tick_aggr.replace_or_append_kline(&kline);
+                                    // Attach microstructure to the newly appended bar
+                                    if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                                        last_dp.microstructure = Some(RangeBarMicrostructure {
+                                            trade_count: micro.trade_count,
+                                            ofi: micro.ofi,
+                                            trade_intensity: micro.trade_intensity,
+                                        });
+                                    }
+                                    new_bars += 1;
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    log::warn!("RangeBarProcessor error: {e}");
+                                }
+                            }
+                        }
+
+                        // Update live price line from forming bar or last trade.
+                        // Price.units and FixedPoint.0 are both i64 × 10^8 — direct copy.
+                        if let Some(forming) = processor.get_incomplete_bar() {
+                            let close = Price { units: forming.close.0 };
+                            let open = Price { units: forming.open.0 };
+                            self.chart.last_price = Some(PriceInfoLabel::new(close, open));
+                        } else if let Some(last_trade) = trades_buffer.last() {
+                            let last_kline = tick_aggr
+                                .datapoints
+                                .last()
+                                .map(|dp| dp.kline.open)
+                                .unwrap_or(last_trade.price);
+                            self.chart.last_price =
+                                Some(PriceInfoLabel::new(last_trade.price, last_kline));
+                        }
+
+                        if new_bars > 0 {
+                            self.indicators
+                                .values_mut()
+                                .filter_map(Option::as_mut)
+                                .for_each(|indi| {
+                                    indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
+                                });
+                        }
+                    } else {
+                        // Fallback: no processor, just update price line
+                        if let Some(last_trade) = trades_buffer.last() {
+                            let last_kline = tick_aggr
+                                .datapoints
+                                .last()
+                                .map(|dp| dp.kline.open)
+                                .unwrap_or(last_trade.price);
+                            self.chart.last_price =
+                                Some(PriceInfoLabel::new(last_trade.price, last_kline));
+                        }
                     }
                     self.invalidate(None);
                 } else {

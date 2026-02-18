@@ -509,8 +509,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "145052bdd345b87320e369255277e3fb5152762ad123a901ef5c262dd38fe8d2"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -1189,6 +1191,7 @@ dependencies = [
  "hyper-util",
  "iced_futures",
  "log",
+ "rangebar-core",
  "reqwest",
  "rustc-hash 2.1.1",
  "serde",
@@ -3315,6 +3318,19 @@ name = "range-alloc"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d6831663a5098ea164f89cff59c6284e95f4e3c76ce9848d4529f5ccca9bde"
+
+[[package]]
+name = "rangebar-core"
+version = "12.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b6737e0c56f9950269a8386998dd47a2ee6628fd6726e02090d31eca37d1e0c"
+dependencies = [
+ "ahash",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+]
 
 [[package]]
 name = "rangemap"

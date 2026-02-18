@@ -1125,9 +1125,14 @@ impl Dashboard {
                     subs.push(kline_subscription(exchange, kline_params));
                 }
 
-                for (ticker_info, threshold_dbps) in &specs.range_bar_kline {
-                    subs.push(rangebar_kline_subscription(*ticker_info, *threshold_dbps));
-                }
+                // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                // ClickHouse polling disabled: in-process RangeBarProcessor
+                // (rangebar-core) now computes live bars from WebSocket trades.
+                // ClickHouse remains the source for historical data only
+                // (initial fetch via fetch_klines_with_microstructure).
+                // for (ticker_info, threshold_dbps) in &specs.range_bar_kline {
+                //     subs.push(rangebar_kline_subscription(*ticker_info, *threshold_dbps));
+                // }
 
                 subs
             })
@@ -1489,6 +1494,8 @@ pub fn kline_subscription(
     }
 }
 
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+#[allow(dead_code)] // Retained as fallback if ClickHouse polling is re-enabled
 pub fn rangebar_kline_subscription(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
