@@ -1750,6 +1750,8 @@ impl Default for State {
 }
 
 #[derive(Default)]
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+#[allow(clippy::large_enum_variant)] // KlineChart grew with RangeBarProcessor; boxing would cascade
 pub enum Content {
     #[default]
     Starter,
