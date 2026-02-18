@@ -804,24 +804,41 @@ impl KlineChart {
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
-                let old_dp_len = tick_aggr.datapoints.len();
-                tick_aggr.insert_trades(trades_buffer);
-
-                if let Some(last_dp) = tick_aggr.datapoints.last() {
-                    self.chart.last_price =
-                        Some(PriceInfoLabel::new(last_dp.kline.close, last_dp.kline.open));
+                if self.chart.basis.is_range_bar() {
+                    // Range bars: only update live price line from trades.
+                    // Completed bars come exclusively from ClickHouse polling
+                    // via update_latest_kline(). Do NOT call insert_trades()
+                    // which would create spurious micro-bars from raw trades.
+                    if let Some(last_trade) = trades_buffer.last() {
+                        let last_kline = tick_aggr
+                            .datapoints
+                            .last()
+                            .map(|dp| dp.kline.open)
+                            .unwrap_or(last_trade.price);
+                        self.chart.last_price =
+                            Some(PriceInfoLabel::new(last_trade.price, last_kline));
+                    }
+                    self.invalidate(None);
                 } else {
-                    self.chart.last_price = None;
+                    let old_dp_len = tick_aggr.datapoints.len();
+                    tick_aggr.insert_trades(trades_buffer);
+
+                    if let Some(last_dp) = tick_aggr.datapoints.last() {
+                        self.chart.last_price =
+                            Some(PriceInfoLabel::new(last_dp.kline.close, last_dp.kline.open));
+                    } else {
+                        self.chart.last_price = None;
+                    }
+
+                    self.indicators
+                        .values_mut()
+                        .filter_map(Option::as_mut)
+                        .for_each(|indi| {
+                            indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
+                        });
+
+                    self.invalidate(None);
                 }
-
-                self.indicators
-                    .values_mut()
-                    .filter_map(Option::as_mut)
-                    .for_each(|indi| {
-                        indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
-                    });
-
-                self.invalidate(None);
             }
             PlotData::TimeBased(ref mut timeseries) => {
                 timeseries.insert_trades_existing_buckets(trades_buffer);
