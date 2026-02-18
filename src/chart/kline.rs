@@ -517,7 +517,18 @@ impl KlineChart {
                     // Range bar streaming update — reconcile ClickHouse completed bar
                     // with locally-constructed forming bar. ClickHouse is authoritative.
                     tick_aggr.replace_or_append_kline(kline);
+
+                    self.indicators
+                        .values_mut()
+                        .filter_map(Option::as_mut)
+                        .for_each(|indi| indi.on_insert_klines(&[*kline]));
+
                     let chart = self.mut_state();
+
+                    if kline.time > chart.latest_x {
+                        chart.latest_x = kline.time;
+                    }
+
                     chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
                 }
             }

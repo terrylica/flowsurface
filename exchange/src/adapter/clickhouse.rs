@@ -265,6 +265,11 @@ pub fn connect_kline_stream(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
 ) -> impl Stream<Item = Event> {
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+    log::info!(
+        "[CH poll] connect_kline_stream STARTED: {} @{} dbps",
+        ticker_info.ticker, threshold_dbps
+    );
     stream::channel(16, async move |mut output| {
         let exchange = ticker_info.exchange();
         let _ = output.send(Event::Connected(exchange)).await;
@@ -284,16 +289,22 @@ pub fn connect_kline_stream(
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} FORMAT JSONEachRow",
                 symbol, threshold_dbps
             );
-            if let Ok(body) = query(&sql).await {
-                body.lines()
-                    .find_map(|line| {
-                        serde_json::from_str::<serde_json::Value>(line.trim())
-                            .ok()
-                            .and_then(|v| v["ts"].as_u64())
-                    })
-                    .unwrap_or(0)
-            } else {
-                0
+            match query(&sql).await {
+                Ok(body) => {
+                    let ts = body.lines()
+                        .find_map(|line| {
+                            serde_json::from_str::<serde_json::Value>(line.trim())
+                                .ok()
+                                .and_then(|v| v["ts"].as_u64())
+                        })
+                        .unwrap_or(0);
+                    log::info!("[CH poll] init last_ts={} for {} @{}", ts, symbol, threshold_dbps);
+                    ts
+                }
+                Err(e) => {
+                    log::warn!("[CH poll] init query failed for {} @{}: {}", symbol, threshold_dbps, e);
+                    0
+                }
             }
         };
 
@@ -314,28 +325,41 @@ pub fn connect_kline_stream(
                 symbol, threshold_dbps, last_ts
             );
 
-            if let Ok(body) = query(&sql).await {
-                for line in body.lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Ok(ck) = serde_json::from_str::<ChKline>(line) {
-                        let ts = ck.timestamp_ms as u64;
-                        if ts > last_ts {
-                            last_ts = ts;
+            match query(&sql).await {
+                Ok(body) => {
+                    let mut count = 0u32;
+                    for line in body.lines() {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
                         }
-                        let kline = Kline::new(
-                            ts,
-                            ck.open as f32,
-                            ck.high as f32,
-                            ck.low as f32,
-                            ck.close as f32,
-                            (ck.buy_volume as f32, ck.sell_volume as f32),
-                            ticker_info.min_ticksize,
-                        );
-                        let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
+                        if let Ok(ck) = serde_json::from_str::<ChKline>(line) {
+                            let ts = ck.timestamp_ms as u64;
+                            if ts > last_ts {
+                                last_ts = ts;
+                            }
+                            let kline = Kline::new(
+                                ts,
+                                ck.open as f32,
+                                ck.high as f32,
+                                ck.low as f32,
+                                ck.close as f32,
+                                (ck.buy_volume as f32, ck.sell_volume as f32),
+                                ticker_info.min_ticksize,
+                            );
+                            let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;
+                            count += 1;
+                        }
                     }
+                    if count > 0 {
+                        log::info!(
+                            "[CH poll] {} @{}: {} new bars, last_ts={}",
+                            symbol, threshold_dbps, count, last_ts
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[CH poll] {} @{}: query error: {}", symbol, threshold_dbps, e);
                 }
             }
         }

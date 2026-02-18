@@ -1,3 +1,4 @@
+// FILE-SIZE-OK: upstream structure, not our code to refactor
 pub mod pane;
 pub mod panel;
 pub mod sidebar;
@@ -1072,6 +1073,17 @@ impl Dashboard {
         pane_id: uuid::Uuid,
         streams: Vec<StreamKind>,
     ) -> Task<Message> {
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+        let rb_streams: Vec<_> = streams
+            .iter()
+            .filter(|s| matches!(s, StreamKind::RangeBarKline { .. }))
+            .collect();
+        if !rb_streams.is_empty() {
+            log::info!(
+                "[SUBS] resolve_streams pane {}: {} total streams, {} range_bar_kline",
+                pane_id, streams.len(), rb_streams.len()
+            );
+        }
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
             state.streams = ResolvedStream::Ready(streams.clone());
         }
@@ -1129,6 +1141,16 @@ impl Dashboard {
             .iter_all_panes(main_window)
             .flat_map(|(_, _, pane_state)| pane_state.streams.ready_iter().into_iter().flatten());
         self.streams = UniqueStreams::from(all_pane_streams);
+
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+        let rb_count: usize = self
+            .streams
+            .combined_used()
+            .map(|(_, specs)| specs.range_bar_kline.len())
+            .sum();
+        if rb_count > 0 {
+            log::info!("[SUBS] refresh_streams: {} range_bar_kline in UniqueStreams", rb_count);
+        }
 
         Task::none()
     }

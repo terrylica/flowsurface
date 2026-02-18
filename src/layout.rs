@@ -4,6 +4,7 @@ use data::{
     UserTimezone,
     layout::{WindowSpec, pane::Axis},
 };
+use exchange::adapter::{PersistStreamKind, PersistDepth, PersistRangeBarKline};
 
 use iced::widget::pane_grid::{self, Configuration};
 use std::vec;
@@ -215,11 +216,28 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
         data::Pane::KlineChart {
             layout,
             kind,
-            stream_type,
+            mut stream_type,
             settings,
             indicators,
             link_group,
         } => {
+            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+            // Ensure range bar charts have a DepthAndTrades stream for live price line.
+            // Older persisted layouts may only have RangeBarKline without DepthAndTrades.
+            if kind == data::chart::KlineChartKind::RangeBar {
+                let has_depth = stream_type.iter().any(|s| matches!(s, PersistStreamKind::DepthAndTrades(_)));
+                if !has_depth && let Some(ticker) = stream_type.iter().find_map(|s| match s {
+                    PersistStreamKind::RangeBarKline(PersistRangeBarKline { ticker, .. }) => Some(*ticker),
+                    _ => None,
+                }) {
+                    stream_type.push(PersistStreamKind::DepthAndTrades(PersistDepth {
+                        ticker,
+                        depth_aggr: Default::default(),
+                        push_freq: Default::default(),
+                    }));
+                }
+            }
+
             let content = pane::Content::Kline {
                 chart: None,
                 indicators: indicators.clone(),
