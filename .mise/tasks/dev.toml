@@ -16,7 +16,10 @@ run = "cargo run"
 ["run:app"]
 description = "Launch Flowsurface.app bundle (pre-built binary, dock icon)"
 depends = ["preflight"]
-run = "open Flowsurface.app"
+run = """
+pkill -f "flowsurface.bin" 2>/dev/null; sleep 0.5
+open Flowsurface.app
+"""
 
 [check]
 description = "Run cargo check (fast type-check without codegen)"
