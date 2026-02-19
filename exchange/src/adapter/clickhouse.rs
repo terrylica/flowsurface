@@ -316,6 +316,50 @@ pub async fn fetch_klines_with_microstructure(
     Ok((klines, micro))
 }
 
+// -- Backfill request (Issue #97: on-demand trigger for rangebar-py) --
+
+/// Request a backfill by inserting into the backfill_requests table.
+/// Returns Ok(true) if the request was inserted, Ok(false) if a recent
+/// pending/running request already exists (dedup within 5 minutes).
+pub async fn request_backfill(
+    symbol: &str,
+    threshold_dbps: u32,
+) -> Result<bool, AdapterError> {
+    // Check for recent pending/running request to avoid spam
+    let check_sql = format!(
+        "SELECT count() as cnt \
+         FROM rangebar_cache.backfill_requests FINAL \
+         WHERE symbol = '{symbol}' AND status IN ('pending', 'running') \
+           AND requested_at > now64(3) - INTERVAL 5 MINUTE \
+         FORMAT JSONEachRow"
+    );
+
+    let body = query(&check_sql).await?;
+    let existing: u64 = body
+        .lines()
+        .find_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line.trim())
+                .ok()
+                .and_then(|v| v["cnt"].as_u64())
+        })
+        .unwrap_or(0);
+
+    if existing > 0 {
+        log::info!("[CH backfill] request already pending for {symbol}");
+        return Ok(false);
+    }
+
+    let insert_sql = format!(
+        "INSERT INTO rangebar_cache.backfill_requests \
+         (symbol, threshold_decimal_bps, source) VALUES \
+         ('{symbol}', {threshold_dbps}, 'flowsurface')"
+    );
+
+    query(&insert_sql).await?;
+    log::info!("[CH backfill] requested backfill for {symbol} @ {threshold_dbps} dbps");
+    Ok(true)
+}
+
 // -- Streaming (polling) --
 
 pub fn connect_kline_stream(
