@@ -17,6 +17,8 @@ pub enum KlineIndicator {
     Delta,
     TradeCount,
     OFI,
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    OFICumulativeEma,
     TradeIntensity,
 }
 
@@ -33,20 +35,22 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 5] = [
+    const FOR_SPOT: [KlineIndicator; 6] = [
         KlineIndicator::Volume,
         KlineIndicator::Delta,
         KlineIndicator::TradeCount,
         KlineIndicator::OFI,
+        KlineIndicator::OFICumulativeEma,
         KlineIndicator::TradeIntensity,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 6] = [
+    const FOR_PERPS: [KlineIndicator; 7] = [
         KlineIndicator::Volume,
         KlineIndicator::OpenInterest,
         KlineIndicator::Delta,
         KlineIndicator::TradeCount,
         KlineIndicator::OFI,
+        KlineIndicator::OFICumulativeEma,
         KlineIndicator::TradeIntensity,
     ];
 }
@@ -59,6 +63,7 @@ impl Display for KlineIndicator {
             KlineIndicator::Delta => write!(f, "Delta"),
             KlineIndicator::TradeCount => write!(f, "Trade Count"),
             KlineIndicator::OFI => write!(f, "OFI"),
+            KlineIndicator::OFICumulativeEma => write!(f, "OFI Σ EMA"),
             KlineIndicator::TradeIntensity => write!(f, "Trade Intensity"),
         }
     }

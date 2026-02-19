@@ -8,6 +8,7 @@ use exchange::{Kline, Timeframe, Trade};
 
 pub mod delta;
 pub mod ofi;
+pub mod ofi_cumulative_ema;
 pub mod open_interest;
 pub mod trade_count;
 pub mod trade_intensity;
@@ -72,6 +73,10 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
             Box::new(super::kline::trade_count::TradeCountIndicator::new())
         }
         KlineIndicator::OFI => Box::new(super::kline::ofi::OFIIndicator::new()),
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        KlineIndicator::OFICumulativeEma => {
+            Box::new(super::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::new())
+        }
         KlineIndicator::TradeIntensity => {
             Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
         }

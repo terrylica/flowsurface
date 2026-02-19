@@ -844,6 +844,12 @@ impl KlineChart {
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::OFI] = Some(new_indi);
         }
+        if self.indicators[KlineIndicator::OFICumulativeEma].is_some() {
+            let mut new_indi: Box<dyn KlineIndicatorImpl> =
+                Box::new(indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(period));
+            new_indi.rebuild_from_source(&self.data_source);
+            self.indicators[KlineIndicator::OFICumulativeEma] = Some(new_indi);
+        }
         self.invalidate(None);
     }
 
@@ -1262,9 +1268,14 @@ impl KlineChart {
             self.indicators[indicator] = None;
         } else {
             let mut box_indi = match indicator {
-                // Use configured EMA period when creating OFI indicator
+                // Use configured EMA period when creating OFI-family indicators
                 KlineIndicator::OFI => Box::new(
                     indicator::kline::ofi::OFIIndicator::with_ema_period(
+                        self.kline_config.ofi_ema_period,
+                    ),
+                ) as Box<dyn KlineIndicatorImpl>,
+                KlineIndicator::OFICumulativeEma => Box::new(
+                    indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
                         self.kline_config.ofi_ema_period,
                     ),
                 ) as Box<dyn KlineIndicatorImpl>,
