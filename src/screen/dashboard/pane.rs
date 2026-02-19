@@ -1874,7 +1874,13 @@ impl Content {
         let enabled_indicators = {
             let available = KlineIndicator::for_market(ticker_info.market_type());
             prev_indis.map_or_else(
-                || vec![KlineIndicator::Volume],
+                || match determined_chart_kind {
+                    data::chart::KlineChartKind::RangeBar => vec![
+                        KlineIndicator::TradeIntensity,
+                        KlineIndicator::OFICumulativeEma,
+                    ],
+                    _ => vec![KlineIndicator::Volume],
+                },
                 |indis| {
                     indis
                         .into_iter()
@@ -1885,7 +1891,10 @@ impl Content {
         };
 
         let splits = {
-            let main_chart_split: f32 = 0.8;
+            let main_chart_split: f32 = match determined_chart_kind {
+                data::chart::KlineChartKind::RangeBar => 0.6,
+                _ => 0.8,
+            };
             let mut splits_vec = vec![main_chart_split];
 
             if !enabled_indicators.is_empty() {
@@ -1969,11 +1978,8 @@ impl Content {
             ContentKind::RangeBarChart => Content::Kline {
                 chart: None,
                 indicators: vec![
-                    KlineIndicator::Volume,
-                    KlineIndicator::Delta,
-                    KlineIndicator::TradeCount,
-                    KlineIndicator::OFI,
                     KlineIndicator::TradeIntensity,
+                    KlineIndicator::OFICumulativeEma,
                 ],
                 kind: data::chart::KlineChartKind::RangeBar,
                 layout: ViewConfig {
