@@ -1,7 +1,11 @@
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-//! Cumulative sum of EMA-smoothed OFI. Shows directional accumulation of
-//! smoothed order flow as a bar histogram with zero baseline.
-//! Shares the OFI EMA period from kline::Config.
+//! Rolling-window sum of EMA-smoothed OFI. Shows directional accumulation of
+//! smoothed order flow over the last N bars (where N = EMA period) as a bar
+//! histogram with zero baseline. Shares the OFI EMA period from kline::Config.
+//!
+//! Unlike a raw cumulative sum (which drifts unboundedly and becomes dominated
+//! by ancient history), the rolling window stays responsive to recent order flow
+//! direction changes.
 
 use crate::chart::{
     Caches, Message, ViewState,
@@ -20,18 +24,18 @@ use data::conditional_ema::ConditionalEma;
 use exchange::{Kline, Trade};
 
 use iced::widget::{center, text};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::RangeInclusive;
 
-/// Per-bar data point: cumulative sum of EMA(OFI) and candle direction.
+/// Per-bar data point: rolling sum of EMA(OFI) and candle direction.
 #[derive(Clone, Copy)]
 struct CumOfiPoint {
     cumsum: f32,
     bullish: bool,
 }
 
-/// Cumulative EMA(OFI) indicator.
-/// Applies EMA to raw OFI, then accumulates the running sum.
+/// Cumulative EMA(OFI) indicator using a rolling window sum.
+/// Applies EMA to raw OFI, then sums the last `ema_period` EMA values.
 pub struct OFICumulativeEmaIndicator {
     cache: Caches,
     data: BTreeMap<u64, CumOfiPoint>,
@@ -49,6 +53,34 @@ impl OFICumulativeEmaIndicator {
             data: BTreeMap::new(),
             ema_period: period,
         }
+    }
+
+    /// Compute all data points from scratch using a rolling window.
+    fn compute_all(
+        datapoints: impl Iterator<Item = (usize, f32, bool)>,
+        window_size: usize,
+    ) -> BTreeMap<u64, CumOfiPoint> {
+        let mut ema_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
+        let mut rolling_sum: f32 = 0.0;
+        let mut result = BTreeMap::new();
+
+        for (idx, ema_val, bullish) in datapoints {
+            // Add new value
+            ema_window.push_back(ema_val);
+            rolling_sum += ema_val;
+
+            // Evict oldest if window is full
+            if ema_window.len() > window_size {
+                rolling_sum -= ema_window.pop_front().unwrap_or(0.0);
+            }
+
+            result.insert(idx as u64, CumOfiPoint {
+                cumsum: rolling_sum,
+                bullish,
+            });
+        }
+
+        result
     }
 
     fn indicator_elem<'a>(
@@ -101,21 +133,16 @@ impl KlineIndicatorImpl for OFICumulativeEmaIndicator {
             }
             PlotData::TickBased(tickseries) => {
                 let mut ema = ConditionalEma::new(self.ema_period);
-                let mut cumsum: f32 = 0.0;
 
-                self.data = tickseries
-                    .datapoints
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, dp)| {
-                        dp.microstructure.map(|m| {
-                            let bullish = dp.kline.close >= dp.kline.open;
-                            let ema_val = ema.update(m.ofi, true);
-                            cumsum += ema_val;
-                            (idx as u64, CumOfiPoint { cumsum, bullish })
-                        })
+                let iter = tickseries.datapoints.iter().enumerate().filter_map(|(idx, dp)| {
+                    dp.microstructure.map(|m| {
+                        let bullish = dp.kline.close >= dp.kline.open;
+                        let ema_val = ema.update(m.ofi, true);
+                        (idx, ema_val, bullish)
                     })
-                    .collect();
+                });
+
+                self.data = Self::compute_all(iter, self.ema_period);
             }
         }
         self.clear_all_caches();
@@ -129,8 +156,9 @@ impl KlineIndicatorImpl for OFICumulativeEmaIndicator {
         _old_dp_len: usize,
         source: &PlotData<KlineDataPoint>,
     ) {
-        // Full rebuild for cumulative indicator — incremental would need to track
-        // the EMA state and cumsum at the last processed index.
+        // Rolling window requires access to the last N EMA values, so a full
+        // rebuild is the simplest correct approach. The computation is O(N)
+        // where N = total datapoints, which is fast enough for range bars.
         self.rebuild_from_source(source);
     }
 

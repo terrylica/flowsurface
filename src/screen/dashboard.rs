@@ -864,13 +864,60 @@ impl Dashboard {
                         } => {
                             pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
                         }
-                        StreamKind::RangeBarKline { ticker_info, .. } => {
+                        StreamKind::RangeBarKline {
+                            ticker_info,
+                            threshold_dbps,
+                        } => {
                             pane_state.insert_range_bar_klines(
                                 req_id,
                                 ticker_info,
                                 &data,
                                 microstructure.as_deref(),
                             );
+
+                            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                            if let Some(last_kline) = data.last() {
+                                let now_ms = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as u64)
+                                    .unwrap_or(0);
+                                let gap_hours =
+                                    (now_ms.saturating_sub(last_kline.time)) as f64 / 3_600_000.0;
+
+                                if gap_hours > 24.0 {
+                                    pane_state.status = pane::Status::Stale(format!(
+                                        "Data {:.0}h old — requesting backfill...",
+                                        gap_hours
+                                    ));
+
+                                    let symbol = ticker_info.ticker.to_string();
+                                    return Task::perform(
+                                        async move {
+                                            match adapter::clickhouse::request_backfill(
+                                                &symbol,
+                                                threshold_dbps,
+                                            )
+                                            .await
+                                            {
+                                                Ok(true) => log::info!(
+                                                    "[staleness] backfill requested for {symbol}"
+                                                ),
+                                                Ok(false) => log::info!(
+                                                    "[staleness] backfill already pending for {symbol}"
+                                                ),
+                                                Err(e) => log::warn!(
+                                                    "[staleness] failed to request backfill: {e}"
+                                                ),
+                                            }
+                                        },
+                                        |_| {
+                                            Message::Notification(Toast::info(
+                                                "Backfill requested".to_string(),
+                                            ))
+                                        },
+                                    );
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -957,6 +1004,23 @@ impl Dashboard {
                         }
                         _ => {}
                     }
+
+                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                    // Clear stale status when fresh data arrives via polling
+                    if matches!(pane_state.status, pane::Status::Stale(_))
+                        && matches!(stream, StreamKind::RangeBarKline { .. })
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let gap_hours =
+                            (now_ms.saturating_sub(kline.time)) as f64 / 3_600_000.0;
+                        if gap_hours <= 24.0 {
+                            pane_state.status = pane::Status::Ready;
+                        }
+                    }
+
                     found_match = true;
                 }
             });

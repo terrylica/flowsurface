@@ -3,6 +3,7 @@
 /// Exponential Moving Average that only updates when a condition is active.
 /// When inactive, the EMA value carries forward unchanged.
 /// Useful for directional indicators (e.g., separate EMAs for bullish vs bearish bars).
+#[derive(Clone)]
 pub struct ConditionalEma {
     alpha: f32,
     value: Option<f32>,
