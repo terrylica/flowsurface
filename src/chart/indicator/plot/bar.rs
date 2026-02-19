@@ -21,13 +21,18 @@ pub enum Baseline {
 
 #[derive(Clone, Copy)]
 /// What kind of bar to render.
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 pub enum BarClass {
     /// draw a single bar using secondary strong color
     Single,
     /// Stacked buy (success) + sell (danger) bar. Bottom = sell, top = buy.
     BuySell { buy: f32, sell: f32 },
     /// Solid bar colored by sign: positive = success, negative = danger.
+    #[allow(dead_code)]
     Signed,
+    /// Bar colored by candle direction: green if bullish (close >= open), red if bearish.
+    /// Histogram direction shows +/-, color shows candle direction for divergence.
+    CandleColored { bullish: bool },
 }
 
 pub struct BarPlot<V, CL, T> {
@@ -181,6 +186,18 @@ where
                 }
                 BarClass::Signed => {
                     let color = if rel >= 0.0 {
+                        palette.success.base.color
+                    } else {
+                        palette.danger.base.color
+                    };
+                    frame.fill_rectangle(
+                        Point::new(left, top_y),
+                        Size::new(bar_width, h_total),
+                        color,
+                    );
+                }
+                BarClass::CandleColored { bullish } => {
+                    let color = if bullish {
                         palette.success.base.color
                     } else {
                         palette.danger.base.color

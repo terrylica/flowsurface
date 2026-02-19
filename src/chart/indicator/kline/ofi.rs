@@ -17,12 +17,15 @@ use iced::widget::{center, text};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-/// Order Flow Imbalance indicator: (buy_vol - sell_vol) / total_vol per bar.
-/// Range: [-1, 1]. Only available for range bars with microstructure data.
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+
+/// Order Flow Imbalance indicator: (buy_vol - sell_vol) / total_vol per bar.
+/// Range: [-1, 1]. Histogram direction shows +/-, bar color follows candle
+/// direction for divergence. Only available for range bars with microstructure.
 pub struct OFIIndicator {
     cache: Caches,
-    data: BTreeMap<u64, f32>,
+    /// (ofi_value, bullish) — bullish = close >= open
+    data: BTreeMap<u64, (f32, bool)>,
 }
 
 impl OFIIndicator {
@@ -42,14 +45,14 @@ impl OFIIndicator {
             return center(text("OFI: no microstructure data")).into();
         }
 
-        let tooltip = |value: &f32, _next: Option<&f32>| {
-            let sign = if *value >= 0.0 { "+" } else { "" };
-            PlotTooltip::new(format!("OFI: {sign}{:.3}", value))
+        let tooltip = |value: &(f32, bool), _next: Option<&(f32, bool)>| {
+            let sign = if value.0 >= 0.0 { "+" } else { "" };
+            PlotTooltip::new(format!("OFI: {sign}{:.3}", value.0))
         };
 
-        let bar_kind = |_value: &f32| BarClass::Signed;
+        let bar_kind = |value: &(f32, bool)| BarClass::CandleColored { bullish: value.1 };
 
-        let value_fn = |v: &f32| *v;
+        let value_fn = |v: &(f32, bool)| v.0;
 
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
@@ -83,7 +86,17 @@ impl KlineIndicatorImpl for OFIIndicator {
                 self.data.clear();
             }
             PlotData::TickBased(tickseries) => {
-                self.data = tickseries.ofi_data();
+                self.data = tickseries
+                    .datapoints
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, dp)| {
+                        dp.microstructure.map(|m| {
+                            let bullish = dp.kline.close >= dp.kline.open;
+                            (idx as u64, (m.ofi, bullish))
+                        })
+                    })
+                    .collect();
             }
         }
         self.clear_all_caches();
@@ -103,7 +116,8 @@ impl KlineIndicatorImpl for OFIIndicator {
                 let start_idx = old_dp_len.saturating_sub(1);
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
                     if let Some(m) = dp.microstructure {
-                        self.data.insert(idx as u64, m.ofi);
+                        let bullish = dp.kline.close >= dp.kline.open;
+                        self.data.insert(idx as u64, (m.ofi, bullish));
                     }
                 }
             }
