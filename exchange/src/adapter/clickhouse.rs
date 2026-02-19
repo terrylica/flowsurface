@@ -43,13 +43,20 @@ pub struct ChMicrostructure {
 /// is a direct copy of the underlying units. Volume uses f32→FixedPoint
 /// via string round-trip for precision.
 pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> rangebar_core::AggTrade {
+    // Binance WebSocket trades have millisecond timestamps. rangebar-core uses
+    // microseconds and has a same-timestamp gate (prevent_same_timestamp_close)
+    // that blocks bar closure when trade.timestamp == bar.open_time.
+    // Add sub-millisecond offset from seq_id so trades within the same ms batch
+    // get unique µs timestamps, preventing the gate from stalling bar completion.
+    let base_us = (trade.time as i64) * 1000;
+    let sub_ms_offset = seq_id % 1000; // 0-999 µs within the millisecond
     rangebar_core::AggTrade {
         agg_trade_id: seq_id,
         price: FixedPoint(trade.price.units),
         volume: FixedPoint((trade.qty as f64 * 1e8) as i64),
         first_trade_id: seq_id,
         last_trade_id: seq_id,
-        timestamp: (trade.time as i64) * 1000, // ms → µs
+        timestamp: base_us + sub_ms_offset,
         is_buyer_maker: trade.is_sell,
         is_best_match: None,
     }
