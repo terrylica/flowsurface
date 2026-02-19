@@ -19,6 +19,7 @@ use std::ops::RangeInclusive;
 
 /// Order Flow Imbalance indicator: (buy_vol - sell_vol) / total_vol per bar.
 /// Range: [-1, 1]. Only available for range bars with microstructure data.
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 pub struct OFIIndicator {
     cache: Caches,
     data: BTreeMap<u64, f32>,
@@ -93,9 +94,21 @@ impl KlineIndicatorImpl for OFIIndicator {
     fn on_insert_trades(
         &mut self,
         _trades: &[Trade],
-        _old_dp_len: usize,
-        _source: &PlotData<KlineDataPoint>,
+        old_dp_len: usize,
+        source: &PlotData<KlineDataPoint>,
     ) {
+        match source {
+            PlotData::TimeBased(_) => return,
+            PlotData::TickBased(tickseries) => {
+                let start_idx = old_dp_len.saturating_sub(1);
+                for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
+                    if let Some(m) = dp.microstructure {
+                        self.data.insert(idx as u64, m.ofi);
+                    }
+                }
+            }
+        }
+        self.clear_all_caches();
     }
 
     fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {

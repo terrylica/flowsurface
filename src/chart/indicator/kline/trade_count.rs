@@ -20,6 +20,7 @@ use std::ops::RangeInclusive;
 
 /// Trade count indicator: individual_trade_count per bar.
 /// Only available for range bars with microstructure data from ClickHouse.
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 pub struct TradeCountIndicator {
     cache: Caches,
     data: BTreeMap<u64, f32>,
@@ -92,9 +93,21 @@ impl KlineIndicatorImpl for TradeCountIndicator {
     fn on_insert_trades(
         &mut self,
         _trades: &[Trade],
-        _old_dp_len: usize,
-        _source: &PlotData<KlineDataPoint>,
+        old_dp_len: usize,
+        source: &PlotData<KlineDataPoint>,
     ) {
+        match source {
+            PlotData::TimeBased(_) => return,
+            PlotData::TickBased(tickseries) => {
+                let start_idx = old_dp_len.saturating_sub(1);
+                for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
+                    if let Some(m) = dp.microstructure {
+                        self.data.insert(idx as u64, m.trade_count as f32);
+                    }
+                }
+            }
+        }
+        self.clear_all_caches();
     }
 
     fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {
