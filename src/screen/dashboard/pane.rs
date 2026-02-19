@@ -916,7 +916,7 @@ impl State {
                     let settings_modal = || {
                         kline_cfg_view(
                             chart.study_configurator(),
-                            data::chart::kline::Config {},
+                            chart.kline_config,
                             chart_kind,
                             id,
                             chart.basis(),
@@ -2071,6 +2071,10 @@ impl Content {
             }
             (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
                 chart.config = cfg;
+            }
+            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+            (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
+                c.set_ofi_ema_period(cfg.ofi_ema_period);
             }
             _ => {}
         }

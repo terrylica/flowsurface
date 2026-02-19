@@ -1,3 +1,4 @@
+// FILE-SIZE-OK: upstream file, splitting out of scope for this fork
 use crate::chart::comparison::ComparisonChart;
 use crate::screen::dashboard::pane::{Event, Message};
 use crate::screen::dashboard::panel::timeandsales;
@@ -464,9 +465,37 @@ pub fn kline_cfg_view<'a>(
     basis: data::chart::Basis,
 ) -> Element<'a, Message> {
     let content = match kind {
-        KlineChartKind::Candles | KlineChartKind::RangeBar => column![text(
+        KlineChartKind::Candles => column![text(
             "This chart type doesn't have any configurations, WIP..."
         )],
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        KlineChartKind::RangeBar => {
+            let period = cfg.ofi_ema_period;
+            let ema_slider = slider(5..=100, period as u32, move |new_val| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(data::chart::kline::Config {
+                        ofi_ema_period: new_val as usize,
+                    }),
+                    false,
+                )
+            });
+
+            split_column![
+                column![
+                    text("OFI EMA Period").size(14),
+                    row![ema_slider, text(format!("{period}")).size(12)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                ]
+                .spacing(8),
+                row![
+                    space::horizontal(),
+                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                ],
+                ; spacing = 12, align_x = Alignment::Start
+            ]
+        }
         KlineChartKind::Footprint {
             clusters,
             scaling,

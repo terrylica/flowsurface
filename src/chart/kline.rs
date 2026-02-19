@@ -200,6 +200,11 @@ pub struct KlineChart {
     range_bar_processor: Option<RangeBarProcessor>,
     /// Monotonic counter for AggTrade IDs fed to the range bar processor.
     next_agg_id: i64,
+    /// Total completed bars from the in-process processor (diagnostic).
+    range_bar_completed_count: u32,
+    /// Kline chart configuration (e.g. OFI EMA period).
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    pub(crate) kline_config: data::chart::kline::Config,
 }
 
 impl KlineChart {
@@ -294,6 +299,8 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     range_bar_processor: None,
                     next_agg_id: 0,
+                    range_bar_completed_count: 0,
+                    kline_config: data::chart::kline::Config::default(),
                 }
             }
             Basis::Tick(interval) => {
@@ -354,6 +361,8 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     range_bar_processor: None,
                     next_agg_id: 0,
+                    range_bar_completed_count: 0,
+                    kline_config: data::chart::kline::Config::default(),
                 }
             }
             Basis::RangeBar(threshold_dbps) => {
@@ -413,6 +422,8 @@ impl KlineChart {
                     last_tick: Instant::now(),
                     range_bar_processor,
                     next_agg_id: 0,
+                    range_bar_completed_count: 0,
+                    kline_config: data::chart::kline::Config::default(),
                 }
             }
         }
@@ -513,6 +524,8 @@ impl KlineChart {
             last_tick: Instant::now(),
             range_bar_processor,
             next_agg_id: 0,
+            range_bar_completed_count: 0,
+                    kline_config: data::chart::kline::Config::default(),
         }
     }
 
@@ -821,6 +834,19 @@ impl KlineChart {
         self.invalidate(None);
     }
 
+    /// Update the OFI EMA period: rebuild the indicator with the new period.
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    pub fn set_ofi_ema_period(&mut self, period: usize) {
+        self.kline_config.ofi_ema_period = period;
+        if self.indicators[KlineIndicator::OFI].is_some() {
+            let mut new_indi: Box<dyn KlineIndicatorImpl> =
+                Box::new(indicator::kline::ofi::OFIIndicator::with_ema_period(period));
+            new_indi.rebuild_from_source(&self.data_source);
+            self.indicators[KlineIndicator::OFI] = Some(new_indi);
+        }
+        self.invalidate(None);
+    }
+
     pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade]) {
         self.raw_trades.extend_from_slice(trades_buffer);
 
@@ -838,12 +864,62 @@ impl KlineChart {
 
                         for trade in trades_buffer {
                             let agg = trade_to_agg_trade(trade, self.next_agg_id);
+                            // Diagnostic: log trade details every 200 trades
+                            if self.next_agg_id % 200 == 0 {
+                                log::info!(
+                                    "[RBP] seq={} price={:.2} ts_us={} trade_time_ms={}",
+                                    self.next_agg_id,
+                                    trade.price.to_f32(),
+                                    agg.timestamp,
+                                    trade.time,
+                                );
+                                if let Some(forming) = processor.get_incomplete_bar() {
+                                    log::info!(
+                                        "[RBP]   forming: open={:.2} close={:.2} high={:.2} low={:.2} open_time={} trades={}",
+                                        forming.open.to_f64(),
+                                        forming.close.to_f64(),
+                                        forming.high.to_f64(),
+                                        forming.low.to_f64(),
+                                        forming.open_time,
+                                        forming.agg_record_count,
+                                    );
+                                    let range = forming.high.to_f64() - forming.low.to_f64();
+                                    let threshold_pct = processor.threshold_decimal_bps() as f64 / 100_000.0;
+                                    let expected_delta = forming.open.to_f64() * threshold_pct;
+                                    log::info!(
+                                        "[RBP]   range={:.2} threshold_delta={:.2} breached={}",
+                                        range,
+                                        expected_delta,
+                                        range >= expected_delta,
+                                    );
+                                }
+                            }
                             self.next_agg_id += 1;
 
                             match processor.process_single_trade(agg) {
                                 Ok(Some(completed)) => {
+                                    log::info!(
+                                        "[RBP] BAR COMPLETED: open={:.2} close={:.2} high={:.2} low={:.2} trades={}",
+                                        completed.open.to_f64(),
+                                        completed.close.to_f64(),
+                                        completed.high.to_f64(),
+                                        completed.low.to_f64(),
+                                        completed.agg_record_count,
+                                    );
                                     let kline = range_bar_to_kline(&completed, min_tick);
                                     let micro = range_bar_to_microstructure(&completed);
+                                    let last_time = tick_aggr.datapoints.last().map(|dp| dp.kline.time);
+                                    log::info!(
+                                        "[RBP]   kline.time={} last_dp_time={:?} action={}",
+                                        kline.time,
+                                        last_time,
+                                        match last_time {
+                                            Some(t) if kline.time == t => "REPLACE",
+                                            Some(t) if kline.time > t => "APPEND",
+                                            Some(_) => "DROPPED!",
+                                            None => "APPEND(empty)",
+                                        }
+                                    );
                                     tick_aggr.replace_or_append_kline(&kline);
                                     // Attach microstructure to the newly appended bar
                                     if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
@@ -879,6 +955,11 @@ impl KlineChart {
                         }
 
                         if new_bars > 0 {
+                            self.range_bar_completed_count += new_bars;
+                            log::info!(
+                                "[RBP] batch: {} new bars, total_completed={}",
+                                new_bars, self.range_bar_completed_count,
+                            );
                             self.indicators
                                 .values_mut()
                                 .filter_map(Option::as_mut)
@@ -1180,7 +1261,15 @@ impl KlineChart {
         if self.indicators[indicator].is_some() {
             self.indicators[indicator] = None;
         } else {
-            let mut box_indi = indicator::kline::make_empty(indicator);
+            let mut box_indi = match indicator {
+                // Use configured EMA period when creating OFI indicator
+                KlineIndicator::OFI => Box::new(
+                    indicator::kline::ofi::OFIIndicator::with_ema_period(
+                        self.kline_config.ofi_ema_period,
+                    ),
+                ) as Box<dyn KlineIndicatorImpl>,
+                other => indicator::kline::make_empty(other),
+            };
             box_indi.rebuild_from_source(&self.data_source);
             self.indicators[indicator] = Some(box_indi);
         }

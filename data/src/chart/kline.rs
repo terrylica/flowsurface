@@ -320,8 +320,22 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {}
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+fn default_ofi_ema_period() -> usize { 20 }
+
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Config {
+    #[serde(default = "default_ofi_ema_period")]
+    pub ofi_ema_period: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ofi_ema_period: default_ofi_ema_period(),
+        }
+    }
+}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {

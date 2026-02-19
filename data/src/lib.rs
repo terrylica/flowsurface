@@ -1,6 +1,7 @@
 pub mod aggr;
 pub mod audio;
 pub mod chart;
+pub mod conditional_ema;
 pub mod config;
 pub mod layout;
 pub mod log;

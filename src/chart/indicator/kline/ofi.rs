@@ -1,3 +1,5 @@
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+
 use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
@@ -5,34 +7,52 @@ use crate::chart::{
         kline::KlineIndicatorImpl,
         plot::{
             PlotTooltip,
-            bar::{BarClass, BarPlot, Baseline},
+            bar::BarClass,
+            bar_with_ema_overlay::{BarWithEmaOverlay, EmaLineConfig},
         },
     },
 };
 
 use data::chart::{PlotData, kline::KlineDataPoint};
+use data::conditional_ema::ConditionalEma;
 use exchange::{Kline, Trade};
 
 use iced::widget::{center, text};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+/// Per-bar data point for OFI with precomputed directional EMA values.
+#[derive(Clone, Copy)]
+pub(crate) struct OfiPoint {
+    pub ofi: f32,
+    pub bullish: bool,
+    pub green_ema: f32,
+    pub red_ema: f32,
+}
 
-/// Order Flow Imbalance indicator: (buy_vol - sell_vol) / total_vol per bar.
-/// Range: [-1, 1]. Histogram direction shows +/-, bar color follows candle
-/// direction for divergence. Only available for range bars with microstructure.
+/// Order Flow Imbalance indicator with directional EMA overlays.
+/// Green EMA tracks only bullish-bar OFI, red EMA tracks only bearish-bar OFI.
+/// Between non-matching bars each EMA carries forward (continuous flat line).
 pub struct OFIIndicator {
     cache: Caches,
-    /// (ofi_value, bullish) — bullish = close >= open
-    data: BTreeMap<u64, (f32, bool)>,
+    data: BTreeMap<u64, OfiPoint>,
+    ema_period: usize,
+    green_ema: ConditionalEma,
+    red_ema: ConditionalEma,
 }
 
 impl OFIIndicator {
     pub fn new() -> Self {
+        Self::with_ema_period(20)
+    }
+
+    pub fn with_ema_period(period: usize) -> Self {
         Self {
             cache: Caches::default(),
             data: BTreeMap::new(),
+            ema_period: period,
+            green_ema: ConditionalEma::new(period),
+            red_ema: ConditionalEma::new(period),
         }
     }
 
@@ -45,22 +65,36 @@ impl OFIIndicator {
             return center(text("OFI: no microstructure data")).into();
         }
 
-        let tooltip = |value: &(f32, bool), _next: Option<&(f32, bool)>| {
-            let sign = if value.0 >= 0.0 { "+" } else { "" };
-            PlotTooltip::new(format!("OFI: {sign}{:.3}", value.0))
+        let tooltip = |p: &OfiPoint, _next: Option<&OfiPoint>| {
+            let sign = if p.ofi >= 0.0 { "+" } else { "" };
+            PlotTooltip::new(format!(
+                "OFI: {sign}{:.3} | \u{2191}EMA: {:.3} | \u{2193}EMA: {:.3}",
+                p.ofi, p.green_ema, p.red_ema
+            ))
         };
 
-        let bar_kind = |value: &(f32, bool)| BarClass::CandleColored { bullish: value.1 };
+        let bar_kind = |p: &OfiPoint| BarClass::CandleColored { bullish: p.bullish };
+        let value_fn = |p: &OfiPoint| p.ofi;
 
-        let value_fn = |v: &(f32, bool)| v.0;
+        let ema_lines = vec![
+            EmaLineConfig {
+                extract: |p: &OfiPoint| p.green_ema,
+                color: |palette| palette.success.base.color,
+                stroke_width: 1.5,
+            },
+            EmaLineConfig {
+                extract: |p: &OfiPoint| p.red_ema,
+                color: |palette| palette.danger.base.color,
+                stroke_width: 1.5,
+            },
+        ];
 
-        let plot = BarPlot::new(value_fn, bar_kind)
-            .bar_width_factor(0.9)
-            .baseline(Baseline::Zero)
+        let plot = BarWithEmaOverlay::new(value_fn, bar_kind, ema_lines)
             .with_tooltip(tooltip);
 
         indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
     }
+
 }
 
 impl KlineIndicatorImpl for OFIIndicator {
@@ -86,6 +120,9 @@ impl KlineIndicatorImpl for OFIIndicator {
                 self.data.clear();
             }
             PlotData::TickBased(tickseries) => {
+                self.green_ema = ConditionalEma::new(self.ema_period);
+                self.red_ema = ConditionalEma::new(self.ema_period);
+
                 self.data = tickseries
                     .datapoints
                     .iter()
@@ -93,7 +130,14 @@ impl KlineIndicatorImpl for OFIIndicator {
                     .filter_map(|(idx, dp)| {
                         dp.microstructure.map(|m| {
                             let bullish = dp.kline.close >= dp.kline.open;
-                            (idx as u64, (m.ofi, bullish))
+                            let g = self.green_ema.update(m.ofi, bullish);
+                            let r = self.red_ema.update(m.ofi, !bullish);
+                            (idx as u64, OfiPoint {
+                                ofi: m.ofi,
+                                bullish,
+                                green_ema: g,
+                                red_ema: r,
+                            })
                         })
                     })
                     .collect();
@@ -117,7 +161,14 @@ impl KlineIndicatorImpl for OFIIndicator {
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
                     if let Some(m) = dp.microstructure {
                         let bullish = dp.kline.close >= dp.kline.open;
-                        self.data.insert(idx as u64, (m.ofi, bullish));
+                        let g = self.green_ema.update(m.ofi, bullish);
+                        let r = self.red_ema.update(m.ofi, !bullish);
+                        self.data.insert(idx as u64, OfiPoint {
+                            ofi: m.ofi,
+                            bullish,
+                            green_ema: g,
+                            red_ema: r,
+                        });
                     }
                 }
             }
