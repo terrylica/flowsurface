@@ -10,7 +10,7 @@ use iced::{Color, Point, Size, Theme};
 
 use crate::chart::ViewState;
 use crate::chart::indicator::plot::{Plot, PlotTooltip, Series, TooltipFn, YScale};
-use super::bar::{BarClass, Baseline};
+use super::bar::{BarClass, Baseline, thermal_color};
 
 /// Configuration for a single EMA overlay line.
 /// Uses function pointers for the extract fn so multiple configs
@@ -205,6 +205,13 @@ where
                             );
                         }
                     }
+                }
+                BarClass::Heatmap { t } => {
+                    frame.fill_rectangle(
+                        Point::new(left, top_y),
+                        Size::new(bar_width, h_total),
+                        thermal_color(t),
+                    );
                 }
             }
         });

@@ -412,6 +412,8 @@ impl State {
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
+                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                    let saved_config = chart.kline_config; // Config: Copy
 
                     *chart = KlineChart::new(
                         layout,
@@ -422,6 +424,7 @@ impl State {
                         indicators,
                         ticker_info,
                         chart.kind(),
+                        saved_config,
                     );
                 }
             }
@@ -477,6 +480,8 @@ impl State {
                     let layout = chart.chart_layout();
                     let basis = chart.basis();
                     let kind = chart.kind().clone();
+                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                    let saved_config = chart.kline_config; // Config: Copy
 
                     *chart = KlineChart::new_with_microstructure(
                         layout,
@@ -488,6 +493,7 @@ impl State {
                         ticker_info,
                         &kind,
                         microstructure,
+                        saved_config,
                     );
                 }
             }
@@ -1875,7 +1881,9 @@ impl Content {
             let available = KlineIndicator::for_market(ticker_info.market_type());
             prev_indis.map_or_else(
                 || match determined_chart_kind {
+                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
                     data::chart::KlineChartKind::RangeBar => vec![
+                        KlineIndicator::TradeIntensityHeatmap,
                         KlineIndicator::TradeIntensity,
                         KlineIndicator::OFICumulativeEma,
                     ],
@@ -1922,6 +1930,13 @@ impl Content {
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
             });
 
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        let kline_config = settings
+            .visual_config
+            .clone()
+            .and_then(|cfg| cfg.kline())
+            .unwrap_or_default();
+
         let chart = KlineChart::new(
             layout.clone(),
             basis,
@@ -1931,6 +1946,7 @@ impl Content {
             &enabled_indicators,
             ticker_info,
             &determined_chart_kind,
+            kline_config,
         );
 
         Content::Kline {
@@ -2081,6 +2097,7 @@ impl Content {
             // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
             (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
                 c.set_ofi_ema_period(cfg.ofi_ema_period);
+                c.set_intensity_params(cfg.intensity_lookback, cfg.intensity_bins);
             }
             _ => {}
         }

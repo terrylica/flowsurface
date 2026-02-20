@@ -476,6 +476,33 @@ pub fn kline_cfg_view<'a>(
                     pane,
                     VisualConfig::Kline(data::chart::kline::Config {
                         ofi_ema_period: new_val as usize,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+            let lookback = cfg.intensity_lookback;
+            let k_max = cfg.intensity_bins;
+            let k_actual = data::chart::kline::adaptive_k(lookback, k_max);
+
+            let lookback_slider = slider(100u32..=7000, lookback as u32, move |new_val| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(data::chart::kline::Config {
+                        intensity_lookback: new_val as usize,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+            let bins_slider = slider(5u8..=20, k_max, move |new_val| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(data::chart::kline::Config {
+                        intensity_bins: new_val,
+                        ..cfg
                     }),
                     false,
                 )
@@ -487,6 +514,23 @@ pub fn kline_cfg_view<'a>(
                     row![ema_slider, text(format!("{period}")).size(12)]
                         .spacing(8)
                         .align_y(Alignment::Center),
+                ]
+                .spacing(8),
+                column![
+                    text("Intensity Lookback").size(14),
+                    row![lookback_slider, text(format!("{lookback} bars")).size(12)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                ]
+                .spacing(8),
+                column![
+                    text("Max colour levels").size(14),
+                    row![
+                        bins_slider,
+                        text(format!("{k_max}  (K: {k_actual})")).size(12)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
                 ]
                 .spacing(8),
                 row![

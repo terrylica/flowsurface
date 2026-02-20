@@ -185,6 +185,34 @@ impl PlotConstants for KlineChart {
     }
 }
 
+/// Create an indicator with configuration-aware params.
+///
+/// OFI-family indicators use `ofi_ema_period`; `TradeIntensityHeatmap` uses
+/// `intensity_lookback` / `intensity_bins`. All others use default construction.
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+fn make_indicator_with_config(
+    which: KlineIndicator,
+    cfg: &data::chart::kline::Config,
+) -> Box<dyn KlineIndicatorImpl> {
+    match which {
+        KlineIndicator::OFI => Box::new(
+            indicator::kline::ofi::OFIIndicator::with_ema_period(cfg.ofi_ema_period),
+        ),
+        KlineIndicator::OFICumulativeEma => Box::new(
+            indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
+                cfg.ofi_ema_period,
+            ),
+        ),
+        KlineIndicator::TradeIntensityHeatmap => Box::new(
+            indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_params(
+                cfg.intensity_lookback,
+                cfg.intensity_bins,
+            ),
+        ),
+        other => indicator::kline::make_empty(other),
+    }
+}
+
 pub struct KlineChart {
     chart: ViewState,
     data_source: PlotData<KlineDataPoint>,
@@ -217,6 +245,8 @@ impl KlineChart {
         enabled_indicators: &[KlineIndicator],
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        kline_config: data::chart::kline::Config,
     ) -> Self {
         match basis {
             Basis::Time(interval) => {
@@ -282,7 +312,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    let mut indi = indicator::kline::make_empty(i);
+                    let mut indi = make_indicator_with_config(i, &kline_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -300,7 +330,7 @@ impl KlineChart {
                     range_bar_processor: None,
                     next_agg_id: 0,
                     range_bar_completed_count: 0,
-                    kline_config: data::chart::kline::Config::default(),
+                    kline_config,
                 }
             }
             Basis::Tick(interval) => {
@@ -344,7 +374,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    let mut indi = indicator::kline::make_empty(i);
+                    let mut indi = make_indicator_with_config(i, &kline_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -362,7 +392,7 @@ impl KlineChart {
                     range_bar_processor: None,
                     next_agg_id: 0,
                     range_bar_completed_count: 0,
-                    kline_config: data::chart::kline::Config::default(),
+                    kline_config,
                 }
             }
             Basis::RangeBar(threshold_dbps) => {
@@ -401,7 +431,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    let mut indi = indicator::kline::make_empty(i);
+                    let mut indi = make_indicator_with_config(i, &kline_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -423,7 +453,7 @@ impl KlineChart {
                     range_bar_processor,
                     next_agg_id: 0,
                     range_bar_completed_count: 0,
-                    kline_config: data::chart::kline::Config::default(),
+                    kline_config,
                 }
             }
         }
@@ -441,6 +471,8 @@ impl KlineChart {
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        kline_config: data::chart::kline::Config,
     ) -> Self {
         // For non-RangeBar bases or missing microstructure, delegate to plain new()
         if !matches!(basis, Basis::RangeBar(_)) || microstructure.is_none() {
@@ -453,6 +485,7 @@ impl KlineChart {
                 enabled_indicators,
                 ticker_info,
                 kind,
+                kline_config,
             );
         }
 
@@ -503,7 +536,7 @@ impl KlineChart {
 
         let mut indicators = EnumMap::default();
         for &i in enabled_indicators {
-            let mut indi = indicator::kline::make_empty(i);
+            let mut indi = make_indicator_with_config(i, &kline_config);
             indi.rebuild_from_source(&data_source);
             indicators[i] = Some(indi);
         }
@@ -525,7 +558,7 @@ impl KlineChart {
             range_bar_processor,
             next_agg_id: 0,
             range_bar_completed_count: 0,
-                    kline_config: data::chart::kline::Config::default(),
+            kline_config,
         }
     }
 
@@ -849,6 +882,21 @@ impl KlineChart {
                 Box::new(indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(period));
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::OFICumulativeEma] = Some(new_indi);
+        }
+        self.invalidate(None);
+    }
+
+    /// Update intensity heatmap lookback / K_max: rebuild the indicator with new params.
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    pub fn set_intensity_params(&mut self, lookback: usize, k_max: u8) {
+        self.kline_config.intensity_lookback = lookback;
+        self.kline_config.intensity_bins = k_max;
+        if self.indicators[KlineIndicator::TradeIntensityHeatmap].is_some() {
+            let mut new_indi: Box<dyn KlineIndicatorImpl> = Box::new(
+                indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_params(lookback, k_max),
+            );
+            new_indi.rebuild_from_source(&self.data_source);
+            self.indicators[KlineIndicator::TradeIntensityHeatmap] = Some(new_indi);
         }
         self.invalidate(None);
     }
@@ -1267,20 +1315,7 @@ impl KlineChart {
         if self.indicators[indicator].is_some() {
             self.indicators[indicator] = None;
         } else {
-            let mut box_indi = match indicator {
-                // Use configured EMA period when creating OFI-family indicators
-                KlineIndicator::OFI => Box::new(
-                    indicator::kline::ofi::OFIIndicator::with_ema_period(
-                        self.kline_config.ofi_ema_period,
-                    ),
-                ) as Box<dyn KlineIndicatorImpl>,
-                KlineIndicator::OFICumulativeEma => Box::new(
-                    indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
-                        self.kline_config.ofi_ema_period,
-                    ),
-                ) as Box<dyn KlineIndicatorImpl>,
-                other => indicator::kline::make_empty(other),
-            };
+            let mut box_indi = make_indicator_with_config(indicator, &self.kline_config);
             box_indi.rebuild_from_source(&self.data_source);
             self.indicators[indicator] = Some(box_indi);
         }

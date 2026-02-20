@@ -247,12 +247,14 @@ fn build_range_bar_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u6
              FORMAT JSONEachRow"
         )
     } else {
-        // Scale limit inversely with threshold: 250 dbps → 500, 500 → 250, 1000 → 125
+        // Scale limit inversely with threshold: BPR25 gets 20,000 bars;
+        // all thresholds get a minimum of 13,000 bars to fully populate
+        // a 7,000-bar intensity lookback window from the first render.
         let reference_dbps = 250u32;
-        let reference_limit = 500u32;
+        let reference_limit = 20_000u32;
         let limit = ((reference_limit as f64) * (reference_dbps as f64) / (threshold_dbps as f64))
             .round()
-            .max(100.0) as u32;
+            .max(13_000.0) as u32;
         format!(
             "SELECT {cols} \
              FROM rangebar_cache.range_bars \

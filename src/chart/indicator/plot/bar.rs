@@ -33,6 +33,33 @@ pub enum BarClass {
     /// Bar colored by candle direction: green if bullish (close >= open), red if bearish.
     /// Histogram direction shows +/-, color shows candle direction for divergence.
     CandleColored { bullish: bool },
+    /// Thermal heatmap bar: `t ∈ [0,1]` maps cold (blue) → hot (red).
+    /// Used by TradeIntensityHeatmap for rolling log-quantile percentile binning.
+    Heatmap { t: f32 },
+}
+
+/// 5-stop thermal colour gradient: blue → cyan → green → amber → red.
+/// `t = 0.0` → calm (blue), `t = 1.0` → spike (red).
+pub fn thermal_color(t: f32) -> iced::Color {
+    let t = t.clamp(0.0, 1.0);
+    // Stops: (t, r, g, b)
+    const STOPS: [(f32, f32, f32, f32); 5] = [
+        (0.00, 0.129, 0.588, 0.953), // #2196F3 blue
+        (0.25, 0.000, 0.737, 0.831), // #00BCD4 cyan
+        (0.50, 0.298, 0.686, 0.314), // #4CAF50 green
+        (0.75, 1.000, 0.757, 0.027), // #FFC107 amber
+        (1.00, 0.957, 0.263, 0.212), // #F44336 red
+    ];
+    // Find the segment
+    let seg = STOPS.windows(2).find(|w| t <= w[1].0).unwrap_or(&STOPS[3..5]);
+    let (t0, r0, g0, b0) = seg[0];
+    let (t1, r1, g1, b1) = seg[1];
+    let f = if (t1 - t0).abs() < f32::EPSILON {
+        0.0
+    } else {
+        (t - t0) / (t1 - t0)
+    };
+    iced::Color::from_rgb(r0 + f * (r1 - r0), g0 + f * (g1 - g0), b0 + f * (b1 - b0))
 }
 
 pub struct BarPlot<V, CL, T> {
@@ -206,6 +233,13 @@ where
                         Point::new(left, top_y),
                         Size::new(bar_width, h_total),
                         color,
+                    );
+                }
+                BarClass::Heatmap { t } => {
+                    frame.fill_rectangle(
+                        Point::new(left, top_y),
+                        Size::new(bar_width, h_total),
+                        thermal_color(t),
                     );
                 }
                 BarClass::BuySell { buy, sell } => {

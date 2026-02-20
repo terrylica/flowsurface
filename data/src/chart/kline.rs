@@ -322,19 +322,36 @@ impl std::fmt::Display for ClusterKind {
 
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 fn default_ofi_ema_period() -> usize { 20 }
+fn default_intensity_lookback() -> usize { 2000 }
+fn default_intensity_bins() -> u8 { 10 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default = "default_ofi_ema_period")]
     pub ofi_ema_period: usize,
+    /// Rolling lookback window size for intensity heatmap binning.
+    #[serde(default = "default_intensity_lookback")]
+    pub intensity_lookback: usize,
+    /// Maximum number of colour levels (bins) for intensity heatmap.
+    /// Actual K is adaptive: clamp(round(cbrt(lookback)), 5, intensity_bins).
+    #[serde(default = "default_intensity_bins")]
+    pub intensity_bins: u8,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             ofi_ema_period: default_ofi_ema_period(),
+            intensity_lookback: default_intensity_lookback(),
+            intensity_bins: default_intensity_bins(),
         }
     }
+}
+
+/// Compute adaptive K for intensity heatmap binning (cube-root rule).
+/// Returns clamp(round(cbrt(n)), 5, k_max).
+pub fn adaptive_k(n: usize, k_max: u8) -> u8 {
+    ((n as f32).cbrt().round() as u8).clamp(5, k_max)
 }
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]

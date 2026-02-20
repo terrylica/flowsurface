@@ -20,6 +20,9 @@ pub enum KlineIndicator {
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     OFICumulativeEma,
     TradeIntensity,
+    /// Rolling log-quantile percentile heatmap for trade intensity (range bars).
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    TradeIntensityHeatmap,
 }
 
 impl Indicator for KlineIndicator {
@@ -35,16 +38,17 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 6] = [
+    const FOR_SPOT: [KlineIndicator; 7] = [
         KlineIndicator::Volume,
         KlineIndicator::Delta,
         KlineIndicator::TradeCount,
         KlineIndicator::OFI,
         KlineIndicator::OFICumulativeEma,
         KlineIndicator::TradeIntensity,
+        KlineIndicator::TradeIntensityHeatmap,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 7] = [
+    const FOR_PERPS: [KlineIndicator; 8] = [
         KlineIndicator::Volume,
         KlineIndicator::OpenInterest,
         KlineIndicator::Delta,
@@ -52,6 +56,7 @@ impl KlineIndicator {
         KlineIndicator::OFI,
         KlineIndicator::OFICumulativeEma,
         KlineIndicator::TradeIntensity,
+        KlineIndicator::TradeIntensityHeatmap,
     ];
 }
 
@@ -65,6 +70,7 @@ impl Display for KlineIndicator {
             KlineIndicator::OFI => write!(f, "OFI"),
             KlineIndicator::OFICumulativeEma => write!(f, "OFI Σ EMA"),
             KlineIndicator::TradeIntensity => write!(f, "Trade Intensity"),
+            KlineIndicator::TradeIntensityHeatmap => write!(f, "Intensity Heatmap"),
         }
     }
 }

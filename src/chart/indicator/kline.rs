@@ -12,6 +12,8 @@ pub mod ofi_cumulative_ema;
 pub mod open_interest;
 pub mod trade_count;
 pub mod trade_intensity;
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+pub mod trade_intensity_heatmap;
 pub mod volume;
 
 pub trait KlineIndicatorImpl {
@@ -80,5 +82,9 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::TradeIntensity => {
             Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
         }
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        KlineIndicator::TradeIntensityHeatmap => Box::new(
+            super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::new(),
+        ),
     }
 }
