@@ -41,6 +41,7 @@ impl UserTimezone {
     /// - otherwise: `Weekday Mon D HH:MM`
     ///
     /// Returns `Some(formatted_timestamp)` when `timestamp_ms` is valid, otherwise `None`.
+    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: de-duped from String variant)
     pub fn format_crosshair_timestamp(&self, timestamp_ms: i64, interval: u64) -> Option<String> {
         DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
             self.with_user_timezone(datetime, |time_with_zone| {
@@ -107,6 +108,7 @@ impl UserTimezone {
         }
     }
 
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     fn format_range_bar_dt<Tz: chrono::TimeZone>(
         datetime: &DateTime<Tz>,
         label_span_ms: u64,
@@ -118,11 +120,11 @@ impl UserTimezone {
             // Labels > 30 days apart: show month + year
             datetime.format("%b %Y").to_string()
         } else if label_span_ms >= 86_400_000 {
-            // Labels > 1 day apart: show month + day
-            datetime.format("%b %-d").to_string()
+            // Labels > 1 day apart: show month + day + short year
+            datetime.format("%b %-d '%y").to_string()
         } else if label_span_ms >= 3_600_000 {
-            // Labels > 1 hour apart: show day + time
-            datetime.format("%b %-d %H:%M").to_string()
+            // Labels > 1 hour apart: show day + short year + time
+            datetime.format("%b %-d '%y %H:%M").to_string()
         } else if label_span_ms >= 60_000 {
             // Labels > 1 minute apart: show time
             datetime.format("%H:%M").to_string()
@@ -132,27 +134,6 @@ impl UserTimezone {
         }
     }
 
-    /// Formats a `DateTime` with detailed format for crosshair display
-    pub fn format_crosshair_timestamp(&self, timestamp_millis: i64, interval: u64) -> String {
-        if let Some(datetime) = DateTime::from_timestamp_millis(timestamp_millis) {
-            if interval < 10000 {
-                return datetime.format("%M:%S.%3f").to_string();
-            }
-
-            match self {
-                UserTimezone::Local => datetime
-                    .with_timezone(&chrono::Local)
-                    .format("%a %b %-d %H:%M")
-                    .to_string(),
-                UserTimezone::Utc => datetime
-                    .with_timezone(&chrono::Utc)
-                    .format("%a %b %-d %H:%M")
-                    .to_string(),
-            }
-        } else {
-            String::new()
-        }
-    }
 }
 
 impl fmt::Display for UserTimezone {

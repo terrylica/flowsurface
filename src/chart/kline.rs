@@ -187,7 +187,7 @@ impl PlotConstants for KlineChart {
 /// Create an indicator with configuration-aware params.
 ///
 /// OFI-family indicators use `ofi_ema_period`; `TradeIntensityHeatmap` uses
-/// `intensity_lookback` / `intensity_bins`. All others use default construction.
+/// `intensity_lookback`. All others use default construction.
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 fn make_indicator_with_config(
     which: KlineIndicator,
@@ -203,9 +203,8 @@ fn make_indicator_with_config(
             ),
         ),
         KlineIndicator::TradeIntensityHeatmap => Box::new(
-            indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_params(
+            indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_lookback(
                 cfg.intensity_lookback,
-                cfg.intensity_bins,
             ),
         ),
         other => indicator::kline::make_empty(other),
@@ -885,14 +884,13 @@ impl KlineChart {
         self.invalidate(None);
     }
 
-    /// Update intensity heatmap lookback / K_max: rebuild the indicator with new params.
+    /// Update intensity heatmap lookback window: rebuild the indicator with new params.
     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-    pub fn set_intensity_params(&mut self, lookback: usize, k_max: u8) {
+    pub fn set_intensity_lookback(&mut self, lookback: usize) {
         self.kline_config.intensity_lookback = lookback;
-        self.kline_config.intensity_bins = k_max;
         if self.indicators[KlineIndicator::TradeIntensityHeatmap].is_some() {
             let mut new_indi: Box<dyn KlineIndicatorImpl> = Box::new(
-                indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_params(lookback, k_max),
+                indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_lookback(lookback),
             );
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::TradeIntensityHeatmap] = Some(new_indi);

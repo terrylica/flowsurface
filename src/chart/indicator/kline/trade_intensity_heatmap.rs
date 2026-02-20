@@ -8,15 +8,20 @@
 //! **Algorithm (no look-ahead bias)**:
 //! ```text
 //! log_val  = log10(intensity).max(0.0)
-//! K_actual = clamp(round(cbrt(window.len())), 5, k_max)  ← adaptive bin count
-//! rank     = count(window ≤ log_val) / window.len()       ← binary search on sorted window
+//! K_actual = max(round(cbrt(window.len())), 5)  ← fully adaptive, no cap
+//! rank     = count(window ≤ log_val) / window.len()  ← binary search on sorted window
 //! bin      = ceil(rank × K_actual).clamp(1, K_actual)
-//! t        = (bin − 1) / (K_actual − 1)                  ← normalise to [0, 1]
+//! t        = (bin − 1) / (K_actual − 1)  ← normalise to [0, 1] for thermal colour
+//! bar_height = bin  ← bounded 1..K, immune to outlier spikes
 //! push log_val to ring-buffer; pop_front if len > lookback
 //! ```
 //!
 //! The rank is computed BEFORE pushing the current bar — the current bar ranks
 //! itself against previous bars only, giving zero look-ahead bias.
+//!
+//! **Incremental updates**: rolling window state (ring buffer + sorted freq map) is kept
+//! on the struct. `on_insert_trades` processes only newly completed bars in O(1), avoiding
+//! the O(N) full rebuild that caused UI freezes with large bar counts.
 
 use crate::chart::{
     Caches, Message, ViewState,
@@ -67,79 +72,77 @@ pub struct TradeIntensityHeatmapIndicator {
     cache: Caches,
     data: BTreeMap<u64, HeatmapPoint>,
     lookback: usize,
-    k_max: u8,
+    // Rolling window state — maintained across calls for O(1) incremental updates.
+    ring: VecDeque<f32>,
+    /// Map from f32.to_bits() → frequency count for O(log N) rank queries.
+    sorted: BTreeMap<u32, u32>,
+    /// Number of tickseries datapoints processed so far (global index).
+    next_idx: usize,
 }
 
 impl TradeIntensityHeatmapIndicator {
     pub fn new() -> Self {
-        Self::with_params(2000, 10)
+        Self::with_lookback(2000)
     }
 
-    pub fn with_params(lookback: usize, k_max: u8) -> Self {
+    pub fn with_lookback(lookback: usize) -> Self {
         Self {
             cache: Caches::default(),
             data: BTreeMap::new(),
             lookback,
-            k_max,
+            ring: VecDeque::new(),
+            sorted: BTreeMap::new(),
+            next_idx: 0,
         }
     }
 
-    /// Rebuild from all datapoints in the tick series.
-    ///
-    /// Maintains a ring buffer (insertion order) and a sorted frequency map
-    /// (f32 bits → count) to compute O(log N) rank queries.
-    fn compute_all(
-        datapoints: impl Iterator<Item = (usize, f32)>,
-        lookback: usize,
-        k_max: u8,
-    ) -> BTreeMap<u64, HeatmapPoint> {
-        let mut ring: VecDeque<f32> = VecDeque::new();
-        // Map from f32.to_bits() → frequency count.
-        // Using bit representation preserves sort order for non-negative floats.
-        let mut sorted: BTreeMap<u32, u32> = BTreeMap::new();
-        let mut result = BTreeMap::new();
+    fn reset_state(&mut self) {
+        self.ring.clear();
+        self.sorted.clear();
+        self.data.clear();
+        self.next_idx = 0;
+    }
 
-        for (idx, intensity) in datapoints {
-            let log_val = intensity.log10().max(0.0);
+    /// Process a single bar at `idx` with the given `intensity`.
+    /// Updates the rolling window and stores the result in `self.data`.
+    fn process_one(&mut self, idx: usize, intensity: f32) {
+        let log_val = intensity.log10().max(0.0);
 
-            // --- Compute bin BEFORE pushing (no look-ahead) ---
-            let n = ring.len();
-            let k_actual = if n == 0 {
-                5u8 // minimum K; first bar always gets bin 1
-            } else {
-                adaptive_k(n, k_max)
-            };
+        // --- Compute bin BEFORE pushing (no look-ahead) ---
+        let n = self.ring.len();
+        let k_actual = if n == 0 {
+            5u8 // minimum K; first bar always gets bin 1
+        } else {
+            adaptive_k(n)
+        };
 
-            let bin = if n == 0 {
-                1u8
-            } else {
-                let target_bits = log_val.to_bits();
-                let rank_count: u32 = sorted
-                    .range(..=target_bits)
-                    .map(|(_, &c)| c)
-                    .sum();
-                let rank = rank_count as f32 / n as f32;
-                ((rank * k_actual as f32).ceil() as u8).clamp(1, k_actual)
-            };
+        let bin = if n == 0 {
+            1u8
+        } else {
+            let target_bits = log_val.to_bits();
+            let rank_count: u32 = self.sorted
+                .range(..=target_bits)
+                .map(|(_, &c)| c)
+                .sum();
+            let rank = rank_count as f32 / n as f32;
+            ((rank * k_actual as f32).ceil() as u8).clamp(1, k_actual)
+        };
 
-            result.insert(idx as u64, HeatmapPoint { intensity, bin, k_actual });
+        self.data.insert(idx as u64, HeatmapPoint { intensity, bin, k_actual });
 
-            // --- Push current bar into window ---
-            *sorted.entry(log_val.to_bits()).or_insert(0) += 1;
-            ring.push_back(log_val);
+        // --- Push current bar into window ---
+        *self.sorted.entry(log_val.to_bits()).or_insert(0) += 1;
+        self.ring.push_back(log_val);
 
-            // Evict oldest if over capacity
-            if ring.len() > lookback {
-                let old = ring.pop_front().unwrap();
-                let bits = old.to_bits();
-                match sorted.get_mut(&bits) {
-                    Some(cnt) if *cnt > 1 => *cnt -= 1,
-                    _ => { sorted.remove(&bits); }
-                }
+        // Evict oldest if over capacity
+        if self.ring.len() > self.lookback {
+            let old = self.ring.pop_front().unwrap();
+            let bits = old.to_bits();
+            match self.sorted.get_mut(&bits) {
+                Some(cnt) if *cnt > 1 => *cnt -= 1,
+                _ => { self.sorted.remove(&bits); }
             }
         }
-
-        result
     }
 
     fn indicator_elem<'a>(
@@ -159,11 +162,16 @@ impl TradeIntensityHeatmapIndicator {
         };
 
         let bar_kind = |p: &HeatmapPoint| BarClass::Heatmap { t: p.t() };
-        let value_fn = |p: &HeatmapPoint| p.intensity;
+        // Height = bin level (1..K_actual) — bounded, outlier-immune.
+        let value_fn = |p: &HeatmapPoint| p.bin as f32;
 
+        // Pin Y scale to adaptive_k(lookback) so early K=5 bars don't appear
+        // incorrectly short alongside mature K=13 bars when scrolling.
+        let k_max = adaptive_k(self.lookback) as f32;
         let plot = BarPlot::new(value_fn, bar_kind)
             .bar_width_factor(0.9)
             .baseline(Baseline::Zero)
+            .fixed_max(k_max)
             .with_tooltip(tooltip);
 
         indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
@@ -188,16 +196,14 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
-        match source {
-            PlotData::TimeBased(_) => {
-                self.data.clear();
+        self.reset_state();
+        if let PlotData::TickBased(tickseries) = source {
+            for (idx, dp) in tickseries.datapoints.iter().enumerate() {
+                if let Some(m) = dp.microstructure {
+                    self.process_one(idx, m.trade_intensity);
+                }
             }
-            PlotData::TickBased(tickseries) => {
-                let iter = tickseries.datapoints.iter().enumerate().filter_map(|(idx, dp)| {
-                    dp.microstructure.map(|m| (idx, m.trade_intensity))
-                });
-                self.data = Self::compute_all(iter, self.lookback, self.k_max);
-            }
+            self.next_idx = tickseries.datapoints.len();
         }
         self.clear_all_caches();
     }
@@ -207,12 +213,29 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
     fn on_insert_trades(
         &mut self,
         _trades: &[Trade],
-        _old_dp_len: usize,
+        old_dp_len: usize,
         source: &PlotData<KlineDataPoint>,
     ) {
-        // Rolling window requires knowledge of the full ordered sequence.
-        // Full rebuild is O(N) which is fast enough for range bars.
-        self.rebuild_from_source(source);
+        match source {
+            PlotData::TimeBased(_) => return,
+            PlotData::TickBased(tickseries) => {
+                let new_len = tickseries.datapoints.len();
+                if self.next_idx == old_dp_len {
+                    // Incremental path: only process newly completed bars.
+                    for idx in old_dp_len..new_len {
+                        if let Some(m) = tickseries.datapoints[idx].microstructure {
+                            self.process_one(idx, m.trade_intensity);
+                        }
+                    }
+                    self.next_idx = new_len;
+                } else {
+                    // State mismatch (e.g. after seek/reset): full rebuild.
+                    self.rebuild_from_source(source);
+                    return; // rebuild_from_source already cleared caches
+                }
+            }
+        }
+        self.clear_all_caches();
     }
 
     fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {

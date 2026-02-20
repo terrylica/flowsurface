@@ -1,3 +1,5 @@
+// FILE-SIZE-OK: 834 lines — multi-axis scale logic (linear + timeseries + range bar)
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Option<String> crosshair API)
 pub mod linear;
 pub mod timeseries;
 
@@ -311,17 +313,20 @@ impl AxisLabelsX<'_> {
 
                 if let Some(timestamp) = interval_keys.get(array_index) {
                     // Range bars have real timestamps — use large interval for date+time format
+                    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Option<String> API)
                     let text_content = self
                         .timezone
                         .format_crosshair_timestamp(*timestamp as i64, 60_000);
 
-                    return Some(AxisLabel::new_x(
-                        snap_x,
-                        text_content,
-                        bounds,
-                        true,
-                        palette,
-                    ));
+                    if let Some(content) = text_content {
+                        return Some(AxisLabel::new_x(
+                            snap_x,
+                            content,
+                            bounds,
+                            true,
+                            palette,
+                        ));
+                    }
                 }
             }
             Basis::Time(timeframe) => {
@@ -540,7 +545,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                                 self.timezone.format_timestamp(
                                     (timestamp / 1000) as i64,
                                     exchange::Timeframe::MS100,
-                                )
+                                ).unwrap_or_default()
                             };
                             labels
                                 .push(AxisLabel::new_x(snap_x, label_text, bounds, false, palette));

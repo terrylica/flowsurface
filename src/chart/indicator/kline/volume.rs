@@ -48,10 +48,12 @@ impl VolumeIndicator {
             }
         };
 
+        // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Overlay→BuySell)
         let bar_kind = |volume: &Volume| {
             if let Some((buy, sell)) = volume.buy_sell() {
-                BarClass::Overlay {
-                    overlay: f32::from(buy) - f32::from(sell),
+                BarClass::BuySell {
+                    buy: f32::from(buy),
+                    sell: f32::from(sell),
                 }
             } else {
                 BarClass::Single
