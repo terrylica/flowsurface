@@ -274,17 +274,13 @@ impl AxisLabelsX<'_> {
                 let array_index = last_index - offset;
 
                 if let Some(timestamp) = interval_keys.get(array_index) {
-                    let text_content = self
+                    let label_content = self
                         .timezone
                         .format_crosshair_timestamp(*timestamp as i64, interval.0.into());
 
-                    return Some(AxisLabel::new_x(
-                        snap_x,
-                        text_content,
-                        bounds,
-                        true,
-                        palette,
-                    ));
+                    if let Some(content) = label_content {
+                        return Some(AxisLabel::new_x(snap_x, content, bounds, true, palette));
+                    }
                 }
             }
             Basis::RangeBar(_) => {
@@ -353,20 +349,21 @@ impl AxisLabelsX<'_> {
                     return None;
                 }
 
-                let text_content = self
+                let label_content = self
                     .timezone
                     .format_crosshair_timestamp(rounded_timestamp as i64, interval);
 
-                return Some(AxisLabel::new_x(
-                    snap_x as f32,
-                    text_content,
-                    bounds,
-                    true,
-                    palette,
-                ));
+                if let Some(content) = label_content {
+                    return Some(AxisLabel::new_x(
+                        snap_x as f32,
+                        content,
+                        bounds,
+                        true,
+                        palette,
+                    ));
+                }
             }
         }
-
         None
     }
 
