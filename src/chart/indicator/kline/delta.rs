@@ -12,12 +12,18 @@ use crate::chart::{
 
 use data::chart::{PlotData, kline::KlineDataPoint};
 use data::util::format_with_commas;
-use exchange::{Kline, Trade};
+use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+
+fn kline_volume_delta(volume: &Volume) -> f32 {
+    volume.buy_sell()
+        .map(|(b, s)| f32::from(b) - f32::from(s))
+        .unwrap_or(0.0)
+}
 
 /// Delta indicator: buy_volume - sell_volume per bar.
 /// Histogram direction shows +/-, bar color follows candle direction for divergence.
@@ -81,7 +87,13 @@ impl KlineIndicatorImpl for DeltaIndicator {
                 self.data = timeseries
                     .volume_data()
                     .into_iter()
-                    .map(|(k, (buy, sell))| (k, (buy - sell, buy >= sell)))
+                    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Volume newtype)
+                    .map(|(k, volume)| {
+                        let (buy, sell) = volume.buy_sell()
+                            .map(|(b, s)| (f32::from(b), f32::from(s)))
+                            .unwrap_or((0.0, 0.0));
+                        (k, (buy - sell, buy >= sell))
+                    })
                     .collect();
             }
             PlotData::TickBased(tickseries) => {
@@ -90,7 +102,7 @@ impl KlineIndicatorImpl for DeltaIndicator {
                     .iter()
                     .enumerate()
                     .map(|(idx, dp)| {
-                        let delta = dp.kline.volume.0 - dp.kline.volume.1;
+                        let delta = kline_volume_delta(&dp.kline.volume);
                         let bullish = dp.kline.close >= dp.kline.open;
                         (idx as u64, (delta, bullish))
                     })
@@ -102,7 +114,7 @@ impl KlineIndicatorImpl for DeltaIndicator {
 
     fn on_insert_klines(&mut self, klines: &[Kline]) {
         for kline in klines {
-            let delta = kline.volume.0 - kline.volume.1;
+            let delta = kline_volume_delta(&kline.volume);
             let bullish = kline.close >= kline.open;
             self.data.insert(kline.time, (delta, bullish));
         }
@@ -120,7 +132,7 @@ impl KlineIndicatorImpl for DeltaIndicator {
             PlotData::TickBased(tickseries) => {
                 let start_idx = old_dp_len.saturating_sub(1);
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
-                    let delta = dp.kline.volume.0 - dp.kline.volume.1;
+                    let delta = kline_volume_delta(&dp.kline.volume);
                     let bullish = dp.kline.close >= dp.kline.open;
                     self.data.insert(idx as u64, (delta, bullish));
                 }

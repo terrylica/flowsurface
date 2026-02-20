@@ -17,7 +17,7 @@ run = "cargo run"
 description = "Launch Flowsurface.app bundle (pre-built binary, dock icon)"
 depends = ["preflight"]
 run = """
-pkill -f "flowsurface.bin" 2>/dev/null || true
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
 sleep 0.5
 open Flowsurface.app
 """

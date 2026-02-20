@@ -70,6 +70,9 @@ pub struct BarPlot<V, CL, T> {
     pub classify: CL, // Single, BuySell, or Signed
     pub tooltip: Option<TooltipFn<T>>,
     pub baseline: Baseline,
+    /// When set, clamps the upper Y extent to this value regardless of visible data.
+    /// Useful for indicators with bounded ranges (e.g. heatmap bins 1..K).
+    pub override_max: Option<f32>,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -83,6 +86,7 @@ impl<V, CL, T> BarPlot<V, CL, T> {
             classify,
             tooltip: None,
             baseline: Baseline::Zero,
+            override_max: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -99,6 +103,12 @@ impl<V, CL, T> BarPlot<V, CL, T> {
 
     pub fn baseline(mut self, b: Baseline) -> Self {
         self.baseline = b;
+        self
+    }
+
+    /// Lock the upper Y bound to a fixed value, ignoring visible-range max.
+    pub fn fixed_max(mut self, v: f32) -> Self {
+        self.override_max = Some(v);
         self
     }
 
@@ -153,7 +163,13 @@ where
         }
 
         let lowest = min_ext;
-        let mut highest = max_ext.max(lowest + f32::EPSILON);
+        // Use override_max when set (e.g. heatmap pins Y to adaptive_k(lookback)),
+        // otherwise autoscale to the visible maximum.
+        let mut highest = if let Some(fixed) = self.override_max {
+            fixed.max(max_ext).max(lowest + f32::EPSILON)
+        } else {
+            max_ext.max(lowest + f32::EPSILON)
+        };
         if highest > lowest && self.padding > 0.0 {
             highest *= 1.0 + self.padding;
         }

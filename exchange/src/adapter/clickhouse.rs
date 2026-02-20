@@ -9,10 +9,10 @@
 //!   FLOWSURFACE_CH_PORT (default: 8123)
 
 use super::{
-    super::{Kline, TickerInfo, Trade},
+    super::{Kline, TickerInfo, Trade, Volume},
     AdapterError, Event, StreamKind,
 };
-use crate::util::MinTicksize;
+use crate::unit::{MinTicksize, Qty};
 
 use iced_futures::{
     futures::{SinkExt, Stream},
@@ -53,7 +53,7 @@ pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> rangebar_core::AggTrade
     rangebar_core::AggTrade {
         agg_trade_id: seq_id,
         price: FixedPoint(trade.price.units),
-        volume: FixedPoint((trade.qty as f64 * 1e8) as i64),
+        volume: FixedPoint((f32::from(trade.qty) as f64 * 1e8) as i64),
         first_trade_id: seq_id,
         last_trade_id: seq_id,
         timestamp: base_us + sub_ms_offset,
@@ -71,9 +71,9 @@ pub fn range_bar_to_kline(bar: &RangeBar, min_tick: MinTicksize) -> Kline {
         bar.high.to_f64() as f32,
         bar.low.to_f64() as f32,
         bar.close.to_f64() as f32,
-        (
-            (bar.buy_volume as f64 / scale) as f32,
-            (bar.sell_volume as f64 / scale) as f32,
+        Volume::BuySell(
+            Qty::from((bar.buy_volume as f64 / scale) as f32),
+            Qty::from((bar.sell_volume as f64 / scale) as f32),
         ),
         min_tick,
     )
@@ -214,7 +214,7 @@ pub async fn fetch_klines(
             ck.high as f32,
             ck.low as f32,
             ck.close as f32,
-            (ck.buy_volume as f32, ck.sell_volume as f32),
+            Volume::BuySell(Qty::from(ck.buy_volume as f32), Qty::from(ck.sell_volume as f32)),
             min_tick,
         ));
     }
@@ -305,7 +305,7 @@ pub async fn fetch_klines_with_microstructure(
             ck.high as f32,
             ck.low as f32,
             ck.close as f32,
-            (ck.buy_volume as f32, ck.sell_volume as f32),
+            Volume::BuySell(Qty::from(ck.buy_volume as f32), Qty::from(ck.sell_volume as f32)),
             min_tick,
         ));
         micro.push(parse_microstructure(&ck));
@@ -447,7 +447,7 @@ pub fn connect_kline_stream(
                                 ck.high as f32,
                                 ck.low as f32,
                                 ck.close as f32,
-                                (ck.buy_volume as f32, ck.sell_volume as f32),
+                                Volume::BuySell(Qty::from(ck.buy_volume as f32), Qty::from(ck.sell_volume as f32)),
                                 ticker_info.min_ticksize,
                             );
                             let _ = output.send(Event::KlineReceived(stream_kind, kline)).await;

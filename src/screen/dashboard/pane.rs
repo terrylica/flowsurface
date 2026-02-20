@@ -1884,7 +1884,6 @@ impl Content {
                     // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
                     data::chart::KlineChartKind::RangeBar => vec![
                         KlineIndicator::TradeIntensityHeatmap,
-                        KlineIndicator::TradeIntensity,
                         KlineIndicator::OFICumulativeEma,
                     ],
                     _ => vec![KlineIndicator::Volume],
@@ -2097,7 +2096,7 @@ impl Content {
             // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
             (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
                 c.set_ofi_ema_period(cfg.ofi_ema_period);
-                c.set_intensity_params(cfg.intensity_lookback, cfg.intensity_bins);
+                c.set_intensity_lookback(cfg.intensity_lookback);
             }
             _ => {}
         }

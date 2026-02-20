@@ -1,8 +1,9 @@
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
-use exchange::util::{Price, PriceStep};
-use exchange::{Kline, Trade};
+use exchange::unit::Qty;
+use exchange::unit::price::{Price, PriceStep};
+use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;
 
@@ -34,10 +35,7 @@ impl TickAccumulation {
             high: trade.price,
             low: trade.price,
             close: trade.price,
-            volume: (
-                if trade.is_sell { 0.0 } else { trade.qty },
-                if trade.is_sell { trade.qty } else { 0.0 },
-            ),
+            volume: Volume::empty_buy_sell().add_trade_qty(trade.is_sell, trade.qty),
         };
 
         Self {
@@ -54,11 +52,7 @@ impl TickAccumulation {
         self.kline.low = self.kline.low.min(trade.price);
         self.kline.close = trade.price;
 
-        if trade.is_sell {
-            self.kline.volume.1 += trade.qty;
-        } else {
-            self.kline.volume.0 += trade.qty;
-        }
+        self.kline.volume = self.kline.volume.add_trade_qty(trade.is_sell, trade.qty);
 
         self.add_trade(trade, step);
     }
@@ -67,17 +61,9 @@ impl TickAccumulation {
         self.footprint.add_trade_to_nearest_bin(trade, step);
     }
 
-    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> f32 {
-        match cluster_kind {
-            ClusterKind::BidAsk => self.footprint.max_qty_by(highest, lowest, f32::max),
-            ClusterKind::DeltaProfile => self
-                .footprint
-                .max_qty_by(highest, lowest, |buy, sell| (buy - sell).abs()),
-            ClusterKind::VolumeProfile => {
-                self.footprint
-                    .max_qty_by(highest, lowest, |buy, sell| buy + sell)
-            }
-        }
+    pub fn max_cluster_qty(&self, cluster_kind: ClusterKind, highest: Price, lowest: Price) -> Qty {
+        self.footprint
+            .max_cluster_qty(cluster_kind, highest, lowest)
     }
 
     pub fn is_full(&self, interval: aggr::TickCount) -> bool {
@@ -152,7 +138,7 @@ impl TickAggr {
             .map(|dp| (dp, self.datapoints.len() - 1))
     }
 
-    pub fn volume_data(&self) -> BTreeMap<u64, (f32, f32)> {
+    pub fn volume_data(&self) -> BTreeMap<u64, exchange::Volume> {
         self.into()
     }
 
@@ -288,7 +274,12 @@ impl TickAggr {
         self.datapoints
             .iter()
             .enumerate()
-            .map(|(idx, dp)| (idx as u64, dp.kline.volume.0 - dp.kline.volume.1))
+            .map(|(idx, dp)| {
+                let delta = dp.kline.volume.buy_sell()
+                    .map(|(b, s)| f32::from(b) - f32::from(s))
+                    .unwrap_or(0.0);
+                (idx as u64, delta)
+            })
             .collect()
     }
 
@@ -445,8 +436,8 @@ impl TickAggr {
         latest: usize,
         highest: Price,
         lowest: Price,
-    ) -> f32 {
-        let mut max_cluster_qty: f32 = 0.0;
+    ) -> Qty {
+        let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints
             .iter()
@@ -462,14 +453,14 @@ impl TickAggr {
     }
 }
 
-impl From<&TickAggr> for BTreeMap<u64, (f32, f32)> {
+impl From<&TickAggr> for BTreeMap<u64, exchange::Volume> {
     /// Converts datapoints into a map of timestamps and volume data
     fn from(tick_aggr: &TickAggr) -> Self {
         tick_aggr
             .datapoints
             .iter()
             .enumerate()
-            .map(|(idx, dp)| (idx as u64, (dp.kline.volume.0, dp.kline.volume.1)))
+            .map(|(idx, dp)| (idx as u64, dp.kline.volume))
             .collect()
     }
 }

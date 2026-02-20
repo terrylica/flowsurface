@@ -6,6 +6,9 @@
 //! Unlike a raw cumulative sum (which drifts unboundedly and becomes dominated
 //! by ancient history), the rolling window stays responsive to recent order flow
 //! direction changes.
+//!
+//! **Incremental updates**: EMA state, rolling window and sum are kept on the struct.
+//! `on_insert_trades` processes only newly completed bars in O(1).
 
 use crate::chart::{
     Caches, Message, ViewState,
@@ -40,6 +43,12 @@ pub struct OFICumulativeEmaIndicator {
     cache: Caches,
     data: BTreeMap<u64, CumOfiPoint>,
     ema_period: usize,
+    // Rolling window state — maintained across calls for O(1) incremental updates.
+    ema: ConditionalEma,
+    ema_window: VecDeque<f32>,
+    rolling_sum: f32,
+    /// Number of tickseries datapoints processed so far (global index).
+    next_idx: usize,
 }
 
 impl OFICumulativeEmaIndicator {
@@ -52,35 +61,33 @@ impl OFICumulativeEmaIndicator {
             cache: Caches::default(),
             data: BTreeMap::new(),
             ema_period: period,
+            ema: ConditionalEma::new(period),
+            ema_window: VecDeque::new(),
+            rolling_sum: 0.0,
+            next_idx: 0,
         }
     }
 
-    /// Compute all data points from scratch using a rolling window.
-    fn compute_all(
-        datapoints: impl Iterator<Item = (usize, f32, bool)>,
-        window_size: usize,
-    ) -> BTreeMap<u64, CumOfiPoint> {
-        let mut ema_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
-        let mut rolling_sum: f32 = 0.0;
-        let mut result = BTreeMap::new();
+    fn reset_state(&mut self) {
+        // Recreate EMA to pick up any period change and reset internal value.
+        self.ema = ConditionalEma::new(self.ema_period);
+        self.ema_window.clear();
+        self.rolling_sum = 0.0;
+        self.data.clear();
+        self.next_idx = 0;
+    }
 
-        for (idx, ema_val, bullish) in datapoints {
-            // Add new value
-            ema_window.push_back(ema_val);
-            rolling_sum += ema_val;
-
-            // Evict oldest if window is full
-            if ema_window.len() > window_size {
-                rolling_sum -= ema_window.pop_front().unwrap_or(0.0);
-            }
-
-            result.insert(idx as u64, CumOfiPoint {
-                cumsum: rolling_sum,
-                bullish,
-            });
+    fn process_one(&mut self, idx: usize, ofi: f32, bullish: bool) {
+        let ema_val = self.ema.update(ofi, true);
+        self.ema_window.push_back(ema_val);
+        self.rolling_sum += ema_val;
+        if self.ema_window.len() > self.ema_period {
+            self.rolling_sum -= self.ema_window.pop_front().unwrap_or(0.0);
         }
-
-        result
+        self.data.insert(idx as u64, CumOfiPoint {
+            cumsum: self.rolling_sum,
+            bullish,
+        });
     }
 
     fn indicator_elem<'a>(
@@ -127,23 +134,15 @@ impl KlineIndicatorImpl for OFICumulativeEmaIndicator {
     }
 
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
-        match source {
-            PlotData::TimeBased(_) => {
-                self.data.clear();
+        self.reset_state();
+        if let PlotData::TickBased(tickseries) = source {
+            for (idx, dp) in tickseries.datapoints.iter().enumerate() {
+                if let Some(m) = dp.microstructure {
+                    let bullish = dp.kline.close >= dp.kline.open;
+                    self.process_one(idx, m.ofi, bullish);
+                }
             }
-            PlotData::TickBased(tickseries) => {
-                let mut ema = ConditionalEma::new(self.ema_period);
-
-                let iter = tickseries.datapoints.iter().enumerate().filter_map(|(idx, dp)| {
-                    dp.microstructure.map(|m| {
-                        let bullish = dp.kline.close >= dp.kline.open;
-                        let ema_val = ema.update(m.ofi, true);
-                        (idx, ema_val, bullish)
-                    })
-                });
-
-                self.data = Self::compute_all(iter, self.ema_period);
-            }
+            self.next_idx = tickseries.datapoints.len();
         }
         self.clear_all_caches();
     }
@@ -153,13 +152,31 @@ impl KlineIndicatorImpl for OFICumulativeEmaIndicator {
     fn on_insert_trades(
         &mut self,
         _trades: &[Trade],
-        _old_dp_len: usize,
+        old_dp_len: usize,
         source: &PlotData<KlineDataPoint>,
     ) {
-        // Rolling window requires access to the last N EMA values, so a full
-        // rebuild is the simplest correct approach. The computation is O(N)
-        // where N = total datapoints, which is fast enough for range bars.
-        self.rebuild_from_source(source);
+        match source {
+            PlotData::TimeBased(_) => return,
+            PlotData::TickBased(tickseries) => {
+                let new_len = tickseries.datapoints.len();
+                if self.next_idx == old_dp_len {
+                    // Incremental path: only process newly completed bars.
+                    for idx in old_dp_len..new_len {
+                        let dp = &tickseries.datapoints[idx];
+                        if let Some(m) = dp.microstructure {
+                            let bullish = dp.kline.close >= dp.kline.open;
+                            self.process_one(idx, m.ofi, bullish);
+                        }
+                    }
+                    self.next_idx = new_len;
+                } else {
+                    // State mismatch: full rebuild.
+                    self.rebuild_from_source(source);
+                    return; // rebuild_from_source already cleared caches
+                }
+            }
+        }
+        self.clear_all_caches();
     }
 
     fn on_ticksize_change(&mut self, source: &PlotData<KlineDataPoint>) {
