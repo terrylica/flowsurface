@@ -25,7 +25,7 @@ struct State {
 
 pub struct MultiSplit<'a, Message> {
     panels: Vec<Element<'a, Message>>,
-    splits: &'a Vec<f32>,
+    splits: &'a [f32],
     resize: fn(usize, f32) -> Message,
 }
 
@@ -41,13 +41,17 @@ impl<'a, Message> MultiSplit<'a, Message>
 where
     Message: 'a,
 {
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
     pub fn new(
         panels: Vec<Element<'a, Message>>,
-        splits: &'a Vec<f32>,
+        splits: &'a [f32],
         resize: fn(usize, f32) -> Message,
     ) -> Self {
         assert!(panels.len() >= 2, "MultiSplit needs at least 2 panels");
-        assert_eq!(
+        // debug_assert so stale saved-state splits don't panic in release.
+        // Root-cause fix is in KlineChart::new / new_with_microstructure which
+        // recalculate splits on construction; this is the last-resort safety net.
+        debug_assert_eq!(
             panels.len() - 1,
             splits.len(),
             "Number of splits must be one less than number of panels"

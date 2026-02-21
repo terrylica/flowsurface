@@ -590,7 +590,12 @@ pub fn view<'a, T: Chart>(
                 .chain(indicators)
                 .collect::<Vec<_>>();
 
-            MultiSplit::new(panels, &state.layout.splits, |index, position| {
+            // Safety net: clamp splits to exactly panels.len()-1 so a stale
+            // saved state (more splits than current subplots) never panics.
+            let n = panels.len() - 1;
+            let splits = &state.layout.splits[..n.min(state.layout.splits.len())];
+
+            MultiSplit::new(panels, splits, |index, position| {
                 Message::SplitDragged(index, position)
             })
             .into()

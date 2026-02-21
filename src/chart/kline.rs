@@ -442,6 +442,19 @@ impl KlineChart {
                     .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
                     .ok();
 
+                // Fix stale splits: saved states may have more splits than current
+                // subplot panels (e.g. TradeIntensityHeatmap was reclassified from
+                // subplot → candle colouring). Recalculate only when count mismatches.
+                let subplot_count = indicators.iter()
+                    .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+                    .count();
+                if let Some(&main_split) = chart.layout.splits.first() {
+                    if chart.layout.splits.len() != subplot_count {
+                        chart.layout.splits =
+                            data::util::calc_panel_splits(main_split, subplot_count, None);
+                    }
+                }
+
                 KlineChart {
                     chart,
                     data_source,
@@ -546,6 +559,17 @@ impl KlineChart {
         let range_bar_processor = RangeBarProcessor::new(threshold_dbps)
             .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
             .ok();
+
+        // Fix stale splits (same as in new() RangeBar path above).
+        let subplot_count = indicators.iter()
+            .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+            .count();
+        if let Some(&main_split) = chart.layout.splits.first() {
+            if chart.layout.splits.len() != subplot_count {
+                chart.layout.splits =
+                    data::util::calc_panel_splits(main_split, subplot_count, None);
+            }
+        }
 
         KlineChart {
             chart,
