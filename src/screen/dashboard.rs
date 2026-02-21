@@ -1,4 +1,5 @@
 // FILE-SIZE-OK: upstream structure, not our code to refactor
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/90
 pub mod pane;
 pub mod panel;
 pub mod sidebar;
@@ -811,6 +812,37 @@ impl Dashboard {
         }
     }
 
+    pub fn switch_all_panes_to_ticker(
+        &mut self,
+        main_window: window::Id,
+        ticker_info: TickerInfo,
+    ) -> Task<Message> {
+        let pane_infos: Vec<(window::Id, pane_grid::Pane, ContentKind)> = self
+            .iter_all_panes_mut(main_window)
+            .filter_map(|(window, pane, state)| {
+                match state.content.kind() {
+                    ContentKind::Starter => None,
+                    kind => Some((window, pane, kind)),
+                }
+            })
+            .collect();
+
+        if pane_infos.is_empty() {
+            return Task::done(Message::Notification(Toast::warn(
+                "No active panels to sync".to_string(),
+            )));
+        }
+
+        let tasks: Vec<Task<Message>> = pane_infos
+            .iter()
+            .map(|(window, pane, content_kind)| {
+                self.init_pane(main_window, *window, *pane, ticker_info, *content_kind)
+            })
+            .collect();
+
+        Task::batch(tasks)
+    }
+
     pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
         exchange::fetcher::toggle_trade_fetch(is_enabled);
 
@@ -1101,12 +1133,12 @@ impl Dashboard {
             });
     }
 
-    pub fn tick(&mut self, now: Instant, main_window: window::Id) -> Task<Message> {
+    pub fn tick(&mut self, now: Instant, timezone: UserTimezone, main_window: window::Id) -> Task<Message> {
         let mut tasks = vec![];
         let layout_id = self.layout_id;
 
         self.iter_all_panes_mut(main_window)
-            .for_each(|(_window_id, _pane, state)| match state.tick(now) {
+            .for_each(|(_window_id, _pane, state)| match state.tick(now, timezone) {
                 Some(pane::Action::Chart(action)) => match action {
                     chart::Action::ErrorOccurred(err) => {
                         state.status = pane::Status::Ready;

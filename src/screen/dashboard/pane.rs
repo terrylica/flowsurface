@@ -1,4 +1,5 @@
 // FILE-SIZE-OK: upstream file, splitting out of scope for this fork
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/89
 use crate::{
     chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
     modal::{
@@ -1716,9 +1717,14 @@ impl State {
         self.content.last_tick()
     }
 
-    pub fn tick(&mut self, now: Instant) -> Option<Action> {
+    pub fn tick(&mut self, now: Instant, timezone: UserTimezone) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
+
+        // Update timezone for TimeAndSales panel so trade timestamps reflect the user's timezone.
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            panel.set_timezone(timezone);
+        }
 
         if let Some(streams) = self.streams.due_streams_to_resolve(now) {
             return Some(Action::ResolveStreams(streams));

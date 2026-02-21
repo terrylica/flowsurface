@@ -1,3 +1,4 @@
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/90
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
@@ -237,10 +238,11 @@ impl Flowsurface {
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
+                let timezone = self.timezone;
 
                 return self
                     .active_dashboard_mut()
-                    .tick(now, main_window_id)
+                    .tick(now, timezone, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -577,6 +579,18 @@ impl Flowsurface {
                                     .switch_tickers_in_group(main_window_id, ticker_info)
                             }
                         };
+
+                        return task.map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        });
+                    }
+                    Some(dashboard::sidebar::Action::SyncToAllPanes(ticker_info)) => {
+                        let main_window_id = self.main_window.id;
+
+                        let task = self
+                            .active_dashboard_mut()
+                            .switch_all_panes_to_ticker(main_window_id, ticker_info);
 
                         return task.map(move |msg| Message::Dashboard {
                             layout_id: None,
