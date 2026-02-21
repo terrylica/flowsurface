@@ -1035,6 +1035,19 @@ impl State {
         })
     }
 
+    // NOTE(fork): Pan the focused chart from the app-level keyboard subscription.
+    // Called by `dashboard::Message::ChartKeyNav` when the cursor may be off-chart.
+    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+    pub fn apply_keyboard_nav(&mut self, event: &iced::keyboard::Event) {
+        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+        if let Content::Kline { chart: Some(c), .. } = &mut self.content
+            && let Some(msg) = c.keyboard_nav_msg(event)
+        {
+            super::chart::update(c, &msg);
+            let _ = c.invalidate(None);
+        }
+    }
+
     pub fn update(&mut self, msg: Event) -> Option<Effect> {
         match msg {
             Event::ShowModal(requested_modal) => {

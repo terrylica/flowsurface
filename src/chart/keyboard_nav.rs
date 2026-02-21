@@ -13,25 +13,20 @@
 //!   So `ArrowLeft` (towards history) **increases** `translation.x`, mirroring
 //!   a rightward mouse drag.
 
-use super::Message;
+use super::{Message, ViewState};
 use iced::{Vector, keyboard};
-use iced::widget::canvas;
 
 const BARS_SMALL: f32 = 10.0;
 const BARS_LARGE: f32 = 50.0;
 
-/// Handle a keyboard event and return a pan action, or `None` if the key is
-/// not a navigation key.
+/// Handle a keyboard event and return a `Message::Translated`, or `None` if
+/// the key is not a navigation key.
 ///
-/// Called from `canvas_interaction()` with the private `ViewState` fields
-/// extracted at the call site (avoids exposing them to this submodule).
-pub fn handle(
-    event: &keyboard::Event,
-    translation: Vector,
-    cell_width: f32,
-    scaling: f32,
-    bounds_width: f32,
-) -> Option<canvas::Action<Message>> {
+/// Returns `Option<Message>` (not `canvas::Action`) so it can be called from
+/// both `canvas_interaction()` and the app-level `keyboard::listen()` subscription.
+/// The canvas path wraps the return in `canvas::Action::publish(...).and_capture()`.
+/// The subscription path routes through `dashboard::Message::ChartKeyNav`.
+pub fn handle(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
     let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
     };
@@ -39,26 +34,26 @@ pub fn handle(
     let shift = modifiers.shift();
     let bars = if shift { BARS_LARGE } else { BARS_SMALL };
     // Convert bar count → chart-coordinate step (pixels ÷ scaling)
-    let step = bars * cell_width / scaling;
+    let step = bars * state.cell_width / state.scaling;
 
     let new_x = match key.as_ref() {
         // ArrowLeft  → older history (translation.x increases, chart slides right)
-        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => translation.x + step,
+        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => state.translation.x + step,
         // ArrowRight → towards present (translation.x decreases, chart slides left)
-        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => translation.x - step,
+        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => state.translation.x - step,
         // PageUp → one full viewport width towards history
         keyboard::Key::Named(keyboard::key::Named::PageUp) => {
-            translation.x + bounds_width / scaling
+            state.translation.x + state.bounds.width / state.scaling
         }
         // PageDown → one full viewport width towards present
         keyboard::Key::Named(keyboard::key::Named::PageDown) => {
-            translation.x - bounds_width / scaling
+            state.translation.x - state.bounds.width / state.scaling
         }
         // Home → jump to latest bar (reset pan to centre-on-latest)
         keyboard::Key::Named(keyboard::key::Named::Home) => 0.0,
         _ => return None,
     };
 
-    let new_translation = Vector::new(new_x, translation.y);
-    Some(canvas::Action::publish(Message::Translated(new_translation)).and_capture())
+    let new_translation = Vector::new(new_x, state.translation.y);
+    Some(Message::Translated(new_translation))
 }

@@ -902,6 +902,13 @@ impl KlineChart {
         self.invalidate(None);
     }
 
+    /// NOTE(fork): Compute a pan message from a keyboard event using chart state.
+    /// Called from the app-level `keyboard::listen()` subscription to pan without canvas focus.
+    /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+    pub fn keyboard_nav_msg(&self, event: &iced::keyboard::Event) -> Option<super::Message> {
+        super::keyboard_nav::handle(event, self.state())
+    }
+
     pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade]) {
         self.raw_trades.extend_from_slice(trades_buffer);
 

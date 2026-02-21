@@ -267,16 +267,8 @@ fn canvas_interaction<T: Chart>(
                         *interaction = Interaction::None;
                         Some(canvas::Action::request_redraw().and_capture())
                     }
-                    _ => {
-                        let state = chart.state();
-                        keyboard_nav::handle(
-                            keyboard_event,
-                            state.translation,
-                            state.cell_width,
-                            state.scaling,
-                            state.bounds.width,
-                        )
-                    }
+                    _ => keyboard_nav::handle(keyboard_event, chart.state())
+                        .map(|msg| canvas::Action::publish(msg).and_capture()),
                 },
                 _ => None,
             }

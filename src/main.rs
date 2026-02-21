@@ -714,13 +714,30 @@ impl Flowsurface {
         let tick = iced::time::every(std::time::Duration::from_millis(100)).map(Message::Tick);
 
         let hotkeys = keyboard::listen().filter_map(|event| {
-            let keyboard::Event::KeyPressed { key, .. } = event else {
+            let keyboard::Event::KeyPressed { key, .. } = &event else {
                 return None;
             };
-            match key {
-                keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Message::GoBack),
-                _ => None,
+            if matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
+                return Some(Message::GoBack);
             }
+            // NOTE(fork): Chart keyboard navigation — routed to focused pane's chart.
+            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+            if matches!(
+                key,
+                keyboard::Key::Named(
+                    keyboard::key::Named::ArrowLeft
+                        | keyboard::key::Named::ArrowRight
+                        | keyboard::key::Named::PageUp
+                        | keyboard::key::Named::PageDown
+                        | keyboard::key::Named::Home,
+                )
+            ) {
+                return Some(Message::Dashboard {
+                    layout_id: None,
+                    event: dashboard::Message::ChartKeyNav(event),
+                });
+            }
+            None
         });
 
         Subscription::batch(vec![
