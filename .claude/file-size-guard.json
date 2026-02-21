@@ -1,0 +1,29 @@
+{
+  "defaults": { "warn": 500, "block": 1000 },
+  "extensions": {
+    ".rs": { "warn": 500, "block": 1000 }
+  },
+  "excludes": [
+    "kline.rs",
+    "pane.rs",
+    "comparison.rs",
+    "tickers_table.rs",
+    "dashboard.rs",
+    "chart.rs",
+    "main.rs",
+    "settings.rs",
+    "heatmap.rs",
+    "ladder.rs",
+    "scale.rs",
+    "decorate.rs",
+    "stream.rs",
+    "style.rs",
+    "timeandsales.rs",
+    "column_drag.rs",
+    "toast.rs",
+    "plot.rs",
+    "*.generated.*",
+    "*.lock"
+  ],
+  "escapeComment": "FILE-SIZE-OK"
+}
