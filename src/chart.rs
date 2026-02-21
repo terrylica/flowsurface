@@ -504,6 +504,8 @@ pub fn view<'a, T: Chart>(
     }
 
     let state = chart.state();
+    // Propagate timezone into ViewState so canvas::Program::draw can read it.
+    state.timezone.set(timezone);
 
     let axis_labels_x = Canvas::new(AxisLabelsX {
         labels_cache: &state.cache.x_labels,
@@ -668,6 +670,10 @@ pub struct ViewState {
     decimals: usize,
     ticker_info: TickerInfo,
     layout: ViewConfig,
+    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
+    // Cell allows the view() fn to write timezone through &self so canvas::Program::draw
+    // can read it without needing &mut access or an extra parameter.
+    timezone: std::cell::Cell<data::UserTimezone>,
 }
 
 impl ViewState {
@@ -695,6 +701,7 @@ impl ViewState {
             decimals,
             ticker_info,
             layout,
+            timezone: std::cell::Cell::new(data::UserTimezone::Utc),
         }
     }
 

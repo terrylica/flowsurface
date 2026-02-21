@@ -8,6 +8,10 @@ const FMT_TIME_MS: &str = "%M:%S.%3f";
 const FMT_DATETIME: &str = "%a %b %-d %H:%M";
 const FMT_DATETIME_SEC: &str = "%a %b %-d %H:%M:%S";
 const FMT_DATETIME_SEC_MS: &str = "%a %b %-d %H:%M:%S.%3f";
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
+/// Compact bar timestamp: "Jan 20 14:35:42.123" — no weekday, always ms precision.
+/// Used for range-bar open/close fields in the crosshair tooltip.
+const FMT_BAR_TIME_MS: &str = "%b %-d %H:%M:%S.%3f";
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum UserTimezone {
@@ -114,6 +118,19 @@ impl UserTimezone {
         } else {
             datetime.format("%H:%M").to_string()
         }
+    }
+
+    /// Formats a Unix timestamp (ms) for the range-bar crosshair tooltip timing row.
+    ///
+    /// Always includes milliseconds. Output: `"Jan 20 14:35:42.123"`.
+    /// Used for the compact open/close timestamp fields in the OHLC tooltip header.
+    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
+    pub fn format_bar_time_ms(&self, timestamp_ms: i64) -> Option<String> {
+        DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
+            self.with_user_timezone(datetime, |time_with_zone| {
+                time_with_zone.format(FMT_BAR_TIME_MS).to_string()
+            })
+        })
     }
 
     /// Formats a timestamp for range bar axis labels.

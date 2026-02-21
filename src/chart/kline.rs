@@ -1,7 +1,7 @@
 // FILE-SIZE-OK: upstream file, splitting out of scope for this fork
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
 use super::{
-    Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, TEXT_SIZE, ViewState,
+    Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, ViewState,
     indicator, request_fetch, scale::linear::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
@@ -1570,6 +1570,8 @@ impl canvas::Program<Message> for KlineChart {
                     frame,
                     palette,
                     rounded_aggregation,
+                    chart.basis,
+                    chart.timezone.get(),
                 );
             }
         });
@@ -2282,12 +2284,45 @@ fn draw_cluster_text(
     });
 }
 
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
+/// Formats a duration given in milliseconds as a compact human-readable string.
+/// Examples: 500 → "500ms", 45_234 → "45.234s", 63_555 → "1m 3.555s", 3_661_000 → "1h 1m 1s"
+fn format_duration_ms(ms: u64) -> String {
+    if ms >= 3_600_000 {
+        let h = ms / 3_600_000;
+        let rem = ms % 3_600_000;
+        let m = rem / 60_000;
+        let s = rem % 60_000 / 1_000;
+        if m == 0 && s == 0 {
+            format!("{h}h")
+        } else if s == 0 {
+            format!("{h}h {m}m")
+        } else {
+            format!("{h}h {m}m {s}s")
+        }
+    } else if ms >= 60_000 {
+        let m = ms / 60_000;
+        let rem_ms = ms % 60_000;
+        if rem_ms == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m {:.3}s", rem_ms as f64 / 1000.0)
+        }
+    } else if ms >= 1_000 {
+        format!("{:.3}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 fn draw_crosshair_tooltip(
     data: &PlotData<KlineDataPoint>,
     ticker_info: &TickerInfo,
     frame: &mut canvas::Frame,
     palette: &Extended,
     at_interval: u64,
+    basis: Basis,
+    timezone: data::UserTimezone,
 ) {
     let kline_opt = match data {
         PlotData::TimeBased(timeseries) => timeseries
@@ -2326,52 +2361,95 @@ fn draw_crosshair_tooltip(
         };
 
         let base_color = palette.background.base.text;
+        let dim_color = base_color.scale_alpha(0.65);
         let precision = ticker_info.min_ticksize;
 
-        let segments = [
+        let pct_str = format!("{change_pct:+.2}%");
+        let open_str = kline.open.to_string(precision);
+        let high_str = kline.high.to_string(precision);
+        let low_str = kline.low.to_string(precision);
+        let close_str = kline.close.to_string(precision);
+
+        let segments: &[(&str, iced::Color, bool)] = &[
             ("O", base_color, false),
-            (&kline.open.to_string(precision), change_color, true),
+            (&open_str, change_color, true),
             ("H", base_color, false),
-            (&kline.high.to_string(precision), change_color, true),
+            (&high_str, change_color, true),
             ("L", base_color, false),
-            (&kline.low.to_string(precision), change_color, true),
+            (&low_str, change_color, true),
             ("C", base_color, false),
-            (&kline.close.to_string(precision), change_color, true),
-            (&format!("{change_pct:+.2}%"), change_color, true),
+            (&close_str, change_color, true),
+            (&pct_str, change_color, true),
         ];
 
-        let total_width: f32 = segments
+        let ohlc_width: f32 = segments
             .iter()
-            .map(|(s, _, _)| s.len() as f32 * (TEXT_SIZE * 0.8))
+            .map(|(s, _, is_val)| s.len() as f32 * 8.0 + if *is_val { 6.0 } else { 2.0 })
             .sum();
+
+        // Timing row: open time, close time, duration — only for index-based bases.
+        let timing_line: Option<String> = match (basis, data) {
+            (Basis::RangeBar(_) | Basis::Tick(_), PlotData::TickBased(tick_aggr)) => {
+                let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
+                let fwd = tick_aggr.datapoints.len().saturating_sub(1 + index);
+                let close_ms = kline.time as i64;
+                // Open time = previous bar's close time (bars are stored oldest-first).
+                let open_ms = (fwd > 0)
+                    .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
+
+                let close_fmt = timezone.format_bar_time_ms(close_ms).unwrap_or_default();
+                let open_fmt = open_ms
+                    .and_then(|ms| timezone.format_bar_time_ms(ms))
+                    .unwrap_or_else(|| "—".into());
+                let dur_fmt = open_ms
+                    .map(|open| format_duration_ms(close_ms.saturating_sub(open).max(0) as u64))
+                    .unwrap_or_else(|| "—".into());
+
+                Some(format!("{open_fmt}  →  {close_fmt}   ({dur_fmt})"))
+            }
+            _ => None,
+        };
+
+        let timing_width = timing_line
+            .as_deref()
+            .map(|s| s.len() as f32 * 7.5 + 16.0)
+            .unwrap_or(0.0);
+        let bg_width = ohlc_width.max(timing_width);
+        let bg_height = if timing_line.is_some() { 34.0 } else { 16.0 };
 
         let position = Point::new(8.0, 8.0);
 
-        let tooltip_rect = Rectangle {
-            x: position.x,
-            y: position.y,
-            width: total_width,
-            height: 16.0,
-        };
-
         frame.fill_rectangle(
-            tooltip_rect.position(),
-            tooltip_rect.size(),
+            position,
+            iced::Size::new(bg_width, bg_height),
             palette.background.weakest.color.scale_alpha(0.9),
         );
 
+        // Row 1: O H L C %
         let mut x = position.x;
         for (text, seg_color, is_value) in segments {
             frame.fill_text(canvas::Text {
                 content: text.to_string(),
                 position: Point::new(x, position.y),
                 size: iced::Pixels(12.0),
-                color: seg_color,
+                color: *seg_color,
                 font: style::AZERET_MONO,
                 ..canvas::Text::default()
             });
             x += text.len() as f32 * 8.0;
-            x += if is_value { 6.0 } else { 2.0 };
+            x += if *is_value { 6.0 } else { 2.0 };
+        }
+
+        // Row 2: open → close  (duration)
+        if let Some(timing) = timing_line {
+            frame.fill_text(canvas::Text {
+                content: timing,
+                position: Point::new(position.x, position.y + 18.0),
+                size: iced::Pixels(10.5),
+                color: dim_color,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
         }
     }
 }
