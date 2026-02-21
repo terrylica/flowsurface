@@ -2,6 +2,7 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
+mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
 mod scale;
 
 use crate::style;
@@ -253,10 +254,12 @@ fn canvas_interaction<T: Chart>(
             }
         }
         Event::Keyboard(keyboard_event) => {
-            cursor_position?;
+            // NOTE(fork): cursor guard moved into Shift arm so arrow keys work
+            // without the cursor being on the chart. See keyboard_nav.rs / issue#100.
             match keyboard_event {
                 iced::keyboard::Event::KeyPressed { key, .. } => match key.as_ref() {
                     keyboard::Key::Named(keyboard::key::Named::Shift) => {
+                        cursor_position?; // ruler requires cursor on-chart
                         *interaction = Interaction::Ruler { start: None };
                         Some(canvas::Action::request_redraw().and_capture())
                     }
@@ -264,7 +267,16 @@ fn canvas_interaction<T: Chart>(
                         *interaction = Interaction::None;
                         Some(canvas::Action::request_redraw().and_capture())
                     }
-                    _ => None,
+                    _ => {
+                        let state = chart.state();
+                        keyboard_nav::handle(
+                            keyboard_event,
+                            state.translation,
+                            state.cell_width,
+                            state.scaling,
+                            state.bounds.width,
+                        )
+                    }
                 },
                 _ => None,
             }
