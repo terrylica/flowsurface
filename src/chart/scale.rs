@@ -312,11 +312,20 @@ impl AxisLabelsX<'_> {
                 let array_index = last_index - offset;
 
                 if let Some(timestamp) = interval_keys.get(array_index) {
-                    // Range bars have real timestamps — use large interval for date+time format
-                    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Option<String> API)
+                    // Estimate bar duration from an adjacent timestamp.
+                    // checked_sub avoids the usize underflow guard; abs_diff is
+                    // order-independent (saturating_sub would silently return 0 if
+                    // the adjacent bar happened to have a smaller timestamp).
+                    let bar_duration_ms = array_index
+                        .checked_sub(1)
+                        .and_then(|prev| interval_keys.get(prev))
+                        .or_else(|| interval_keys.get(array_index + 1))
+                        .map(|&adj| timestamp.abs_diff(adj))
+                        .unwrap_or(1_000);
+
                     let text_content = self
                         .timezone
-                        .format_crosshair_timestamp(*timestamp as i64, 60_000);
+                        .format_range_bar_crosshair(*timestamp as i64, bar_duration_ms);
 
                     if let Some(content) = text_content {
                         return Some(AxisLabel::new_x(

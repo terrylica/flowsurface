@@ -2,7 +2,7 @@ pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
-mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
+pub mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
 mod scale;
 
 use crate::style;
@@ -267,7 +267,7 @@ fn canvas_interaction<T: Chart>(
                         *interaction = Interaction::None;
                         Some(canvas::Action::request_redraw().and_capture())
                     }
-                    _ => keyboard_nav::handle(keyboard_event, chart.state())
+                    _ => keyboard_nav::process(keyboard_event, chart.state())
                         .map(|msg| canvas::Action::publish(msg).and_capture()),
                 },
                 _ => None,

@@ -721,17 +721,9 @@ impl Flowsurface {
                 return Some(Message::GoBack);
             }
             // NOTE(fork): Chart keyboard navigation — routed to focused pane's chart.
+            // Key list is authoritative in keyboard_nav::is_nav_key(); no duplicate here.
             // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
-            if matches!(
-                key,
-                keyboard::Key::Named(
-                    keyboard::key::Named::ArrowLeft
-                        | keyboard::key::Named::ArrowRight
-                        | keyboard::key::Named::PageUp
-                        | keyboard::key::Named::PageDown
-                        | keyboard::key::Named::Home,
-                )
-            ) {
+            if chart::keyboard_nav::is_nav_key(key) {
                 return Some(Message::Dashboard {
                     layout_id: None,
                     event: dashboard::Message::ChartKeyNav(event),

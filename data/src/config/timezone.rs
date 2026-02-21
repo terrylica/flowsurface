@@ -2,6 +2,13 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+// Named format string constants — avoids magic string literals and ensures
+// that any future change only needs to happen in one place.
+const FMT_TIME_MS: &str = "%M:%S.%3f";
+const FMT_DATETIME: &str = "%a %b %-d %H:%M";
+const FMT_DATETIME_SEC: &str = "%a %b %-d %H:%M:%S";
+const FMT_DATETIME_SEC_MS: &str = "%a %b %-d %H:%M:%S.%3f";
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum UserTimezone {
     #[default]
@@ -46,9 +53,29 @@ impl UserTimezone {
         DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
             self.with_user_timezone(datetime, |time_with_zone| {
                 if interval < 10000 {
-                    time_with_zone.format("%M:%S.%3f").to_string()
+                    time_with_zone.format(FMT_TIME_MS).to_string()
                 } else {
-                    time_with_zone.format("%a %b %-d %H:%M").to_string()
+                    time_with_zone.format(FMT_DATETIME).to_string()
+                }
+            })
+        })
+    }
+
+    /// Formats a Unix timestamp (milliseconds) for range bar crosshair tooltips.
+    ///
+    /// Always includes seconds since range bars can complete within seconds.
+    /// Shows milliseconds when `bar_duration_ms` is sub-second (< 1 000 ms).
+    pub fn format_range_bar_crosshair(
+        &self,
+        timestamp_ms: i64,
+        bar_duration_ms: u64,
+    ) -> Option<String> {
+        DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
+            self.with_user_timezone(datetime, |time_with_zone| {
+                if bar_duration_ms < 1_000 {
+                    time_with_zone.format(FMT_DATETIME_SEC_MS).to_string()
+                } else {
+                    time_with_zone.format(FMT_DATETIME_SEC).to_string()
                 }
             })
         })
@@ -125,12 +152,15 @@ impl UserTimezone {
         } else if label_span_ms >= 3_600_000 {
             // Labels > 1 hour apart: show day + short year + time
             datetime.format("%b %-d '%y %H:%M").to_string()
-        } else if label_span_ms >= 60_000 {
-            // Labels > 1 minute apart: show time
+        } else if label_span_ms >= 300_000 {
+            // Labels > 5 minutes apart: show HH:MM only
             datetime.format("%H:%M").to_string()
-        } else {
-            // Labels < 1 minute apart: show time with seconds
+        } else if label_span_ms >= 1_000 {
+            // Labels 1s–5min apart: show seconds
             datetime.format("%H:%M:%S").to_string()
+        } else {
+            // Labels < 1s apart: show milliseconds
+            datetime.format("%H:%M:%S.%3f").to_string()
         }
     }
 
