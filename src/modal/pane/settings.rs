@@ -496,6 +496,20 @@ pub fn kline_cfg_view<'a>(
                 )
             });
 
+            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+            let thermal_wicks_toggle = checkbox(cfg.thermal_wicks)
+                .label("Thermal Wicks")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            thermal_wicks: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
             split_column![
                 column![
                     text("OFI EMA Period").size(14),
@@ -512,6 +526,7 @@ pub fn kline_cfg_view<'a>(
                     ]
                     .spacing(8)
                     .align_y(Alignment::Center),
+                    thermal_wicks_toggle,
                 ]
                 .spacing(8),
                 row![

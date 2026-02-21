@@ -68,6 +68,10 @@ impl Chart for KlineChart {
             if !KlineIndicator::for_market(market).contains(selected_indicator) {
                 continue;
             }
+            // TradeIntensityHeatmap colours candle bodies; it has no subplot panel.
+            if *selected_indicator == KlineIndicator::TradeIntensityHeatmap {
+                continue;
+            }
             if let Some(indi) = self.indicators[*selected_indicator].as_ref() {
                 elements.push(indi.element(chart_state, earliest..=latest));
             }
@@ -1310,7 +1314,10 @@ impl KlineChart {
     }
 
     pub fn toggle_indicator(&mut self, indicator: KlineIndicator) {
-        let prev_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
+        // Count only panel indicators (TradeIntensityHeatmap colours candles, not a panel).
+        let prev_panel_count = self.indicators.iter()
+            .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+            .count();
 
         if self.indicators[indicator].is_some() {
             self.indicators[indicator] = None;
@@ -1321,11 +1328,13 @@ impl KlineChart {
         }
 
         if let Some(main_split) = self.chart.layout.splits.first() {
-            let current_indi_count = self.indicators.values().filter(|v| v.is_some()).count();
+            let current_panel_count = self.indicators.iter()
+                .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
+                .count();
             self.chart.layout.splits = data::util::calc_panel_splits(
                 *main_split,
-                current_indi_count,
-                Some(prev_indi_count),
+                current_panel_count,
+                Some(prev_panel_count),
             );
         }
     }
@@ -1449,7 +1458,7 @@ impl canvas::Program<Message> for KlineChart {
                         earliest,
                         latest,
                         interval_to_x,
-                        |frame, x_position, kline, trades| {
+                        |frame, _visual_idx, x_position, kline, trades| {
                             let cluster_scaling =
                                 effective_cluster_qty(*scaling, max_cluster_qty, trades, *clusters);
 
@@ -1476,14 +1485,31 @@ impl canvas::Program<Message> for KlineChart {
                 }
                 KlineChartKind::Candles | KlineChartKind::RangeBar => {
                     let candle_width = chart.cell_width * 0.8;
+                    // Look up heatmap indicator once for thermal candle body colouring.
+                    let heatmap_indi =
+                        self.indicators[KlineIndicator::TradeIntensityHeatmap].as_deref();
+                    let total_len = if let PlotData::TickBased(t) = &self.data_source {
+                        t.datapoints.len()
+                    } else {
+                        0
+                    };
 
+                    let thermal_wicks = self.kline_config.thermal_wicks;
                     render_data_source(
                         &self.data_source,
                         frame,
                         earliest,
                         latest,
                         interval_to_x,
-                        |frame, x_position, kline, _| {
+                        |frame, visual_idx, x_position, kline, _| {
+                            // visual_idx 0 = newest = highest storage index
+                            let thermal_color = heatmap_indi.and_then(|h| {
+                                let storage_idx = total_len.saturating_sub(1 + visual_idx);
+                                h.thermal_body_color(storage_idx as u64)
+                            });
+                            // Wick: same thermal colour as body when thermal_wicks=true,
+                            // otherwise falls back to direction green/red (None → unwrap_or).
+                            let wick_color = if thermal_wicks { thermal_color } else { None };
                             draw_candle_dp(
                                 frame,
                                 price_to_y,
@@ -1491,6 +1517,8 @@ impl canvas::Program<Message> for KlineChart {
                                 palette,
                                 x_position,
                                 kline,
+                                thermal_color,
+                                wick_color,
                             );
                         },
                     );
@@ -1590,28 +1618,30 @@ fn draw_candle_dp(
     palette: &Extended,
     x_position: f32,
     kline: &Kline,
+    thermal_body_color: Option<iced::Color>,
+    thermal_wick_color: Option<iced::Color>,
 ) {
     let y_open = price_to_y(kline.open);
     let y_high = price_to_y(kline.high);
     let y_low = price_to_y(kline.low);
     let y_close = price_to_y(kline.close);
 
-    let body_color = if kline.close >= kline.open {
+    let direction_color = if kline.close >= kline.open {
         palette.success.base.color
     } else {
         palette.danger.base.color
     };
+
+    // Body: thermal colour when heatmap active, otherwise green/red direction.
+    let body_color = thermal_body_color.unwrap_or(direction_color);
     frame.fill_rectangle(
         Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
         Size::new(candle_width, (y_open - y_close).abs()),
         body_color,
     );
 
-    let wick_color = if kline.close >= kline.open {
-        palette.success.base.color
-    } else {
-        palette.danger.base.color
-    };
+    // Wick: thermal colour (merged) or green/red direction, per "Thermal Wicks" setting.
+    let wick_color = thermal_wick_color.unwrap_or(direction_color);
     frame.fill_rectangle(
         Point::new(x_position - (candle_width / 8.0), y_high),
         Size::new(candle_width / 4.0, (y_high - y_low).abs()),
@@ -1627,7 +1657,7 @@ fn render_data_source<F>(
     interval_to_x: impl Fn(u64) -> f32,
     draw_fn: F,
 ) where
-    F: Fn(&mut canvas::Frame, f32, &Kline, &KlineTrades),
+    F: Fn(&mut canvas::Frame, usize, f32, &Kline, &KlineTrades),
 {
     match data_source {
         PlotData::TickBased(tick_aggr) => {
@@ -1643,7 +1673,7 @@ fn render_data_source<F>(
                 .for_each(|(index, tick_aggr)| {
                     let x_position = interval_to_x(index as u64);
 
-                    draw_fn(frame, x_position, &tick_aggr.kline, &tick_aggr.footprint);
+                    draw_fn(frame, index, x_position, &tick_aggr.kline, &tick_aggr.footprint);
                 });
         }
         PlotData::TimeBased(timeseries) => {
@@ -1657,7 +1687,7 @@ fn render_data_source<F>(
                 .for_each(|(timestamp, dp)| {
                     let x_position = interval_to_x(*timestamp);
 
-                    draw_fn(frame, x_position, &dp.kline, &dp.footprint);
+                    draw_fn(frame, 0, x_position, &dp.kline, &dp.footprint);
                 });
         }
     }

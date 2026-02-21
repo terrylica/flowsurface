@@ -10,10 +10,11 @@
 //! **Incremental updates**: EMA state, rolling window and sum are kept on the struct.
 //! `on_insert_trades` processes only newly completed bars in O(1).
 
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
-        indicator_row,
+        indicator_row_slice,
         kline::KlineIndicatorImpl,
         plot::{
             PlotTooltip,
@@ -27,7 +28,7 @@ use data::conditional_ema::ConditionalEma;
 use exchange::{Kline, Trade};
 
 use iced::widget::{center, text};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 
 /// Per-bar data point: rolling sum of EMA(OFI) and candle direction.
@@ -39,9 +40,13 @@ struct CumOfiPoint {
 
 /// Cumulative EMA(OFI) indicator using a rolling window sum.
 /// Applies EMA to raw OFI, then sums the last `ema_period` EMA values.
+///
+/// Data is stored in a `Vec<CumOfiPoint>` (forward-indexed, 0=oldest) for O(1) push
+/// during rebuild, replacing the O(N log N) BTreeMap that caused UI freezes at 30K+ bars.
 pub struct OFICumulativeEmaIndicator {
     cache: Caches,
-    data: BTreeMap<u64, CumOfiPoint>,
+    /// Forward-indexed storage (0 = oldest bar). Index matches storage_idx directly.
+    data: Vec<CumOfiPoint>,
     ema_period: usize,
     // Rolling window state — maintained across calls for O(1) incremental updates.
     ema: ConditionalEma,
@@ -59,7 +64,7 @@ impl OFICumulativeEmaIndicator {
     pub fn with_ema_period(period: usize) -> Self {
         Self {
             cache: Caches::default(),
-            data: BTreeMap::new(),
+            data: Vec::new(),
             ema_period: period,
             ema: ConditionalEma::new(period),
             ema_window: VecDeque::new(),
@@ -73,7 +78,7 @@ impl OFICumulativeEmaIndicator {
         self.ema = ConditionalEma::new(self.ema_period);
         self.ema_window.clear();
         self.rolling_sum = 0.0;
-        self.data.clear();
+        self.data.clear(); // Vec::clear keeps allocation
         self.next_idx = 0;
     }
 
@@ -84,10 +89,11 @@ impl OFICumulativeEmaIndicator {
         if self.ema_window.len() > self.ema_period {
             self.rolling_sum -= self.ema_window.pop_front().unwrap_or(0.0);
         }
-        self.data.insert(idx as u64, CumOfiPoint {
-            cumsum: self.rolling_sum,
-            bullish,
-        });
+        // Vec push: O(1) amortised. Resize with sentinel for any gap (bars without micro).
+        if idx > self.data.len() {
+            self.data.resize(idx, CumOfiPoint { cumsum: 0.0, bullish: false });
+        }
+        self.data.push(CumOfiPoint { cumsum: self.rolling_sum, bullish });
     }
 
     fn indicator_elem<'a>(
@@ -112,7 +118,7 @@ impl OFICumulativeEmaIndicator {
             .baseline(Baseline::Zero)
             .with_tooltip(tooltip);
 
-        indicator_row(main_chart, &self.cache, plot, &self.data, visible_range)
+        indicator_row_slice(main_chart, &self.cache, plot, &self.data, visible_range)
     }
 }
 
@@ -137,10 +143,11 @@ impl KlineIndicatorImpl for OFICumulativeEmaIndicator {
         self.reset_state();
         if let PlotData::TickBased(tickseries) = source {
             for (idx, dp) in tickseries.datapoints.iter().enumerate() {
-                if let Some(m) = dp.microstructure {
-                    let bullish = dp.kline.close >= dp.kline.open;
-                    self.process_one(idx, m.ofi, bullish);
-                }
+                // Always process every bar (0.0 ofi for bars without microstructure)
+                // to keep the Vec densely packed (idx == data.len() invariant).
+                let ofi = dp.microstructure.map(|m| m.ofi).unwrap_or(0.0);
+                let bullish = dp.kline.close >= dp.kline.open;
+                self.process_one(idx, ofi, bullish);
             }
             self.next_idx = tickseries.datapoints.len();
         }
@@ -163,10 +170,9 @@ impl KlineIndicatorImpl for OFICumulativeEmaIndicator {
                     // Incremental path: only process newly completed bars.
                     for idx in old_dp_len..new_len {
                         let dp = &tickseries.datapoints[idx];
-                        if let Some(m) = dp.microstructure {
-                            let bullish = dp.kline.close >= dp.kline.open;
-                            self.process_one(idx, m.ofi, bullish);
-                        }
+                        let ofi = dp.microstructure.map(|m| m.ofi).unwrap_or(0.0);
+                        let bullish = dp.kline.close >= dp.kline.open;
+                        self.process_one(idx, ofi, bullish);
                     }
                     self.next_idx = new_len;
                 } else {

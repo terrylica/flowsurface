@@ -1,3 +1,4 @@
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
@@ -86,9 +87,69 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
     }
 }
 
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+/// Series backed by a contiguous `&[Y]` slice where index 0 = oldest bar (forward order).
+/// Used for RangeBar/Tick indicators that store data in `Vec<Y>` for O(1) rebuild.
+/// Translates the `.rev()` index space used by RangeBar rendering into slice indices.
+pub struct ReversedSliceSeries<'a, Y> {
+    inner: &'a [Y],
+    /// Largest `.rev()` index = index of the OLDEST bar = slice.len() - 1.
+    offset: u64,
+}
+
+impl<'a, Y> ReversedSliceSeries<'a, Y> {
+    pub fn new(inner: &'a [Y]) -> Self {
+        let offset = inner.len().saturating_sub(1) as u64;
+        Self { inner, offset }
+    }
+}
+
+impl<'a, Y> Series for ReversedSliceSeries<'a, Y> {
+    type Y = Y;
+
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
+        if self.inner.is_empty() {
+            return;
+        }
+        // Convert .rev() range to forward slice range.
+        // range.start() = earliest_visual (newer, smaller .rev() idx)
+        // range.end()   = latest_visual   (older,  larger  .rev() idx)
+        let earliest_fwd = self.offset.saturating_sub(*range.end()) as usize;
+        let latest_fwd =
+            (self.offset.saturating_sub(*range.start()) as usize).min(self.inner.len() - 1);
+        if earliest_fwd > latest_fwd {
+            return;
+        }
+        // Iterate newest → oldest (decreasing forward index = increasing .rev() index).
+        for fwd_idx in (earliest_fwd..=latest_fwd).rev() {
+            let rev_idx = self.offset - fwd_idx as u64;
+            f(rev_idx, &self.inner[fwd_idx]);
+        }
+    }
+
+    fn at(&self, x: u64) -> Option<&Self::Y> {
+        let fwd = self.offset.checked_sub(x)? as usize;
+        self.inner.get(fwd)
+    }
+
+    fn next_after<'b>(&'b self, x: u64) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        // Next bar in .rev() order = older bar = lower forward index.
+        let fwd = self.offset.checked_sub(x)? as usize;
+        if fwd == 0 {
+            return None;
+        }
+        self.inner.get(fwd - 1).map(|v| (x + 1, v))
+    }
+}
+
 pub enum AnySeries<'a, Y> {
     Forward(&'a BTreeMap<u64, Y>),
     Reversed(ReversedBTreeSeries<'a, Y>),
+    /// Slice-backed series for Vec-based indicators (RangeBar/Tick only).
+    ReversedSlice(ReversedSliceSeries<'a, Y>),
 }
 
 impl<'a, Y> AnySeries<'a, Y> {
@@ -97,6 +158,12 @@ impl<'a, Y> AnySeries<'a, Y> {
             Basis::Tick(_) | Basis::RangeBar(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
             Basis::Time(_) => Self::Forward(data),
         }
+    }
+
+    /// Create a slice-backed series for Vec-based indicators.
+    /// `data` is forward-indexed (0 = oldest bar). Only valid for RangeBar/Tick basis.
+    pub fn for_basis_slice(data: &'a [Y]) -> Self {
+        Self::ReversedSlice(ReversedSliceSeries::new(data))
     }
 }
 
@@ -111,6 +178,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
                 }
             }
             AnySeries::Reversed(rv) => rv.for_each_in(range, f),
+            AnySeries::ReversedSlice(rv) => rv.for_each_in(range, f),
         }
     }
 
@@ -118,6 +186,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         match self {
             AnySeries::Forward(map) => (**map).get(&x),
             AnySeries::Reversed(rv) => rv.at(x),
+            AnySeries::ReversedSlice(rv) => rv.at(x),
         }
     }
 
@@ -128,6 +197,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         match self {
             AnySeries::Forward(map) => (**map).range((x + 1)..).next().map(|(k, v)| (*k, v)),
             AnySeries::Reversed(rv) => rv.next_after(x),
+            AnySeries::ReversedSlice(rv) => rv.next_after(x),
         }
     }
 }

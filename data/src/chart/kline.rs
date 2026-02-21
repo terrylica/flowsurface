@@ -336,6 +336,7 @@ impl std::fmt::Display for ClusterKind {
 // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 fn default_ofi_ema_period() -> usize { 20 }
 fn default_intensity_lookback() -> usize { 2000 }
+fn default_thermal_wicks() -> bool { true }
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
 pub struct Config {
@@ -344,6 +345,10 @@ pub struct Config {
     /// Rolling lookback window size for intensity heatmap binning.
     #[serde(default = "default_intensity_lookback")]
     pub intensity_lookback: usize,
+    /// When true (default), wicks use the same thermal colour as the candle body.
+    /// When false, wicks show candle direction: green (bullish) / red (bearish).
+    #[serde(default = "default_thermal_wicks")]
+    pub thermal_wicks: bool,
 }
 
 impl Default for Config {
@@ -351,6 +356,7 @@ impl Default for Config {
         Self {
             ofi_ema_period: default_ofi_ema_period(),
             intensity_lookback: default_intensity_lookback(),
+            thermal_wicks: default_thermal_wicks(),
         }
     }
 }

@@ -1905,7 +1905,12 @@ impl Content {
             let mut splits_vec = vec![main_chart_split];
 
             if !enabled_indicators.is_empty() {
-                let num_indicators = enabled_indicators.len();
+                // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                // TradeIntensityHeatmap colours candle bodies, not a subplot panel.
+                let num_indicators = enabled_indicators
+                    .iter()
+                    .filter(|i| **i != KlineIndicator::TradeIntensityHeatmap)
+                    .count();
 
                 if num_indicators > 0 {
                     let indicator_total_height_ratio = 1.0 - main_chart_split;

@@ -5,6 +5,7 @@ use data::chart::indicator::KlineIndicator;
 use data::chart::kline::KlineDataPoint;
 use exchange::fetcher::FetchRange;
 use exchange::{Kline, Timeframe, Trade};
+use iced::Color;
 
 pub mod delta;
 pub mod ofi;
@@ -54,6 +55,13 @@ pub trait KlineIndicatorImpl {
     fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
     fn on_open_interest(&mut self, _pairs: &[exchange::OpenInterest]) {}
+
+    /// Return a thermal body colour for the candle at `storage_idx` (oldest-first index).
+    /// Default: `None` (normal green/red palette colours used).
+    /// Only overridden by `TradeIntensityHeatmap` which colours candle bodies, not a subplot.
+    fn thermal_body_color(&self, _storage_idx: u64) -> Option<Color> {
+        None
+    }
 }
 
 pub struct FetchCtx<'a> {

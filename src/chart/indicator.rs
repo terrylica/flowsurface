@@ -3,6 +3,7 @@ pub mod plot;
 
 use super::scale::linear;
 use super::{Interaction, Message};
+// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
 use crate::chart::{
     Caches, TEXT_SIZE, ViewState,
     indicator::plot::{AnySeries, ChartCanvas, Plot},
@@ -31,8 +32,35 @@ pub fn indicator_row<'a, P, Y>(
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
-    let series = AnySeries::for_basis(main_chart.basis, datapoints);
+    indicator_row_impl(main_chart, cache, plot, AnySeries::for_basis(main_chart.basis, datapoints), visible_range)
+}
 
+/// Like `indicator_row` but backed by a `&[Y]` slice (forward-indexed: 0 = oldest).
+/// Use for RangeBar/Tick indicators that store data in `Vec<Y>` for O(1) push on rebuild,
+/// eliminating the O(N log N) BTreeMap insert cost that causes UI freezes at large bar counts.
+pub fn indicator_row_slice<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    plot: P,
+    datapoints: &'a [Y],
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
+    indicator_row_impl(main_chart, cache, plot, AnySeries::for_basis_slice(datapoints), visible_range)
+}
+
+fn indicator_row_impl<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    plot: P,
+    series: AnySeries<'a, Y>,
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
     let (min, max) = plot
         .y_extents(&series, visible_range)
         .map(|(min, max)| plot.adjust_extents(min, max))
