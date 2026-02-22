@@ -926,6 +926,11 @@ impl KlineChart {
         self.invalidate(None);
     }
 
+    pub fn set_thermal_wicks(&mut self, enabled: bool) {
+        self.kline_config.thermal_wicks = enabled;
+        self.invalidate(None);
+    }
+
     /// NOTE(fork): Compute a keyboard navigation message using this chart's current state.
     /// Called from the app-level `keyboard::listen()` subscription to navigate without canvas focus.
     /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
@@ -2387,8 +2392,9 @@ fn draw_crosshair_tooltip(
             .map(|(s, _, is_val)| s.len() as f32 * 8.0 + if *is_val { 6.0 } else { 2.0 })
             .sum();
 
-        // Timing row: open time, close time, duration — only for index-based bases.
-        let timing_line: Option<String> = match (basis, data) {
+        // Timing rows: open time, close time, duration — only for index-based bases.
+        // Shows both UTC and Local so the user always sees both at a glance.
+        let timing_lines: Option<(String, String)> = match (basis, data) {
             (Basis::RangeBar(_) | Basis::Tick(_), PlotData::TickBased(tick_aggr)) => {
                 let index = (at_interval / u64::from(tick_aggr.interval.0)) as usize;
                 let fwd = tick_aggr.datapoints.len().saturating_sub(1 + index);
@@ -2397,25 +2403,38 @@ fn draw_crosshair_tooltip(
                 let open_ms = (fwd > 0)
                     .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64);
 
-                let close_fmt = timezone.format_bar_time_ms(close_ms).unwrap_or_default();
-                let open_fmt = open_ms
-                    .and_then(|ms| timezone.format_bar_time_ms(ms))
-                    .unwrap_or_else(|| "—".into());
+                let alt_tz = match timezone {
+                    data::UserTimezone::Utc => data::UserTimezone::Local,
+                    data::UserTimezone::Local => data::UserTimezone::Utc,
+                };
+
                 let dur_fmt = open_ms
                     .map(|open| format_duration_ms(close_ms.saturating_sub(open).max(0) as u64))
                     .unwrap_or_else(|| "—".into());
 
-                Some(format!("{open_fmt}  →  {close_fmt}   ({dur_fmt})"))
+                let fmt_row = |tz: data::UserTimezone| {
+                    let close_fmt = tz.format_bar_time_ms(close_ms).unwrap_or_default();
+                    let open_fmt = open_ms
+                        .and_then(|ms| tz.format_bar_time_ms(ms))
+                        .unwrap_or_else(|| "—".into());
+                    format!("{open_fmt}  →  {close_fmt}   ({dur_fmt})  {tz}")
+                };
+
+                Some((fmt_row(timezone), fmt_row(alt_tz)))
             }
             _ => None,
         };
 
-        let timing_width = timing_line
-            .as_deref()
-            .map(|s| s.len() as f32 * 7.5 + 16.0)
+        let timing_width = timing_lines
+            .as_ref()
+            .map(|(a, b)| {
+                let wa = a.len() as f32 * 7.5 + 16.0;
+                let wb = b.len() as f32 * 7.5 + 16.0;
+                wa.max(wb)
+            })
             .unwrap_or(0.0);
         let bg_width = ohlc_width.max(timing_width);
-        let bg_height = if timing_line.is_some() { 34.0 } else { 16.0 };
+        let bg_height = if timing_lines.is_some() { 48.0 } else { 16.0 };
 
         let position = Point::new(8.0, 8.0);
 
@@ -2440,11 +2459,19 @@ fn draw_crosshair_tooltip(
             x += if *is_value { 6.0 } else { 2.0 };
         }
 
-        // Row 2: open → close  (duration)
-        if let Some(timing) = timing_line {
+        // Row 2 + 3: open → close (duration) in both timezones
+        if let Some((primary, alt)) = timing_lines {
             frame.fill_text(canvas::Text {
-                content: timing,
+                content: primary,
                 position: Point::new(position.x, position.y + 18.0),
+                size: iced::Pixels(10.5),
+                color: dim_color,
+                font: style::AZERET_MONO,
+                ..canvas::Text::default()
+            });
+            frame.fill_text(canvas::Text {
+                content: alt,
+                position: Point::new(position.x, position.y + 32.0),
                 size: iced::Pixels(10.5),
                 color: dim_color,
                 font: style::AZERET_MONO,

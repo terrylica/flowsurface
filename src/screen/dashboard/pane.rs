@@ -1900,11 +1900,7 @@ impl Content {
             let available = KlineIndicator::for_market(ticker_info.market_type());
             prev_indis.map_or_else(
                 || match determined_chart_kind {
-                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-                    data::chart::KlineChartKind::RangeBar => vec![
-                        KlineIndicator::TradeIntensityHeatmap,
-                        KlineIndicator::OFICumulativeEma,
-                    ],
+                    data::chart::KlineChartKind::RangeBar => vec![],
                     _ => vec![KlineIndicator::Volume],
                 },
                 |indis| {
@@ -2121,6 +2117,7 @@ impl Content {
             (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
                 c.set_ofi_ema_period(cfg.ofi_ema_period);
                 c.set_intensity_lookback(cfg.intensity_lookback);
+                c.set_thermal_wicks(cfg.thermal_wicks);
             }
             _ => {}
         }
