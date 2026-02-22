@@ -448,12 +448,11 @@ impl KlineChart {
                 let subplot_count = indicators.iter()
                     .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
                     .count();
-                if let Some(&main_split) = chart.layout.splits.first() {
-                    if chart.layout.splits.len() != subplot_count {
+                if let Some(&main_split) = chart.layout.splits.first()
+                    && chart.layout.splits.len() != subplot_count {
                         chart.layout.splits =
                             data::util::calc_panel_splits(main_split, subplot_count, None);
                     }
-                }
 
                 KlineChart {
                     chart,
@@ -564,12 +563,11 @@ impl KlineChart {
         let subplot_count = indicators.iter()
             .filter(|(k, v)| v.is_some() && *k != KlineIndicator::TradeIntensityHeatmap)
             .count();
-        if let Some(&main_split) = chart.layout.splits.first() {
-            if chart.layout.splits.len() != subplot_count {
+        if let Some(&main_split) = chart.layout.splits.first()
+            && chart.layout.splits.len() != subplot_count {
                 chart.layout.splits =
                     data::util::calc_panel_splits(main_split, subplot_count, None);
             }
-        }
 
         KlineChart {
             chart,

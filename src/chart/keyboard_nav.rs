@@ -93,7 +93,7 @@ fn pan(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
         // vim hjkl — h/H and l/L collapse into the same arm because Shift is already
         // encoded in the character, so modifiers.shift() is true for H/L and step
         // already carries BARS_LARGE.
-        keyboard::Key::Character(c) => match c.as_ref() {
+        keyboard::Key::Character(c) => match c {
             "h" | "H" => state.translation.x + step,
             "l" | "L" => state.translation.x - step,
             "g" => 0.0,
@@ -125,7 +125,7 @@ fn zoom(event: &keyboard::Event) -> Option<Message> {
         keyboard::Key::Named(keyboard::key::Named::ArrowDown) => {
             if modifiers.shift() { -ZOOM_STEP_LARGE } else { -ZOOM_STEP }
         }
-        keyboard::Key::Character(c) => match c.as_ref() {
+        keyboard::Key::Character(c) => match c {
             "k" => ZOOM_STEP,
             "K" => ZOOM_STEP_LARGE,
             "j" => -ZOOM_STEP,
