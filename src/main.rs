@@ -106,6 +106,8 @@ enum Message {
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(HashMap<window::Id, WindowSpec>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
+    RequestRestart,
+    RequestQuit,
     GoBack,
     DataFolderRequested,
     ThemeSelected(data::Theme),
@@ -278,6 +280,20 @@ impl Flowsurface {
             Message::RestartRequested(windows) => {
                 self.save_state_to_disk(&windows);
                 return self.restart();
+            }
+            Message::RequestRestart => {
+                self.sidebar.set_menu(None);
+                let mut active_windows: Vec<iced::window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+                return window::collect_window_specs(active_windows, Message::RestartRequested);
+            }
+            Message::RequestQuit => {
+                self.sidebar.set_menu(None);
+                let mut active_windows: Vec<iced::window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+                return window::collect_window_specs(active_windows, Message::ExitRequested);
             }
             Message::GoBack => {
                 let main_window = self.main_window.id;
@@ -1159,6 +1175,32 @@ impl Flowsurface {
                 dashboard_modal(
                     base,
                     self.network.view().map(Message::NetworkManager),
+                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
+                    padding,
+                    Alignment::End,
+                    align_x,
+                )
+            }
+            sidebar::Menu::App => {
+                let (align_x, padding) = match sidebar_pos {
+                    sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
+                    sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
+                };
+
+                let app_menu: Element<'_, Message> = container(
+                    column![
+                        button(text("Restart")).width(iced::Length::Fill).on_press(Message::RequestRestart),
+                        button(text("Quit")).width(iced::Length::Fill).on_press(Message::RequestQuit),
+                    ]
+                    .spacing(4),
+                )
+                .padding(8)
+                .style(style::dashboard_modal)
+                .into();
+
+                dashboard_modal(
+                    base,
+                    app_menu,
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
                     Alignment::End,

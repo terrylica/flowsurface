@@ -195,12 +195,27 @@ impl Sidebar {
             )
         };
 
+        let app_menu_button = {
+            let is_active = self.is_menu_active(sidebar::Menu::App);
+
+            button_with_tooltip(
+                icon_text(Icon::Close, 14)
+                    .width(24)
+                    .align_x(Alignment::Center),
+                Message::ToggleSidebarMenu(Some(sidebar::Menu::App)),
+                None,
+                tooltip_position,
+                move |theme, status| crate::style::button::transparent(theme, status, is_active),
+            )
+        };
+
         column![
             ticker_search_button,
             layout_modal_button,
             audio_btn,
             space::vertical(),
             settings_modal_button,
+            app_menu_button,
         ]
         .width(32)
         .spacing(8)
