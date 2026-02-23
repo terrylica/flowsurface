@@ -22,6 +22,10 @@
     "column_drag.rs",
     "toast.rs",
     "plot.rs",
+    "binance.rs",
+    "bybit.rs",
+    "okex.rs",
+    "hyperliquid.rs",
     "*.generated.*",
     "*.lock"
   ],

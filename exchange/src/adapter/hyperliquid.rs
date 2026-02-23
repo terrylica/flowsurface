@@ -2,10 +2,11 @@ use super::{
     super::{
         Exchange, Kline, MarketKind, Price, PushFrequency, StreamKind, TickMultiplier, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
-        connect::{State, connect_ws},
+        connect::{self, State, connect_ws},
         de_string_to_f32,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
+        resilience,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -795,6 +796,7 @@ pub fn connect_market_stream(
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let ticker = ticker_info.ticker;
         let exchange = ticker.exchange;
@@ -822,7 +824,9 @@ pub fn connect_market_stream(
                         }
                     };
                     if price.is_none() {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
                         continue;
                     }
                     let price = price.unwrap();
@@ -852,7 +856,9 @@ pub fn connect_market_stream(
                                 .await
                                 .is_err()
                             {
-                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                if let Some(delay) = backoff.next() {
+                                    tokio::time::sleep(delay).await;
+                                }
                                 continue;
                             }
 
@@ -871,15 +877,20 @@ pub fn connect_market_stream(
                                 .await
                                 .is_err()
                             {
-                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                if let Some(delay) = backoff.next() {
+                                    tokio::time::sleep(delay).await;
+                                }
                                 continue;
                             }
 
                             state = State::Connected(websocket);
+                            backoff = resilience::reconnect_backoff();
                             let _ = output.send(Event::Connected(exchange)).await;
                         }
                         Err(_) => {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            if let Some(delay) = backoff.next() {
+                                tokio::time::sleep(delay).await;
+                            }
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
@@ -890,8 +901,8 @@ pub fn connect_market_stream(
                     }
                 }
                 State::Connected(websocket) => {
-                    match websocket.read_frame().await {
-                        Ok(msg) => match msg.opcode {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
                             OpCode::Text => {
                                 if let Ok(stream_data) = parse_websocket_message(&msg.payload) {
                                     match stream_data {
@@ -978,12 +989,22 @@ pub fn connect_market_stream(
                             }
                             _ => {}
                         },
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
                                     format!("WebSocket error: {}", e),
+                                ))
+                                .await;
+                        }
+                        Err(_elapsed) => {
+                            log::warn!("[Hyperliquid] read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
                                 ))
                                 .await;
                         }
@@ -1000,6 +1021,7 @@ pub fn connect_kline_stream(
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let exchange = streams
             .first()
@@ -1038,10 +1060,13 @@ pub fn connect_kline_stream(
                         }
 
                         state = State::Connected(websocket);
+                        backoff = resilience::reconnect_backoff();
                         let _ = output.send(Event::Connected(exchange)).await;
                     }
                     Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
@@ -1050,8 +1075,8 @@ pub fn connect_kline_stream(
                             .await;
                     }
                 },
-                State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(StreamData::Kline(hl_kline)) =
                                 parse_websocket_message(&msg.payload)
@@ -1100,12 +1125,22 @@ pub fn connect_kline_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         state = State::Disconnected;
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
                                 format!("WebSocket error: {}", e),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        log::warn!("[Hyperliquid] kline read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }

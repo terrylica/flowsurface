@@ -21,6 +21,12 @@ const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Maximum idle time before considering a WebSocket connection dead.
+/// Binance pings every 3 min, Bybit heartbeats every 20s, OKX pings every 30s.
+/// BTCUSDT trades arrive multiple times per second. 45s detects half-open TCP
+/// (e.g. after Mac sleep) within one minute without false positives on quiet markets.
+pub const WS_READ_TIMEOUT: Duration = Duration::from_secs(45);
+
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
 

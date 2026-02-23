@@ -7,10 +7,11 @@ use crate::{
 use super::{
     super::{
         Exchange, Kline, MarketKind, Ticker, TickerInfo, TickerStats, Timeframe, Trade,
-        connect::{State, connect_ws},
+        connect::{self, State, connect_ws},
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
+        resilience,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -193,7 +194,6 @@ async fn try_connect(
             State::Connected(websocket)
         }
         Err(err) => {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             let _ = output
                 .send(Event::Disconnected(
                     exchange,
@@ -211,6 +211,7 @@ pub fn connect_market_stream(
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let ticker = ticker_info.ticker;
 
@@ -239,9 +240,14 @@ pub fn connect_market_stream(
             match &mut state {
                 State::Disconnected => {
                     state = try_connect(&subscribe_message, exchange, &mut output, "public").await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(data) = feed_de(&msg.payload[..], ticker) {
                                 match data {
@@ -327,12 +333,22 @@ pub fn connect_market_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         state = State::Disconnected;
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
                                 "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        log::warn!("[OKX] read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }
@@ -348,6 +364,7 @@ pub fn connect_kline_stream(
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let mut args = Vec::with_capacity(streams.len());
         let mut lookup = HashMap::new();
@@ -382,9 +399,14 @@ pub fn connect_kline_stream(
                 State::Disconnected => {
                     state =
                         try_connect(&subscribe_message, exchange, &mut output, "business").await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(ws) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(v) = serde_json::from_slice::<Value>(&msg.payload[..]) {
                                 let channel = v["arg"]["channel"].as_str().unwrap_or("");
@@ -485,12 +507,22 @@ pub fn connect_kline_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         state = State::Disconnected;
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
                                 "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        log::warn!("[OKX] kline read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }

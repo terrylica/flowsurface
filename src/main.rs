@@ -198,9 +198,13 @@ impl Flowsurface {
                 match event {
                     exchange::Event::Connected(exchange) => {
                         log::info!("a stream connected to {exchange} WS");
+                        dashboard.connection_health[exchange] =
+                            exchange::health::ConnectionHealth::Connected;
                     }
                     exchange::Event::Disconnected(exchange, reason) => {
                         log::info!("a stream disconnected from {exchange} WS: {reason:?}");
+                        dashboard.connection_health[exchange] =
+                            exchange::health::ConnectionHealth::Reconnecting;
                     }
                     exchange::Event::DepthReceived(
                         stream,

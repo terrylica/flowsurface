@@ -141,25 +141,46 @@ fn base_url() -> String {
     format!("http://{}:{}", *CLICKHOUSE_HOST, *CLICKHOUSE_PORT)
 }
 
-async fn query(sql: &str) -> Result<String, AdapterError> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(base_url())
-        .body(sql.to_string())
+/// Shared HTTP client — reuses connections through the SSH tunnel instead of
+/// creating a new TCP handshake per request.
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(2)
+        .build()
+        .expect("reqwest client build")
+});
+
+async fn query(sql: &str) -> Result<String, AdapterError> {
+    let url = base_url();
+    let sql_preview: String = sql.chars().take(120).collect();
+    log::debug!("[CH] POST {url} — {sql_preview}…");
+
+    let resp = HTTP_CLIENT
+        .post(&url)
+        .body(sql.to_string())
         .send()
-        .await?;
+        .await
+        .map_err(|e| {
+            log::error!("[CH] reqwest failed: {e} (is_timeout={}, is_connect={}, url={url})",
+                e.is_timeout(), e.is_connect());
+            AdapterError::FetchError(e)
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
+        log::error!("[CH] HTTP {status}: {body}");
         return Err(AdapterError::ParseError(format!(
             "ClickHouse HTTP {}: {}",
             status, body
         )));
     }
 
-    resp.text().await.map_err(AdapterError::from)
+    resp.text().await.map_err(|e| {
+        log::error!("[CH] response body read failed: {e}");
+        AdapterError::from(e)
+    })
 }
 
 /// Extract the bare symbol name from a ticker (e.g. "BTCUSDT" from a BinanceLinear ticker).

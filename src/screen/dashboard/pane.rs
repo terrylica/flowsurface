@@ -27,10 +27,12 @@ use data::{
     },
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
 };
+use enum_map::EnumMap;
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
+    adapter::{Exchange, MarketKind, PersistStreamKind, ResolvedStream, StreamKind, StreamTicksize},
     fetcher::FetchRequests,
+    health::ConnectionHealth,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme,
@@ -107,6 +109,10 @@ pub struct State {
     pub streams: ResolvedStream,
     pub status: Status,
     pub link_group: Option<LinkGroup>,
+    /// Set after the first staleness check for the current basis.
+    /// Reset on basis/threshold switch so the next initial fetch
+    /// re-evaluates staleness, but scroll-back fetches are skipped.
+    pub staleness_checked: bool,
 }
 
 impl State {
@@ -263,10 +269,13 @@ impl State {
                             vec![depth_stream(&temp)]
                         },
                         |threshold| {
-                            vec![StreamKind::RangeBarKline {
-                                ticker_info: derived_plan.ticker_info,
-                                threshold_dbps: threshold,
-                            }]
+                            vec![
+                                StreamKind::RangeBarKline {
+                                    ticker_info: derived_plan.ticker_info,
+                                    threshold_dbps: threshold,
+                                },
+                                depth_stream(&derived_plan),
+                            ]
                         },
                     );
 
@@ -521,6 +530,7 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
+        connection_health: &'a EnumMap<Exchange, ConnectionHealth>,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut stream_info_element = if Content::Starter == self.content {
             row![]
@@ -548,7 +558,18 @@ impl State {
                 label = format!("{label} +{extra}");
             }
 
-            let content = row![exchange_icon, text(label).size(14)]
+            // Connection health dot
+            let health = connection_health[base_ti.ticker.exchange];
+            let health_dot = {
+                let color = match health {
+                    ConnectionHealth::Connected => iced::Color::from_rgb(0.2, 0.8, 0.2),
+                    ConnectionHealth::Reconnecting => iced::Color::from_rgb(1.0, 0.7, 0.0),
+                    ConnectionHealth::Disconnected => iced::Color::from_rgb(0.8, 0.2, 0.2),
+                };
+                text("●").size(8).color(color)
+            };
+
+            let content = row![health_dot, exchange_icon, text(label).size(14)]
                 .align_y(Vertical::Center)
                 .spacing(4);
 
@@ -1186,6 +1207,12 @@ impl State {
                             modal::stream::Action::BasisSelected(new_basis) => {
                                 modifier.update_kind_with_basis(new_basis);
                                 self.settings.selected_basis = Some(new_basis);
+                                // Reset stale status and staleness flag — fresh
+                                // data for the new basis will re-evaluate staleness.
+                                if matches!(self.status, Status::Stale(_)) {
+                                    self.status = Status::default();
+                                }
+                                self.staleness_checked = false;
 
                                 let base_ticker = self.stream_pair();
 
@@ -1291,30 +1318,26 @@ impl State {
                                                         ticker_info: base_ticker,
                                                         threshold_dbps: threshold,
                                                     };
-                                                    let mut streams = vec![rb_stream];
-
-                                                    if matches!(
-                                                        c.kind,
-                                                        data::chart::KlineChartKind::Footprint { .. }
-                                                    ) {
-                                                        let depth_aggr = if base_ticker
-                                                            .exchange()
-                                                            .is_depth_client_aggr()
-                                                        {
-                                                            StreamTicksize::Client
-                                                        } else {
-                                                            StreamTicksize::ServerSide(
-                                                                self.settings
-                                                                    .tick_multiply
-                                                                    .unwrap_or(TickMultiplier(1)),
-                                                            )
-                                                        };
-                                                        streams.push(StreamKind::DepthAndTrades {
+                                                    let depth_aggr = if base_ticker
+                                                        .exchange()
+                                                        .is_depth_client_aggr()
+                                                    {
+                                                        StreamTicksize::Client
+                                                    } else {
+                                                        StreamTicksize::ServerSide(
+                                                            self.settings
+                                                                .tick_multiply
+                                                                .unwrap_or(TickMultiplier(1)),
+                                                        )
+                                                    };
+                                                    let streams = vec![
+                                                        rb_stream,
+                                                        StreamKind::DepthAndTrades {
                                                             ticker_info: base_ticker,
                                                             depth_aggr,
                                                             push_freq: exchange::PushFrequency::ServerDefault,
-                                                        });
-                                                    }
+                                                        },
+                                                    ];
 
                                                     self.streams = ResolvedStream::Ready(streams);
                                                     let action = c.set_basis(new_basis);
@@ -1770,6 +1793,7 @@ impl Default for State {
             notifications: vec![],
             status: Status::Ready,
             link_group: None,
+            staleness_checked: false,
         }
     }
 }
@@ -2014,7 +2038,6 @@ impl Content {
                 chart: None,
                 indicators: vec![
                     KlineIndicator::TradeIntensity,
-                    KlineIndicator::OFICumulativeEma,
                 ],
                 kind: data::chart::KlineChartKind::RangeBar,
                 layout: ViewConfig {

@@ -3,11 +3,12 @@ use super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::StreamTicksize,
-        connect::{State, connect_ws},
+        connect::{self, State, connect_ws},
         de_string_to_f32, de_string_to_u64,
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         is_symbol_supported,
         limiter::{self, http_request_with_limiter},
+        resilience,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
@@ -295,8 +296,6 @@ async fn try_connect(
             State::Connected(websocket)
         }
         Err(err) => {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
             let _ = output
                 .send(Event::Disconnected(
                     exchange,
@@ -314,6 +313,7 @@ pub fn connect_market_stream(
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state: State = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let ticker = ticker_info.ticker;
 
@@ -357,9 +357,14 @@ pub fn connect_market_stream(
                         "args": [stream_1, stream_2]
                     });
                     state = try_connect(&subscribe_message, market_type, &mut output).await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(data) = feed_de(&msg.payload[..], Some(ticker), market_type) {
                                 match data {
@@ -447,12 +452,22 @@ pub fn connect_market_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         state = State::Disconnected;
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
                                 "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        log::warn!("[Bybit] read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }
@@ -468,6 +483,7 @@ pub fn connect_kline_stream(
 ) -> impl Stream<Item = Event> {
     stream::channel(100, async move |mut output| {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let exchange = exchange_from_market_type(market_type);
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
@@ -515,9 +531,14 @@ pub fn connect_kline_stream(
                     });
 
                     state = try_connect(&subscribe_message, market_type, &mut output).await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                State::Connected(websocket) => match websocket.read_frame().await {
-                    Ok(msg) => match msg.opcode {
+                State::Connected(websocket) => match tokio::time::timeout(connect::WS_READ_TIMEOUT, websocket.read_frame()).await {
+                    Ok(Ok(msg)) => match msg.opcode {
                         OpCode::Text => {
                             if let Ok(StreamData::Kline(ticker, de_kline_vec)) =
                                 feed_de(&msg.payload[..], None, market_type)
@@ -579,12 +600,22 @@ pub fn connect_kline_stream(
                         }
                         _ => {}
                     },
-                    Err(e) => {
+                    Ok(Err(e)) => {
                         state = State::Disconnected;
                         let _ = output
                             .send(Event::Disconnected(
                                 exchange,
                                 "Error reading frame: ".to_string() + &e.to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(_elapsed) => {
+                        log::warn!("[Bybit] kline read timeout — reconnecting");
+                        state = State::Disconnected;
+                        let _ = output
+                            .send(Event::Disconnected(
+                                exchange,
+                                "Read timeout (connection stale)".to_string(),
                             ))
                             .await;
                     }

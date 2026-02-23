@@ -27,6 +27,7 @@ use exchange::{
     },
     depth::Depth,
     fetcher::{FetchRange, FetchedData},
+    health::ConnectionHealth,
 };
 
 use iced::{
@@ -37,6 +38,7 @@ use iced::{
         pane_grid::{self, Configuration},
     },
 };
+use enum_map::EnumMap;
 use iced_futures::futures::TryFutureExt;
 use std::{collections::HashMap, path::PathBuf, time::Instant, vec};
 
@@ -64,6 +66,7 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
     pub streams: UniqueStreams,
+    pub connection_health: EnumMap<Exchange, ConnectionHealth>,
     layout_id: uuid::Uuid,
 }
 
@@ -74,6 +77,7 @@ impl Default for Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout: HashMap::new(),
+            connection_health: EnumMap::default(),
             layout_id: uuid::Uuid::new_v4(),
         }
     }
@@ -140,6 +144,7 @@ impl Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout,
+            connection_health: EnumMap::default(),
             layout_id,
         }
     }
@@ -608,6 +613,7 @@ impl Dashboard {
                 main_window,
                 timezone,
                 tickers_table,
+                &self.connection_health,
             )
         })
         .min_size(240)
@@ -641,6 +647,7 @@ impl Dashboard {
                         main_window,
                         timezone,
                         tickers_table,
+                        &self.connection_health,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -918,47 +925,53 @@ impl Dashboard {
                                 microstructure.as_deref(),
                             );
 
-                            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-                            if let Some(last_kline) = data.last() {
-                                let now_ms = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as u64)
-                                    .unwrap_or(0);
-                                let gap_hours =
-                                    (now_ms.saturating_sub(last_kline.time)) as f64 / 3_600_000.0;
+                            // Only check staleness once per basis — skip
+                            // scroll-back fetches which return old data by design.
+                            if !pane_state.staleness_checked {
+                                pane_state.staleness_checked = true;
 
-                                if gap_hours > 24.0 {
-                                    pane_state.status = pane::Status::Stale(format!(
-                                        "Data {:.0}h old — requesting backfill...",
-                                        gap_hours
-                                    ));
+                                if let Some(last_kline) = data.last() {
+                                    let now_ms = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as u64)
+                                        .unwrap_or(0);
+                                    let gap_hours =
+                                        (now_ms.saturating_sub(last_kline.time)) as f64
+                                            / 3_600_000.0;
 
-                                    let symbol = ticker_info.ticker.to_string();
-                                    return Task::perform(
-                                        async move {
-                                            match adapter::clickhouse::request_backfill(
-                                                &symbol,
-                                                threshold_dbps,
-                                            )
-                                            .await
-                                            {
-                                                Ok(true) => log::info!(
-                                                    "[staleness] backfill requested for {symbol}"
-                                                ),
-                                                Ok(false) => log::info!(
-                                                    "[staleness] backfill already pending for {symbol}"
-                                                ),
-                                                Err(e) => log::warn!(
-                                                    "[staleness] failed to request backfill: {e}"
-                                                ),
-                                            }
-                                        },
-                                        |_| {
-                                            Message::Notification(Toast::info(
-                                                "Backfill requested".to_string(),
-                                            ))
-                                        },
-                                    );
+                                    if gap_hours > 24.0 {
+                                        pane_state.status = pane::Status::Stale(format!(
+                                            "Data {:.0}h old — requesting backfill...",
+                                            gap_hours
+                                        ));
+
+                                        let symbol = ticker_info.ticker.to_string();
+                                        return Task::perform(
+                                            async move {
+                                                match adapter::clickhouse::request_backfill(
+                                                    &symbol,
+                                                    threshold_dbps,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(true) => log::info!(
+                                                        "[staleness] backfill requested for {symbol}"
+                                                    ),
+                                                    Ok(false) => log::info!(
+                                                        "[staleness] backfill already pending for {symbol}"
+                                                    ),
+                                                    Err(e) => log::warn!(
+                                                        "[staleness] failed to request backfill: {e}"
+                                                    ),
+                                                }
+                                            },
+                                            |_| {
+                                                Message::Notification(Toast::info(
+                                                    "Backfill requested".to_string(),
+                                                ))
+                                            },
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1232,14 +1245,13 @@ impl Dashboard {
                     subs.push(kline_subscription(exchange, kline_params));
                 }
 
-                // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-                // ClickHouse polling disabled: in-process RangeBarProcessor
-                // (rangebar-core) now computes live bars from WebSocket trades.
-                // ClickHouse remains the source for historical data only
-                // (initial fetch via fetch_klines_with_microstructure).
-                // for (ticker_info, threshold_dbps) in &specs.range_bar_kline {
-                //     subs.push(rangebar_kline_subscription(*ticker_info, *threshold_dbps));
-                // }
+                // ClickHouse polling: fetch completed bars periodically.
+                // In-process RangeBarProcessor builds live bars from WebSocket trades,
+                // but ClickHouse provides authoritative completed bars and fills gaps
+                // (e.g., after sleep/disconnect when trades were missed).
+                for (ticker_info, threshold_dbps) in &specs.range_bar_kline {
+                    subs.push(rangebar_kline_subscription(*ticker_info, *threshold_dbps));
+                }
 
                 subs
             })
@@ -1601,8 +1613,6 @@ pub fn kline_subscription(
     }
 }
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
-#[allow(dead_code)] // Retained as fallback if ClickHouse polling is re-enabled
 pub fn rangebar_kline_subscription(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
