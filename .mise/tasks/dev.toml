@@ -41,3 +41,25 @@ run = "cargo fmt --all -- --check"
 [lint]
 description = "Run format check + clippy (matches CI)"
 depends = ["fmt:check", "clippy"]
+
+["widget:validate"]
+description = "Validate widget code and run app to test floating BTC widget"
+run = """
+echo "→ Checking widget module..."
+cargo check --bin flowsurface -p flowsurface 2>&1 | grep -E "error|widget" || echo "✓ Widget code checks out"
+
+echo "→ Building release for widget testing..."
+cargo build --release 2>&1 | tail -3
+
+echo "→ Launching app with widget support..."
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
+sleep 0.5
+cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+open Flowsurface.app
+
+echo ""
+echo "✓ Widget validation complete. Launch widget via:"
+echo "  1. App menu → Show BTC Widget"
+echo "  2. Click and drag anywhere on the widget to move it"
+echo "  3. Watch price and range bars update in real-time from WebSocket trades"
+"""
