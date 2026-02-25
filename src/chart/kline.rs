@@ -748,6 +748,10 @@ impl KlineChart {
         self.fetching_trades.1 = Some(handle);
     }
 
+    pub fn clear_fetching_trades(&mut self) {
+        self.fetching_trades = (false, None);
+    }
+
     pub fn tick_size(&self) -> f32 {
         self.chart.tick_size.to_f32_lossy()
     }
@@ -957,6 +961,15 @@ impl KlineChart {
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_range_bar() {
+                    // While gap-fill is active, skip RBP for WebSocket trades
+                    // to avoid interleaving current-price trades with historical
+                    // gap-fill data.  The trades are still stored in raw_trades
+                    // above.  insert_raw_trades() temporarily clears the flag
+                    // for its own gap-fill batches.
+                    if self.fetching_trades.0 {
+                        return;
+                    }
+
                     // In-process range bar computation via rangebar-core.
                     // Feed each WebSocket trade into the processor; completed
                     // bars are appended to the chart, replacing ClickHouse
@@ -1116,16 +1129,99 @@ impl KlineChart {
     }
 
     pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
-        match self.data_source {
-            PlotData::TickBased(ref mut tick_aggr) => {
-                tick_aggr.insert_trades(&raw_trades);
-            }
-            PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.insert_trades_existing_buckets(&raw_trades);
-            }
-        }
+        if self.chart.basis.is_range_bar() && self.range_bar_processor.is_some() {
+            // Gap-fill path: feed REST-fetched trades through RangeBarProcessor.
+            //
+            // On the first batch, historical trades arrive AFTER the WebSocket has
+            // already pushed a few bars at the current price.  We must:
+            //   1. Remove any WS-sourced datapoints whose time > gap start
+            //   2. Recreate the RBP so its forming-bar state is clean
+            // After that, gap-fill trades build correct bars from the last CH bar.
+            //
+            // While gap-fill is active (`fetching_trades.0 == true`), WebSocket
+            // trades in `insert_trades_buffer` skip RBP processing to avoid
+            // interleaving current-price trades with historical gap-fill trades.
+            if let Some(first_trade) = raw_trades.first() {
+                // Check if the RBP's forming bar has state from WebSocket
+                // trades that are newer than the incoming gap-fill trades.
+                // The forming bar's open_time is in microseconds; convert
+                // the trade's millisecond timestamp for comparison.
+                let forming_is_newer = self
+                    .range_bar_processor
+                    .as_ref()
+                    .and_then(|p| p.get_incomplete_bar())
+                    .is_some_and(|bar| {
+                        let forming_ms = (bar.open_time / 1000) as u64;
+                        forming_ms > first_trade.time
+                    });
 
-        self.raw_trades.extend(raw_trades);
+                // Also check if any completed datapoints are newer.
+                let dp_is_newer = matches!(
+                    self.data_source,
+                    PlotData::TickBased(ref tick_aggr)
+                        if tick_aggr.datapoints.last()
+                            .is_some_and(|dp| first_trade.time < dp.kline.time)
+                );
+
+                if forming_is_newer || dp_is_newer {
+                    if let PlotData::TickBased(ref mut tick_aggr) = self.data_source {
+                        let gap_start = first_trade.time;
+                        let before = tick_aggr.datapoints.len();
+                        tick_aggr
+                            .datapoints
+                            .retain(|dp| dp.kline.time <= gap_start);
+                        let removed = before - tick_aggr.datapoints.len();
+                        log::info!(
+                            "[gap-fill] reset: removed {removed} WS-added bars, \
+                             retained {} CH bars, recreating RBP \
+                             (forming_newer={forming_is_newer}, dp_newer={dp_is_newer})",
+                            tick_aggr.datapoints.len(),
+                        );
+                    }
+
+                    // Recreate the processor with a clean forming-bar state.
+                    if let Basis::RangeBar(threshold_dbps) = self.chart.basis {
+                        self.range_bar_processor =
+                            RangeBarProcessor::new(threshold_dbps)
+                                .map_err(|e| {
+                                    log::warn!("failed to recreate RBP: {e}")
+                                })
+                                .ok();
+                        self.next_agg_id = 0;
+                    }
+
+                    // Rebuild indicators from the trimmed source.
+                    self.indicators
+                        .values_mut()
+                        .filter_map(Option::as_mut)
+                        .for_each(|indi| indi.rebuild_from_source(&self.data_source));
+                    self.invalidate(None);
+                }
+            }
+
+            // Temporarily clear the flag so insert_trades_buffer processes
+            // these gap-fill trades (the flag blocks WebSocket trades).
+            let was_fetching = self.fetching_trades.0;
+            self.fetching_trades.0 = false;
+
+            // insert_trades_buffer() already extends self.raw_trades internally.
+            self.insert_trades_buffer(&raw_trades);
+
+            // Re-arm the flag: keep it active while batches are still incoming
+            // so WebSocket trades skip RBP until gap-fill completes.
+            self.fetching_trades.0 = !is_batches_done || was_fetching;
+        } else {
+            match self.data_source {
+                PlotData::TickBased(ref mut tick_aggr) => {
+                    tick_aggr.insert_trades(&raw_trades);
+                }
+                PlotData::TimeBased(ref mut timeseries) => {
+                    timeseries.insert_trades_existing_buckets(&raw_trades);
+                }
+            }
+
+            self.raw_trades.extend(raw_trades);
+        }
 
         if is_batches_done {
             self.fetching_trades = (false, None);
@@ -1743,7 +1839,7 @@ fn draw_footprint_kline(
     );
 }
 
-fn draw_candle_dp(
+pub(crate) fn draw_candle_dp(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(Price) -> f32,
     candle_width: f32,
