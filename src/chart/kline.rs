@@ -1352,7 +1352,7 @@ impl KlineChart {
                             }
                             (lo, hi)
                         })
-                        .or_else(|| {
+                        .or({
                             // No completed bars visible — scale to forming bar alone.
                             forming_price_range
                         });
@@ -1603,9 +1603,9 @@ impl canvas::Program<Message> for KlineChart {
                     // Render the in-process forming bar (range bars only).
                     // Drawn at x = +cell_width (one slot right of index-0 = newest completed bar).
                     // Semi-transparent to signal it is still accumulating.
-                    if chart.basis.is_range_bar() {
-                        if let Some(ref processor) = self.range_bar_processor {
-                            if let Some(forming) = processor.get_incomplete_bar() {
+                    if chart.basis.is_range_bar()
+                        && let Some(ref processor) = self.range_bar_processor
+                            && let Some(forming) = processor.get_incomplete_bar() {
                                 let x_forming = chart.cell_width;
                                 let open_f32 = forming.open.to_f64() as f32;
                                 let high_f32 = forming.high.to_f64() as f32;
@@ -1652,8 +1652,6 @@ impl canvas::Program<Message> for KlineChart {
                                     forming_color,
                                 );
                             }
-                        }
-                    }
                 }
             }
 
