@@ -9,6 +9,7 @@ mod modal;
 mod screen;
 mod style;
 mod widget;
+mod widget_window;
 mod window;
 
 use data::config::theme::default_theme;
@@ -90,6 +91,8 @@ struct Flowsurface {
     timezone: data::UserTimezone,
     theme: data::Theme,
     notifications: Vec<Toast>,
+    /// Floating BTC range bar widget. None = widget hidden.
+    widget: Option<widget_window::WidgetController>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +124,8 @@ enum Message {
     NetworkManager(modal::network_manager::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
+    Widget(widget_window::WidgetMessage),
+    ToggleWidget,
 }
 
 impl Flowsurface {
@@ -155,6 +160,7 @@ impl Flowsurface {
             theme: saved_state.theme,
             notifications: vec![],
             network: NetworkManager::new(saved_state.proxy_cfg),
+            widget: None,
         };
 
         if let Some(err) = audio_init_err {
@@ -193,6 +199,14 @@ impl Flowsurface {
         match message {
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
+
+                // Forward BTCUSDT trades to floating widget (before dashboard borrow).
+                if let exchange::Event::DepthReceived(ref stream, _, _, ref trades_buffer) = event
+                    && let Some(ref mut ctrl) = self.widget
+                {
+                    ctrl.forward_trades(stream, trades_buffer);
+                }
+
                 let dashboard = self.active_dashboard_mut();
 
                 match event {
@@ -256,6 +270,12 @@ impl Flowsurface {
             }
             Message::WindowEvent(event) => match event {
                 window::Event::CloseRequested(window) => {
+                    // Widget window close.
+                    if self.widget.as_ref().is_some_and(|c| c.window_id() == window) {
+                        let ctrl = self.widget.take().unwrap();
+                        return ctrl.close();
+                    }
+
                     let main_window = self.main_window.id;
                     let dashboard = self.active_dashboard_mut();
 
@@ -343,7 +363,7 @@ impl Flowsurface {
                             data,
                             stream,
                         }) => dashboard
-                            .distribute_fetched_data(main_window.id, pane_id, data, stream)
+                            .distribute_fetched_data(main_window.id, layout_id, pane_id, data, stream)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: Some(layout_id),
                                 event: msg,
@@ -635,6 +655,29 @@ impl Flowsurface {
 
                 return window::collect_window_specs(active_windows, Message::RestartRequested);
             }
+            Message::Widget(widget_window::WidgetMessage::Drag) => {
+                if let Some(ref ctrl) = self.widget {
+                    return iced::window::drag(ctrl.window_id());
+                }
+            }
+            Message::ToggleWidget => {
+                if let Some(ctrl) = self.widget.take() {
+                    return ctrl.close();
+                }
+
+                let ticker_info = widget_window::WidgetController::find_btcusdt_ticker_info(
+                    self.sidebar.tickers_info(),
+                );
+
+                if let Some(ti) = ticker_info {
+                    let (ctrl, task) = widget_window::WidgetController::open(ti);
+                    self.widget = Some(ctrl);
+                    return task;
+                }
+
+                self.notifications
+                    .push(Toast::error("BTCUSDT ticker info not yet loaded"));
+            }
         }
         Task::none()
     }
@@ -695,6 +738,12 @@ impl Flowsurface {
             } else {
                 base.into()
             }
+        } else if self.widget.as_ref().is_some_and(|c| c.window_id() == id) {
+            self.widget
+                .as_ref()
+                .unwrap()
+                .view()
+                .map(Message::Widget)
         } else {
             container(
                 dashboard
@@ -766,12 +815,19 @@ impl Flowsurface {
             None
         });
 
+        let widget_sub = if let Some(ref ctrl) = self.widget {
+            ctrl.subscription().map(Message::MarketWsEvent)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch(vec![
             exchange_streams,
             sidebar,
             window_events,
             tick,
             hotkeys,
+            widget_sub,
         ])
     }
 
@@ -1191,8 +1247,15 @@ impl Flowsurface {
                     sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
                 };
 
+                let widget_label = if self.widget.is_some() {
+                    "Hide BTC Widget"
+                } else {
+                    "Show BTC Widget"
+                };
+
                 let app_menu: Element<'_, Message> = container(
                     column![
+                        button(text(widget_label)).width(iced::Length::Fill).on_press(Message::ToggleWidget),
                         button(text("Restart")).width(iced::Length::Fill).on_press(Message::RequestRestart),
                         button(text("Quit")).width(iced::Length::Fill).on_press(Message::RequestQuit),
                     ]
