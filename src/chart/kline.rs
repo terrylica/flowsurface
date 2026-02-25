@@ -861,7 +861,22 @@ impl KlineChart {
                 let mut tick_aggr = TickAggr::from_klines(step, &[]);
                 tick_aggr.range_bar_threshold_dbps = Some(threshold_dbps);
                 self.data_source = PlotData::TickBased(tick_aggr);
+
+                // Recreate the processor for the new threshold so live trades
+                // produce bars at the correct range.
+                self.range_bar_processor = RangeBarProcessor::new(threshold_dbps)
+                    .map_err(|e| log::warn!("failed to create RangeBarProcessor: {e}"))
+                    .ok();
+                self.next_agg_id = 0;
+                self.range_bar_completed_count = 0;
             }
+        }
+
+        // Clear processor when switching away from range bars.
+        if !matches!(new_basis, Basis::RangeBar(_)) {
+            self.range_bar_processor = None;
+            self.next_agg_id = 0;
+            self.range_bar_completed_count = 0;
         }
 
         self.indicators
@@ -972,14 +987,18 @@ impl KlineChart {
                                         forming.open_time,
                                         forming.agg_record_count,
                                     );
-                                    let range = forming.high.to_f64() - forming.low.to_f64();
+                                    let open = forming.open.to_f64();
+                                    let high_excursion = forming.high.to_f64() - open;
+                                    let low_excursion = open - forming.low.to_f64();
                                     let threshold_pct = processor.threshold_decimal_bps() as f64 / 100_000.0;
-                                    let expected_delta = forming.open.to_f64() * threshold_pct;
+                                    let expected_delta = open * threshold_pct;
                                     log::info!(
-                                        "[RBP]   range={:.2} threshold_delta={:.2} breached={}",
-                                        range,
+                                        "[RBP]   dbps={} delta={:.2} up={:.2} dn={:.2} breach={}",
+                                        processor.threshold_decimal_bps(),
                                         expected_delta,
-                                        range >= expected_delta,
+                                        high_excursion,
+                                        low_excursion,
+                                        high_excursion >= expected_delta || low_excursion >= expected_delta,
                                     );
                                 }
                             }
@@ -1311,10 +1330,34 @@ impl KlineChart {
                     let visible_region = chart.visible_region(chart.bounds.size());
                     let (start_interval, end_interval) = chart.interval_range(&visible_region);
 
-                    if let Some((lowest, highest)) = self
+                    // For range bars, get the forming bar's price range to potentially
+                    // extend the Y scale when the forming bar is at a different price level.
+                    let forming_price_range = if chart.basis.is_range_bar() {
+                        self.range_bar_processor.as_ref().and_then(|p| {
+                            p.get_incomplete_bar().map(|b| {
+                                (b.low.to_f64() as f32, b.high.to_f64() as f32)
+                            })
+                        })
+                    } else {
+                        None
+                    };
+
+                    let price_range = self
                         .data_source
                         .visible_price_range(start_interval, end_interval)
-                    {
+                        .map(|(mut lo, mut hi)| {
+                            if let Some((f_lo, f_hi)) = forming_price_range {
+                                lo = lo.min(f_lo);
+                                hi = hi.max(f_hi);
+                            }
+                            (lo, hi)
+                        })
+                        .or_else(|| {
+                            // No completed bars visible — scale to forming bar alone.
+                            forming_price_range
+                        });
+
+                    if let Some((lowest, highest)) = price_range {
                         let padding = (highest - lowest) * 0.05;
                         let price_span = (highest - lowest) + (2.0 * padding);
 
@@ -1556,6 +1599,61 @@ impl canvas::Program<Message> for KlineChart {
                             );
                         },
                     );
+
+                    // Render the in-process forming bar (range bars only).
+                    // Drawn at x = +cell_width (one slot right of index-0 = newest completed bar).
+                    // Semi-transparent to signal it is still accumulating.
+                    if chart.basis.is_range_bar() {
+                        if let Some(ref processor) = self.range_bar_processor {
+                            if let Some(forming) = processor.get_incomplete_bar() {
+                                let x_forming = chart.cell_width;
+                                let open_f32 = forming.open.to_f64() as f32;
+                                let high_f32 = forming.high.to_f64() as f32;
+                                let low_f32 = forming.low.to_f64() as f32;
+                                let close_f32 = forming.close.to_f64() as f32;
+
+                                let direction_color = if close_f32 >= open_f32 {
+                                    palette.success.base.color
+                                } else {
+                                    palette.danger.base.color
+                                };
+                                let forming_color = iced::Color {
+                                    a: 0.4,
+                                    ..direction_color
+                                };
+
+                                let y_open = price_to_y(Price::from_f32(open_f32));
+                                let y_high = price_to_y(Price::from_f32(high_f32));
+                                let y_low = price_to_y(Price::from_f32(low_f32));
+                                let y_close = price_to_y(Price::from_f32(close_f32));
+
+                                // Body
+                                frame.fill_rectangle(
+                                    Point::new(
+                                        x_forming - candle_width / 2.0,
+                                        y_open.min(y_close),
+                                    ),
+                                    Size::new(
+                                        candle_width,
+                                        (y_open - y_close).abs().max(1.0),
+                                    ),
+                                    forming_color,
+                                );
+                                // Wick
+                                frame.fill_rectangle(
+                                    Point::new(
+                                        x_forming - candle_width / 8.0,
+                                        y_high,
+                                    ),
+                                    Size::new(
+                                        candle_width / 4.0,
+                                        (y_high - y_low).abs(),
+                                    ),
+                                    forming_color,
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
