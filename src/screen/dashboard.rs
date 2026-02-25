@@ -393,6 +393,14 @@ impl Dashboard {
             },
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    // When gap-fill sip completes, clear the chart's fetching_trades
+                    // flag so WebSocket trades resume flowing through the RBP.
+                    if matches!(status, pane::Status::Ready)
+                        && let pane::Content::Kline { chart: Some(c), .. } =
+                            &mut pane_state.content
+                    {
+                        c.clear_fetching_trades();
+                    }
                     pane_state.status = status;
                 }
             }
@@ -871,6 +879,7 @@ impl Dashboard {
     pub fn distribute_fetched_data(
         &mut self,
         main_window: window::Id,
+        layout_id: uuid::Uuid,
         pane_id: uuid::Uuid,
         data: FetchedData,
         stream_type: StreamKind,
@@ -916,7 +925,7 @@ impl Dashboard {
                         }
                         StreamKind::RangeBarKline {
                             ticker_info,
-                            threshold_dbps,
+                            threshold_dbps: _,
                         } => {
                             pane_state.insert_range_bar_klines(
                                 req_id,
@@ -927,7 +936,10 @@ impl Dashboard {
 
                             // Only check staleness once per basis — skip
                             // scroll-back fetches which return old data by design.
-                            if !pane_state.staleness_checked {
+                            // Also skip if already stale/fetching (another trigger in flight).
+                            if !pane_state.staleness_checked
+                                && !matches!(pane_state.status, pane::Status::Stale(_))
+                            {
                                 pane_state.staleness_checked = true;
 
                                 if let Some(last_kline) = data.last() {
@@ -935,41 +947,42 @@ impl Dashboard {
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as u64)
                                         .unwrap_or(0);
-                                    let gap_hours =
-                                        (now_ms.saturating_sub(last_kline.time)) as f64
-                                            / 3_600_000.0;
+                                    let gap_ms = now_ms.saturating_sub(last_kline.time);
+                                    let gap_minutes = gap_ms as f64 / 60_000.0;
+                                    let gap_hours = gap_minutes / 60.0;
 
-                                    if gap_hours > 24.0 {
+                                    // Cap gap-fill at 72 hours — beyond that the REST API
+                                    // fetch is impractical (millions of trades at 1000/batch).
+                                    const MAX_GAPFILL_HOURS: f64 = 72.0;
+
+                                    if gap_hours > MAX_GAPFILL_HOURS {
+                                        log::warn!(
+                                            "[staleness] pane={} {:.0}h gap too large for client-side gap-fill (max {MAX_GAPFILL_HOURS}h)",
+                                            pane_id, gap_hours,
+                                        );
                                         pane_state.status = pane::Status::Stale(format!(
-                                            "Data {:.0}h old — requesting backfill...",
+                                            "Data {:.0}h old — gap too large for client gap-fill",
+                                            gap_hours
+                                        ));
+                                    } else if gap_minutes > 5.0 {
+                                        log::info!(
+                                            "[staleness] pane={} {:.1}h gap detected, triggering client-side gap-fill trades",
+                                            pane_id, gap_hours,
+                                        );
+                                        pane_state.status = pane::Status::Stale(format!(
+                                            "Data {:.0}h old — fetching trades to fill gap...",
                                             gap_hours
                                         ));
 
-                                        let symbol = ticker_info.ticker.to_string();
-                                        return Task::perform(
-                                            async move {
-                                                match adapter::clickhouse::request_backfill(
-                                                    &symbol,
-                                                    threshold_dbps,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(true) => log::info!(
-                                                        "[staleness] backfill requested for {symbol}"
-                                                    ),
-                                                    Ok(false) => log::info!(
-                                                        "[staleness] backfill already pending for {symbol}"
-                                                    ),
-                                                    Err(e) => log::warn!(
-                                                        "[staleness] failed to request backfill: {e}"
-                                                    ),
-                                                }
-                                            },
-                                            |_| {
-                                                Message::Notification(Toast::info(
-                                                    "Backfill requested".to_string(),
-                                                ))
-                                            },
+                                        let from_time = last_kline.time;
+                                        let to_time = now_ms;
+                                        let req_id = uuid::Uuid::new_v4();
+                                        return request_fetch(
+                                            pane_state,
+                                            layout_id,
+                                            req_id,
+                                            FetchRange::GapFillTrades(from_time, to_time),
+                                            None,
                                         );
                                     }
                                 }
@@ -1392,6 +1405,56 @@ fn request_fetch(
                 }
             }
         }
+        FetchRange::GapFillTrades(from_time, to_time) => {
+            let trade_info = state.streams.find_ready_map(|stream| {
+                if let StreamKind::DepthAndTrades { ticker_info, .. } = stream {
+                    Some((*ticker_info, pane_id, *stream))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((ticker_info, pane_id, stream)) = trade_info {
+                let is_binance = matches!(
+                    ticker_info.exchange(),
+                    Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
+                );
+
+                if is_binance {
+                    let (task, handle) = Task::sip(
+                        fetch_gapfill_trades(ticker_info, from_time, to_time),
+                        move |batch| {
+                            let data = FetchedData::Trades {
+                                batch,
+                                until_time: to_time,
+                            };
+                            Message::DistributeFetchedData {
+                                layout_id,
+                                pane_id,
+                                data,
+                                stream,
+                            }
+                        },
+                        move |result| match result {
+                            Ok(()) => Message::ChangePaneStatus(pane_id, pane::Status::Ready),
+                            Err(err) => Message::ErrorOccurred(
+                                Some(pane_id),
+                                DashboardError::Fetch(err.to_string()),
+                            ),
+                        },
+                    )
+                    .abortable();
+
+                    if let pane::Content::Kline { chart, .. } = &mut state.content
+                        && let Some(c) = chart
+                    {
+                        c.set_handle(handle.abort_on_drop());
+                    }
+
+                    return task;
+                }
+            }
+        }
     }
 
     Task::none()
@@ -1535,6 +1598,46 @@ pub fn fetch_trades_batched(
                     latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
 
                     let () = progress.send(batch).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(())
+    })
+}
+
+/// Gap-fill variant: always uses REST API (`/aggTrades?startTime=`), never
+/// daily zip archives.  Returns ~1000 trades per batch which keeps memory
+/// bounded and delivers visible progress incrementally.
+fn fetch_gapfill_trades(
+    ticker_info: TickerInfo,
+    from_time: u64,
+    to_time: u64,
+) -> impl Straw<(), Vec<Trade>, AdapterError> {
+    sipper(async move |mut progress| {
+        let mut latest_trade_t = from_time;
+
+        while latest_trade_t < to_time {
+            match binance::fetch_intraday_trades(ticker_info, latest_trade_t).await {
+                Ok(batch) => {
+                    if batch.is_empty() {
+                        break;
+                    }
+
+                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
+
+                    // Filter out trades beyond our target window
+                    let filtered: Vec<Trade> = batch
+                        .into_iter()
+                        .filter(|t| t.time <= to_time)
+                        .collect();
+
+                    if filtered.is_empty() {
+                        break;
+                    }
+
+                    let () = progress.send(filtered).await;
                 }
                 Err(err) => return Err(err),
             }

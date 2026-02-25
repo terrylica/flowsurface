@@ -121,6 +121,8 @@ pub enum FetchRange {
     Kline(u64, u64),
     OpenInterest(u64, u64),
     Trades(u64, u64),
+    /// REST-only trade fetch for gap-filling (no daily zip archives).
+    GapFillTrades(u64, u64),
 }
 
 #[derive(PartialEq, Debug)]
