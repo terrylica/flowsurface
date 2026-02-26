@@ -1421,8 +1421,10 @@ fn request_fetch(
                 );
 
                 if is_binance {
+                    let data_path = data::data_path(Some("market_data/binance/"));
+
                     let (task, handle) = Task::sip(
-                        fetch_gapfill_trades(ticker_info, from_time, to_time),
+                        fetch_gapfill_trades(ticker_info, from_time, to_time, data_path),
                         move |batch| {
                             let data = FetchedData::Trades {
                                 batch,
@@ -1607,19 +1609,20 @@ pub fn fetch_trades_batched(
     })
 }
 
-/// Gap-fill variant: always uses REST API (`/aggTrades?startTime=`), never
-/// daily zip archives.  Returns ~1000 trades per batch which keeps memory
-/// bounded and delivers visible progress incrementally.
+/// Gap-fill variant: uses `binance::fetch_trades()` which auto-routes to
+/// daily zip archives for completed days (fast bulk download) and falls back
+/// to REST `/aggTrades?startTime=` for today's data.
 fn fetch_gapfill_trades(
     ticker_info: TickerInfo,
     from_time: u64,
     to_time: u64,
+    data_path: PathBuf,
 ) -> impl Straw<(), Vec<Trade>, AdapterError> {
     sipper(async move |mut progress| {
         let mut latest_trade_t = from_time;
 
         while latest_trade_t < to_time {
-            match binance::fetch_intraday_trades(ticker_info, latest_trade_t).await {
+            match binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone()).await {
                 Ok(batch) => {
                     if batch.is_empty() {
                         break;

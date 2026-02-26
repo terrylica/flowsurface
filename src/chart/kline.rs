@@ -956,6 +956,10 @@ impl KlineChart {
     }
 
     pub fn insert_trades_buffer(&mut self, trades_buffer: &[Trade]) {
+        self.insert_trades_buffer_inner(trades_buffer, false);
+    }
+
+    fn insert_trades_buffer_inner(&mut self, trades_buffer: &[Trade], is_gap_fill: bool) {
         self.raw_trades.extend_from_slice(trades_buffer);
 
         match self.data_source {
@@ -963,10 +967,9 @@ impl KlineChart {
                 if self.chart.basis.is_range_bar() {
                     // While gap-fill is active, skip RBP for WebSocket trades
                     // to avoid interleaving current-price trades with historical
-                    // gap-fill data.  The trades are still stored in raw_trades
-                    // above.  insert_raw_trades() temporarily clears the flag
-                    // for its own gap-fill batches.
-                    if self.fetching_trades.0 {
+                    // gap-fill data.  Gap-fill batches pass is_gap_fill=true to
+                    // bypass this guard.
+                    if self.fetching_trades.0 && !is_gap_fill {
                         return;
                     }
 
@@ -981,8 +984,8 @@ impl KlineChart {
 
                         for trade in trades_buffer {
                             let agg = trade_to_agg_trade(trade, self.next_agg_id);
-                            // Diagnostic: log trade details every 200 trades
-                            if self.next_agg_id % 200 == 0 {
+                            // Diagnostic: log trade details every 2000 trades
+                            if self.next_agg_id % 2000 == 0 {
                                 log::info!(
                                     "[RBP] seq={} price={:.2} ts_us={} trade_time_ms={}",
                                     self.next_agg_id,
@@ -1100,7 +1103,12 @@ impl KlineChart {
                                 Some(PriceInfoLabel::new(last_trade.price, last_kline));
                         }
                     }
-                    self.invalidate(None);
+                    // During gap-fill, skip per-batch invalidation to avoid
+                    // ~1800 redundant canvas redraws. A single invalidate
+                    // fires when the gap-fill completes in insert_raw_trades().
+                    if !is_gap_fill {
+                        self.invalidate(None);
+                    }
                 } else {
                     let old_dp_len = tick_aggr.datapoints.len();
                     tick_aggr.insert_trades(trades_buffer);
@@ -1199,17 +1207,10 @@ impl KlineChart {
                 }
             }
 
-            // Temporarily clear the flag so insert_trades_buffer processes
-            // these gap-fill trades (the flag blocks WebSocket trades).
-            let was_fetching = self.fetching_trades.0;
-            self.fetching_trades.0 = false;
-
-            // insert_trades_buffer() already extends self.raw_trades internally.
-            self.insert_trades_buffer(&raw_trades);
-
-            // Re-arm the flag: keep it active while batches are still incoming
-            // so WebSocket trades skip RBP until gap-fill completes.
-            self.fetching_trades.0 = !is_batches_done || was_fetching;
+            // Use the inner method with is_gap_fill=true so that:
+            // 1. The fetching_trades guard is bypassed (gap-fill trades must be processed)
+            // 2. Canvas invalidation is suppressed (single redraw at gap-fill end)
+            self.insert_trades_buffer_inner(&raw_trades, true);
         } else {
             match self.data_source {
                 PlotData::TickBased(ref mut tick_aggr) => {
@@ -1225,6 +1226,8 @@ impl KlineChart {
 
         if is_batches_done {
             self.fetching_trades = (false, None);
+            // Single canvas redraw now that all gap-fill batches are processed.
+            self.invalidate(None);
         }
     }
 
