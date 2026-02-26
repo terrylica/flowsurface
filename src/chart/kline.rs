@@ -621,7 +621,9 @@ impl KlineChart {
                         chart.latest_x = kline.time;
                     }
 
-                    chart.last_price = Some(PriceInfoLabel::new(kline.close, kline.open));
+                    // Don't overwrite last_price here — ClickHouse bars are
+                    // completed (historical). The live price comes from the
+                    // forming bar's close in insert_trades_buffer().
                 }
             }
         }
