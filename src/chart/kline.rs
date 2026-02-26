@@ -1022,7 +1022,7 @@ impl KlineChart {
                             }
                             self.next_agg_id += 1;
 
-                            match processor.process_single_trade(agg) {
+                            match processor.process_single_trade(&agg) {
                                 Ok(Some(completed)) => {
                                     log::info!(
                                         "[RBP] BAR COMPLETED: open={:.2} close={:.2} high={:.2} low={:.2} trades={}",

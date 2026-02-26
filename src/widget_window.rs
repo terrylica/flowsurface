@@ -162,7 +162,7 @@ impl WidgetState {
             let agg = trade_to_agg_trade(trade, self.next_agg_id);
             self.next_agg_id += 1;
 
-            match self.processor.process_single_trade(agg) {
+            match self.processor.process_single_trade(&agg) {
                 Ok(Some(completed)) => {
                     let kline = range_bar_to_kline(&completed, min_tick);
                     self.bars.push(kline);
