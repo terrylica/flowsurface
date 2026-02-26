@@ -561,6 +561,7 @@ pub fn view<'a, T: Chart>(
             decimals: state.decimals,
             min: state.base_price_y.to_f32_lossy(),
             last_price: state.last_price,
+            last_trade_time: state.last_trade_time,
             tick_size: state.tick_size.to_f32_lossy(),
             cell_height: state.cell_height,
             basis: state.basis,
@@ -664,6 +665,7 @@ pub struct ViewState {
     cell_height: f32,
     basis: Basis,
     last_price: Option<PriceInfoLabel>,
+    last_trade_time: Option<u64>,
     base_price_y: Price,
     latest_x: u64,
     tick_size: PriceStep,
@@ -695,6 +697,7 @@ impl ViewState {
             cell_height,
             basis,
             last_price: None,
+            last_trade_time: None,
             base_price_y: Price::from_f32_lossy(0.0),
             latest_x: 0,
             tick_size,
@@ -1169,7 +1172,14 @@ impl ViewState {
         let precision = self.ticker_info.min_ticksize;
 
         let value = self.base_price_y.to_string(precision);
-        let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
+        let price_width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
+
+        // Range bar timer label ("HH:MM:SS.mmm UTC") needs more room
+        let width = if matches!(self.basis, Basis::RangeBar(_)) {
+            price_width.max(135.0)
+        } else {
+            price_width
+        };
 
         Length::Fixed(width.ceil())
     }

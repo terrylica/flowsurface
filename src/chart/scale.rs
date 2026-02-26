@@ -6,6 +6,7 @@ pub mod timeseries;
 use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 
 use super::{Basis, Interaction, Message};
+use chrono::{TimeZone, Utc};
 use data::{chart::Autoscale, util::round_to_tick};
 use iced::{
     Alignment, Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse,
@@ -613,6 +614,7 @@ pub struct AxisLabelsY<'a> {
     pub scaling: f32,
     pub min: f32,
     pub last_price: Option<linear::PriceInfoLabel>,
+    pub last_trade_time: Option<u64>,
     pub tick_size: f32,
     pub decimals: usize,
     pub cell_height: f32,
@@ -767,7 +769,27 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                             None
                         }
                     }
-                    Basis::Tick(_) | Basis::RangeBar(_) => None,
+                    Basis::Tick(_) => None,
+                    Basis::RangeBar(_) => {
+                        self.last_trade_time.and_then(|ms| {
+                            let secs = (ms / 1000) as i64;
+                            let millis = (ms % 1000) as u32;
+                            let u = Utc.timestamp_opt(secs, millis * 1_000_000).single()?;
+                            Some(LabelContent {
+                                content: format!(
+                                    "{}.{:03} UTC",
+                                    u.format("%H:%M:%S"), millis,
+                                ),
+                                background_color: Some(palette.background.strong.color),
+                                text_color: if palette.is_dark {
+                                    Color::BLACK.scale_alpha(0.8)
+                                } else {
+                                    Color::WHITE.scale_alpha(0.8)
+                                },
+                                text_size: 11.0,
+                            })
+                        })
+                    }
                 };
 
                 let (price, color) = label.get_with_color(palette);

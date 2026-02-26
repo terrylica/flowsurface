@@ -15,6 +15,8 @@ use exchange::{Kline, PushFrequency, TickerInfo, Ticker, Trade};
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 
+use chrono::{Local, TimeZone, Utc};
+
 use iced::widget::canvas::{self, Cache, Canvas, Frame, Path, Stroke, Text};
 use iced::widget::mouse_area;
 use iced::{self, Color, Element, Length, Point, Rectangle, Renderer, Size, Subscription, Theme, mouse, window};
@@ -133,6 +135,7 @@ struct WidgetState {
     processor: RangeBarProcessor,
     next_agg_id: i64,
     last_price: Option<PriceInfoLabel>,
+    last_trade_time: Option<u64>,
     cache: Cache,
     ticker_info: TickerInfo,
 }
@@ -146,6 +149,7 @@ impl WidgetState {
             processor,
             next_agg_id: 0,
             last_price: None,
+            last_trade_time: None,
             cache: Cache::new(),
             ticker_info,
         }
@@ -169,6 +173,10 @@ impl WidgetState {
                 Ok(None) => {}
                 Err(e) => log::warn!("[widget] RangeBarProcessor error: {e}"),
             }
+        }
+
+        if let Some(last_trade) = trades.last() {
+            self.last_trade_time = Some(last_trade.time);
         }
 
         if let Some(forming) = self.processor.get_incomplete_bar() {
@@ -228,7 +236,7 @@ impl canvas::Program<WidgetMessage> for WidgetState {
                 palette.background.base.color,
             );
 
-            let header_h = 28.0;
+            let header_h = 34.0;
             let margin = 6.0;
 
             if let Some(label) = self.last_price {
@@ -242,6 +250,27 @@ impl canvas::Program<WidgetMessage> for WidgetState {
                     size: 16.0.into(),
                     ..Default::default()
                 });
+
+                if let Some(trade_ms) = self.last_trade_time {
+                    let secs = (trade_ms / 1000) as i64;
+                    let millis = (trade_ms % 1000) as u32;
+                    let utc_dt = Utc.timestamp_opt(secs, millis * 1_000_000).single();
+                    let local_dt = Local.timestamp_opt(secs, millis * 1_000_000).single();
+                    if let (Some(u), Some(l)) = (utc_dt, local_dt) {
+                        let ts_text = format!(
+                            "{}.{:03} UTC  /  {}.{:03} local",
+                            u.format("%H:%M:%S"), millis,
+                            l.format("%H:%M:%S"), millis,
+                        );
+                        frame.fill_text(Text {
+                            content: ts_text,
+                            position: Point::new(margin, margin + 16.0),
+                            color: palette.secondary.strong.color,
+                            size: 10.0.into(),
+                            ..Default::default()
+                        });
+                    }
+                }
             } else {
                 frame.fill_text(Text {
                     content: "Waiting for trades...".to_string(),

@@ -1066,6 +1066,9 @@ impl KlineChart {
 
                         // Update live price line from forming bar or last trade.
                         // Price.units and FixedPoint.0 are both i64 × 10^8 — direct copy.
+                        if let Some(last_trade) = trades_buffer.last() {
+                            self.chart.last_trade_time = Some(last_trade.time);
+                        }
                         if let Some(forming) = processor.get_incomplete_bar() {
                             let close = Price { units: forming.close.0 };
                             let open = Price { units: forming.open.0 };
