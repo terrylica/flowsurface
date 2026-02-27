@@ -434,9 +434,13 @@ impl KlineChart {
 
                 // Set last price line from newest kline so the dashed line
                 // appears immediately, before any WebSocket trades arrive.
+                // Color = last bar's close vs previous bar's close (market direction).
                 if let Some(last_kline) = klines_raw.last() {
+                    let prev_close = klines_raw.iter().rev().nth(1)
+                        .map(|k| k.close)
+                        .unwrap_or(last_kline.close);
                     chart.last_price =
-                        Some(PriceInfoLabel::new(last_kline.close, last_kline.open));
+                        Some(PriceInfoLabel::new(last_kline.close, prev_close));
                 }
 
                 let data_source = PlotData::TickBased(tick_aggr);
@@ -559,8 +563,12 @@ impl KlineChart {
 
         // Set last price line from newest kline so the dashed line
         // appears immediately, before any WebSocket trades arrive.
+        // Color = last bar's close vs previous bar's close (market direction).
         if let Some(last_kline) = klines_raw.last() {
-            chart.last_price = Some(PriceInfoLabel::new(last_kline.close, last_kline.open));
+            let prev_close = klines_raw.iter().rev().nth(1)
+                .map(|k| k.close)
+                .unwrap_or(last_kline.close);
+            chart.last_price = Some(PriceInfoLabel::new(last_kline.close, prev_close));
         }
 
         let data_source = PlotData::TickBased(tick_aggr);
@@ -623,6 +631,17 @@ impl KlineChart {
             }
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_range_bar() {
+                    // Get previous bar's close for color direction.
+                    // If this kline replaces the last bar (same timestamp), use second-to-last.
+                    // If this kline appends (new bar), use the current last bar.
+                    let prev_close = if tick_aggr.datapoints.last().is_some_and(|dp| dp.kline.time == kline.time) {
+                        // Replace case: second-to-last bar
+                        tick_aggr.datapoints.iter().rev().nth(1).map(|dp| dp.kline.close)
+                    } else {
+                        // Append case: current last bar
+                        tick_aggr.datapoints.last().map(|dp| dp.kline.close)
+                    };
+
                     // Range bar streaming update — reconcile ClickHouse completed bar
                     // with locally-constructed forming bar. ClickHouse is authoritative.
                     tick_aggr.replace_or_append_kline(kline);
@@ -647,8 +666,9 @@ impl KlineChart {
                     // no forming bar exists yet (no live trades received).
                     // Once live trades arrive, insert_trades_buffer() takes over.
                     if !has_forming {
+                        let reference = prev_close.unwrap_or(kline.close);
                         chart.last_price =
-                            Some(PriceInfoLabel::new(kline.close, kline.open));
+                            Some(PriceInfoLabel::new(kline.close, reference));
                     }
                 }
             }
@@ -1099,22 +1119,24 @@ impl KlineChart {
                         }
 
                         // Update live price line from forming bar or last trade.
+                        // Color = current price vs previous completed bar's close
+                        // (standard charting convention: green = up from last bar, red = down).
                         // Price.units and FixedPoint.0 are both i64 × 10^8 — direct copy.
                         if let Some(last_trade) = trades_buffer.last() {
                             self.chart.last_trade_time = Some(last_trade.time);
                         }
+                        let prev_close = tick_aggr
+                            .datapoints
+                            .last()
+                            .map(|dp| dp.kline.close);
                         if let Some(forming) = processor.get_incomplete_bar() {
                             let close = Price { units: forming.close.0 };
-                            let open = Price { units: forming.open.0 };
-                            self.chart.last_price = Some(PriceInfoLabel::new(close, open));
+                            let reference = prev_close.unwrap_or(close);
+                            self.chart.last_price = Some(PriceInfoLabel::new(close, reference));
                         } else if let Some(last_trade) = trades_buffer.last() {
-                            let last_kline = tick_aggr
-                                .datapoints
-                                .last()
-                                .map(|dp| dp.kline.open)
-                                .unwrap_or(last_trade.price);
+                            let reference = prev_close.unwrap_or(last_trade.price);
                             self.chart.last_price =
-                                Some(PriceInfoLabel::new(last_trade.price, last_kline));
+                                Some(PriceInfoLabel::new(last_trade.price, reference));
                         }
 
                         if new_bars > 0 {
@@ -1133,13 +1155,13 @@ impl KlineChart {
                     } else {
                         // Fallback: no processor, just update price line
                         if let Some(last_trade) = trades_buffer.last() {
-                            let last_kline = tick_aggr
+                            let prev_close = tick_aggr
                                 .datapoints
                                 .last()
-                                .map(|dp| dp.kline.open)
+                                .map(|dp| dp.kline.close)
                                 .unwrap_or(last_trade.price);
                             self.chart.last_price =
-                                Some(PriceInfoLabel::new(last_trade.price, last_kline));
+                                Some(PriceInfoLabel::new(last_trade.price, prev_close));
                         }
                     }
                     // During gap-fill, skip per-batch invalidation to avoid
