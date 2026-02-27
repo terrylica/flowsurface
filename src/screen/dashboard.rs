@@ -331,6 +331,24 @@ impl Dashboard {
                         }
                     }
                 }
+                pane::Message::IncludeFormingChanged(pane, include) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        match &mut state.content {
+                            pane::Content::Kline {
+                                chart: Some(c),
+                                layout,
+                                ..
+                            } => {
+                                c.set_include_forming(include);
+                                layout.include_forming = include;
+                            }
+                            pane::Content::Kline { layout, .. } => {
+                                layout.include_forming = include;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 pane::Message::SwitchLinkGroup(pane, group) => {
                     if group.is_none() {
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {

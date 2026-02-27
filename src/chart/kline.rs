@@ -291,6 +291,7 @@ impl KlineChart {
                     ViewConfig {
                         splits: layout.splits,
                         autoscale: Some(Autoscale::FitToVisible),
+                        include_forming: true,
                     },
                     cell_width,
                     cell_height,
@@ -355,6 +356,7 @@ impl KlineChart {
                     ViewConfig {
                         splits: layout.splits,
                         autoscale: Some(Autoscale::FitToVisible),
+                        include_forming: true,
                     },
                     cell_width,
                     cell_height,
@@ -420,6 +422,7 @@ impl KlineChart {
                     ViewConfig {
                         splits: layout.splits,
                         autoscale: Some(Autoscale::FitToVisible),
+                        include_forming: true,
                     },
                     cell_width,
                     cell_height,
@@ -537,6 +540,7 @@ impl KlineChart {
             ViewConfig {
                 splits: layout.splits,
                 autoscale: Some(Autoscale::FitToVisible),
+                include_forming: true,
             },
             cell_width,
             cell_height,
@@ -798,6 +802,10 @@ impl KlineChart {
 
     pub fn set_autoscale(&mut self, autoscale: Option<Autoscale>) {
         self.chart.layout.autoscale = autoscale;
+    }
+
+    pub fn set_include_forming(&mut self, include: bool) {
+        self.chart.layout.include_forming = include;
     }
 
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
@@ -1444,6 +1452,7 @@ impl KlineChart {
                     // and back causes the live price to stretch the Y-axis permanently.
                     let forming_price_range = if chart.basis.is_range_bar()
                         && start_interval == 0
+                        && chart.layout.include_forming
                     {
                         self.range_bar_processor.as_ref().and_then(|p| {
                             p.get_incomplete_bar().map(|b| {

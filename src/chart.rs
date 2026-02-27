@@ -1165,6 +1165,7 @@ impl ViewState {
         ViewConfig {
             splits: layout.splits.clone(),
             autoscale: layout.autoscale,
+            include_forming: layout.include_forming,
         }
     }
 

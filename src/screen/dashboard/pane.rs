@@ -80,6 +80,7 @@ pub enum Message {
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
     AutoscaleChanged(pane_grid::Pane, Option<data::chart::Autoscale>),
+    IncludeFormingChanged(pane_grid::Pane, bool),
     PaneEvent(pane_grid::Pane, Event),
 }
 
@@ -943,13 +944,15 @@ impl State {
                         Message::PaneEvent(id, Event::ChartInteraction(message))
                     });
                     let settings_modal = || {
+                        let chart_layout = chart.chart_layout();
                         kline_cfg_view(
                             chart.study_configurator(),
                             chart.kline_config,
                             chart_kind,
                             id,
                             chart.basis(),
-                            chart.chart_layout().autoscale,
+                            chart_layout.autoscale,
+                            chart_layout.include_forming,
                         )
                     };
 
@@ -1853,6 +1856,7 @@ impl Content {
                 ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
+                    include_forming: true,
                 },
                 vec![],
             )
@@ -1973,6 +1977,7 @@ impl Content {
             .unwrap_or(ViewConfig {
                 splits,
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
+                include_forming: true,
             });
 
         // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
@@ -2012,6 +2017,7 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
+                    include_forming: true,
                 },
             },
             ContentKind::FootprintChart => Content::Kline {
@@ -2025,6 +2031,7 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
+                    include_forming: true,
                 },
             },
             ContentKind::HeatmapChart => Content::Heatmap {
@@ -2034,6 +2041,7 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
+                    include_forming: true,
                 },
             },
             ContentKind::RangeBarChart => Content::Kline {
@@ -2045,6 +2053,7 @@ impl Content {
                 layout: ViewConfig {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
+                    include_forming: true,
                 },
             },
             ContentKind::ComparisonChart => Content::Comparison(None),

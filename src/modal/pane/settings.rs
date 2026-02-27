@@ -524,6 +524,7 @@ pub fn kline_cfg_view<'a>(
     pane: pane_grid::Pane,
     basis: data::chart::Basis,
     autoscale: Option<Autoscale>,
+    include_forming: bool,
 ) -> Element<'a, Message> {
     let content = match kind {
         KlineChartKind::Candles => column![text(
@@ -580,12 +581,24 @@ pub fn kline_cfg_view<'a>(
                 },
             );
 
+            let mut scaling_section = column![
+                text("Y-Axis Scaling").size(14),
+                autoscale_picker,
+            ]
+            .spacing(8);
+
+            if matches!(autoscale, Some(Autoscale::FitToVisible)) {
+                scaling_section = scaling_section.push(
+                    checkbox(include_forming)
+                        .label("Include forming bar")
+                        .on_toggle(move |value| {
+                            Message::IncludeFormingChanged(pane, value)
+                        }),
+                );
+            }
+
             split_column![
-                column![
-                    text("Y-Axis Scaling").size(14),
-                    autoscale_picker,
-                ]
-                .spacing(8),
+                scaling_section,
                 column![
                     text("OFI EMA Period").size(14),
                     row![ema_slider, text(format!("{period}")).size(12)]

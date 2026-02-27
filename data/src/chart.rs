@@ -46,10 +46,26 @@ impl<D: DataPoint> PlotData<D> {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ViewConfig {
     pub splits: Vec<f32>,
     pub autoscale: Option<Autoscale>,
+    #[serde(default = "default_true")]
+    pub include_forming: bool,
+}
+
+impl Default for ViewConfig {
+    fn default() -> Self {
+        Self {
+            splits: Vec::new(),
+            autoscale: None,
+            include_forming: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
