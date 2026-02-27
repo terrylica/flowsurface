@@ -1152,7 +1152,7 @@ impl ViewState {
 
             frame.stroke(
                 &Path::line(
-                    Point::new(0.0, y_pos),
+                    Point::new(region.x, y_pos),
                     Point::new(region.x + region.width, y_pos),
                 ),
                 marker_line,

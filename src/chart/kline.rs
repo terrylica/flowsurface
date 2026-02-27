@@ -432,6 +432,13 @@ impl KlineChart {
                     - (8.0 * chart.cell_width / chart.scaling);
                 chart.translation.x = x_translation;
 
+                // Set last price line from newest kline so the dashed line
+                // appears immediately, before any WebSocket trades arrive.
+                if let Some(last_kline) = klines_raw.last() {
+                    chart.last_price =
+                        Some(PriceInfoLabel::new(last_kline.close, last_kline.open));
+                }
+
                 let data_source = PlotData::TickBased(tick_aggr);
 
                 let mut indicators = EnumMap::default();
@@ -550,6 +557,12 @@ impl KlineChart {
             0.5 * (chart.bounds.width / chart.scaling) - (8.0 * chart.cell_width / chart.scaling);
         chart.translation.x = x_translation;
 
+        // Set last price line from newest kline so the dashed line
+        // appears immediately, before any WebSocket trades arrive.
+        if let Some(last_kline) = klines_raw.last() {
+            chart.last_price = Some(PriceInfoLabel::new(last_kline.close, last_kline.open));
+        }
+
         let data_source = PlotData::TickBased(tick_aggr);
 
         let mut indicators = EnumMap::default();
@@ -619,15 +632,24 @@ impl KlineChart {
                         .filter_map(Option::as_mut)
                         .for_each(|indi| indi.on_insert_klines(&[*kline]));
 
+                    // Check forming bar existence before taking &mut self via mut_state().
+                    let has_forming = self.range_bar_processor.as_ref()
+                        .and_then(|p| p.get_incomplete_bar())
+                        .is_some();
+
                     let chart = self.mut_state();
 
                     if kline.time > chart.latest_x {
                         chart.latest_x = kline.time;
                     }
 
-                    // Don't overwrite last_price here — ClickHouse bars are
-                    // completed (historical). The live price comes from the
-                    // forming bar's close in insert_trades_buffer().
+                    // Set last_price from the newest ClickHouse bar only when
+                    // no forming bar exists yet (no live trades received).
+                    // Once live trades arrive, insert_trades_buffer() takes over.
+                    if !has_forming {
+                        chart.last_price =
+                            Some(PriceInfoLabel::new(kline.close, kline.open));
+                    }
                 }
             }
         }
