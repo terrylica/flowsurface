@@ -9,9 +9,9 @@ const FMT_DATETIME: &str = "%a %b %-d %H:%M";
 const FMT_DATETIME_SEC: &str = "%a %b %-d %H:%M:%S";
 const FMT_DATETIME_SEC_MS: &str = "%a %b %-d %H:%M:%S.%3f";
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
-/// Compact bar timestamp: "Jan 20 14:35:42.123" — no weekday, always ms precision.
+/// Compact bar timestamp: "2026 Feb 26 14:35:42.123" — year prefix, no weekday, always ms precision.
 /// Used for range-bar open/close fields in the crosshair tooltip.
-const FMT_BAR_TIME_MS: &str = "%b %-d %H:%M:%S.%3f";
+const FMT_BAR_TIME_MS: &str = "%Y %b %-d %H:%M:%S.%3f";
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum UserTimezone {
