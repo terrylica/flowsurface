@@ -796,6 +796,10 @@ impl KlineChart {
         self.chart.layout()
     }
 
+    pub fn set_autoscale(&mut self, autoscale: Option<Autoscale>) {
+        self.chart.layout.autoscale = autoscale;
+    }
+
     pub fn set_cluster_kind(&mut self, new_kind: ClusterKind) {
         if let KlineChartKind::Footprint {
             ref mut clusters, ..
@@ -1434,9 +1438,13 @@ impl KlineChart {
                     let visible_region = chart.visible_region(chart.bounds.size());
                     let (start_interval, end_interval) = chart.interval_range(&visible_region);
 
-                    // For range bars, get the forming bar's price range to potentially
-                    // extend the Y scale when the forming bar is at a different price level.
-                    let forming_price_range = if chart.basis.is_range_bar() {
+                    // For range bars, include the forming bar's price range only when
+                    // the viewport includes the newest bar (index 0 = rightmost edge).
+                    // Without this gate, scrolling to historical data (e.g., 2022 prices)
+                    // and back causes the live price to stretch the Y-axis permanently.
+                    let forming_price_range = if chart.basis.is_range_bar()
+                        && start_interval == 0
+                    {
                         self.range_bar_processor.as_ref().and_then(|p| {
                             p.get_incomplete_bar().map(|b| {
                                 (b.low.to_f64() as f32, b.high.to_f64() as f32)

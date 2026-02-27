@@ -313,6 +313,24 @@ impl Dashboard {
                         state.content.change_visual_config(cfg);
                     }
                 }
+                pane::Message::AutoscaleChanged(pane, autoscale) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        match &mut state.content {
+                            pane::Content::Kline {
+                                chart: Some(c),
+                                layout,
+                                ..
+                            } => {
+                                c.set_autoscale(autoscale);
+                                layout.autoscale = autoscale;
+                            }
+                            pane::Content::Kline { layout, .. } => {
+                                layout.autoscale = autoscale;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 pane::Message::SwitchLinkGroup(pane, group) => {
                     if group.is_none() {
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {

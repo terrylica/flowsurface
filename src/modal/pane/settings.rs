@@ -7,6 +7,7 @@ use crate::split_column;
 use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
 
+use data::chart::Autoscale;
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
 use data::chart::{
@@ -18,6 +19,44 @@ use data::layout::pane::VisualConfig;
 use data::panel::ladder;
 use data::panel::timeandsales::{StackedBar, StackedBarRatio, TimeFormat};
 use data::util::format_with_commas;
+
+/// UI-facing representation of `Option<Autoscale>` for pick_list display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoscaleMode {
+    FitToVisible,
+    CenterLatest,
+    FixedScale,
+}
+
+impl AutoscaleMode {
+    const ALL: [Self; 3] = [Self::FitToVisible, Self::CenterLatest, Self::FixedScale];
+
+    fn from_option(autoscale: Option<Autoscale>) -> Self {
+        match autoscale {
+            Some(Autoscale::FitToVisible) => Self::FitToVisible,
+            Some(Autoscale::CenterLatest) => Self::CenterLatest,
+            None => Self::FixedScale,
+        }
+    }
+
+    fn to_option(self) -> Option<Autoscale> {
+        match self {
+            Self::FitToVisible => Some(Autoscale::FitToVisible),
+            Self::CenterLatest => Some(Autoscale::CenterLatest),
+            Self::FixedScale => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AutoscaleMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FitToVisible => write!(f, "Auto-fit"),
+            Self::CenterLatest => write!(f, "Center Latest"),
+            Self::FixedScale => write!(f, "Fixed Scale"),
+        }
+    }
+}
 
 use iced::widget::{checkbox, space};
 use iced::{
@@ -484,6 +523,7 @@ pub fn kline_cfg_view<'a>(
     kind: &'a KlineChartKind,
     pane: pane_grid::Pane,
     basis: data::chart::Basis,
+    autoscale: Option<Autoscale>,
 ) -> Element<'a, Message> {
     let content = match kind {
         KlineChartKind::Candles => column![text(
@@ -531,7 +571,21 @@ pub fn kline_cfg_view<'a>(
                     )
                 });
 
+            let current_mode = AutoscaleMode::from_option(autoscale);
+            let autoscale_picker = pick_list(
+                AutoscaleMode::ALL.as_slice(),
+                Some(current_mode),
+                move |new_mode: AutoscaleMode| {
+                    Message::AutoscaleChanged(pane, new_mode.to_option())
+                },
+            );
+
             split_column![
+                column![
+                    text("Y-Axis Scaling").size(14),
+                    autoscale_picker,
+                ]
+                .spacing(8),
                 column![
                     text("OFI EMA Period").size(14),
                     row![ema_slider, text(format!("{period}")).size(12)]

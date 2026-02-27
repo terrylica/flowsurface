@@ -19,6 +19,10 @@ use iced::{Vector, keyboard};
 const BARS_SMALL: f32 = 10.0;
 const BARS_LARGE: f32 = 50.0;
 
+/// Vertical pan distance in pixels per keypress.
+const Y_PAN_PIXELS: f32 = 40.0;
+const Y_PAN_PIXELS_LARGE: f32 = 200.0;
+
 /// Horizontal zoom delta per keypress (passed to `Message::XScaling`).
 ///
 /// `is_wheel_scroll=false` → `zoom_factor = ZOOM_SENSITIVITY * 3.0 = 90.0` in chart.rs.
@@ -57,7 +61,7 @@ pub fn is_nav_key(key: &keyboard::Key) -> bool {
 /// message, or `None` if the event is not a navigation key.
 /// Callers do not need to know about the internal pan/zoom split.
 pub fn process(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
-    pan(event, state).or_else(|| zoom(event))
+    pan(event, state).or_else(|| zoom(event, state))
 }
 
 /// Compute a pan `Message::Translated` from arrow/vim pan keys.
@@ -68,6 +72,9 @@ pub fn process(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
 /// `PageUp`  one full viewport width towards history
 /// `PageDown` one full viewport width towards present
 /// `Home`/`g` jump to latest bar
+///
+/// In fixed-scale mode (`autoscale: None`), `↑`/`k` and `↓`/`j` pan vertically
+/// instead of zooming — this gives free canvas navigation when autoscale is off.
 fn pan(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
     let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
@@ -79,30 +86,76 @@ fn pan(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
     let bars = if modifiers.shift() { BARS_LARGE } else { BARS_SMALL };
     let step = bars * state.cell_width / state.scaling;
 
-    let new_x = match key.as_ref() {
-        // Named arrow keys
-        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => state.translation.x + step,
-        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => state.translation.x - step,
-        keyboard::Key::Named(keyboard::key::Named::PageUp) => {
-            state.translation.x + state.bounds.width / state.scaling
+    let is_fixed_scale = state.layout.autoscale.is_none();
+
+    // Horizontal pan (always active)
+    let horizontal = match key.as_ref() {
+        keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+            Some(Vector::new(state.translation.x + step, state.translation.y))
         }
-        keyboard::Key::Named(keyboard::key::Named::PageDown) => {
-            state.translation.x - state.bounds.width / state.scaling
+        keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+            Some(Vector::new(state.translation.x - step, state.translation.y))
         }
-        keyboard::Key::Named(keyboard::key::Named::Home) => 0.0,
-        // vim hjkl — h/H and l/L collapse into the same arm because Shift is already
-        // encoded in the character, so modifiers.shift() is true for H/L and step
-        // already carries BARS_LARGE.
+        keyboard::Key::Named(keyboard::key::Named::PageUp) => Some(Vector::new(
+            state.translation.x + state.bounds.width / state.scaling,
+            state.translation.y,
+        )),
+        keyboard::Key::Named(keyboard::key::Named::PageDown) => Some(Vector::new(
+            state.translation.x - state.bounds.width / state.scaling,
+            state.translation.y,
+        )),
+        keyboard::Key::Named(keyboard::key::Named::Home) => {
+            Some(Vector::new(0.0, state.translation.y))
+        }
         keyboard::Key::Character(c) => match c {
-            "h" | "H" => state.translation.x + step,
-            "l" | "L" => state.translation.x - step,
-            "g" => 0.0,
-            _ => return None,
+            "h" | "H" => Some(Vector::new(state.translation.x + step, state.translation.y)),
+            "l" | "L" => Some(Vector::new(state.translation.x - step, state.translation.y)),
+            "g" => Some(Vector::new(0.0, state.translation.y)),
+            _ => None,
         },
-        _ => return None,
+        _ => None,
     };
 
-    Some(Message::Translated(Vector::new(new_x, state.translation.y)))
+    if horizontal.is_some() {
+        return horizontal.map(Message::Translated);
+    }
+
+    // Vertical pan (only in fixed-scale mode — autoscale recalculates Y each tick)
+    if is_fixed_scale {
+        let y_step = if modifiers.shift() {
+            Y_PAN_PIXELS_LARGE
+        } else {
+            Y_PAN_PIXELS
+        };
+
+        let vertical = match key.as_ref() {
+            // Up = see higher prices = increase translation.y
+            keyboard::Key::Named(keyboard::key::Named::ArrowUp) => Some(Vector::new(
+                state.translation.x,
+                state.translation.y + y_step,
+            )),
+            keyboard::Key::Named(keyboard::key::Named::ArrowDown) => Some(Vector::new(
+                state.translation.x,
+                state.translation.y - y_step,
+            )),
+            keyboard::Key::Character(c) => match c {
+                "k" | "K" => Some(Vector::new(
+                    state.translation.x,
+                    state.translation.y + y_step,
+                )),
+                "j" | "J" => Some(Vector::new(
+                    state.translation.x,
+                    state.translation.y - y_step,
+                )),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        return vertical.map(Message::Translated);
+    }
+
+    None
 }
 
 /// Compute a horizontal-zoom `Message::XScaling` from arrow/vim zoom keys.
@@ -111,12 +164,18 @@ fn pan(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
 /// `↓`/`j`   zoom out ~10% (narrows bars)
 /// `K`/`J`   fast zoom ~30% (Shift variant)
 ///
+/// Only active when autoscale is enabled — in fixed-scale mode (`None`),
+/// these keys are handled by `pan()` for vertical navigation instead.
+///
 /// Anchors on the latest visible bar when it is in view, otherwise on the viewport
 /// centre — this matches the `is_wheel_scroll=false` path in `canvas_interaction()`.
-fn zoom(event: &keyboard::Event) -> Option<Message> {
+fn zoom(event: &keyboard::Event, state: &ViewState) -> Option<Message> {
     let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
         return None;
     };
+
+    // Fixed-scale mode uses these keys for Y-pan (handled in pan())
+    state.layout.autoscale?;
 
     let delta = match key.as_ref() {
         keyboard::Key::Named(keyboard::key::Named::ArrowUp) => {

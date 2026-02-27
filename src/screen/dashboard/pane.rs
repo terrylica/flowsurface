@@ -79,6 +79,7 @@ pub enum Message {
     Merge,
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
+    AutoscaleChanged(pane_grid::Pane, Option<data::chart::Autoscale>),
     PaneEvent(pane_grid::Pane, Event),
 }
 
@@ -948,6 +949,7 @@ impl State {
                             chart_kind,
                             id,
                             chart.basis(),
+                            chart.chart_layout().autoscale,
                         )
                     };
 

@@ -392,9 +392,11 @@ impl TickAggr {
         earliest: usize,
         latest: usize,
     ) -> Option<(Price, Price)> {
-        if earliest > latest {
-            return None;
-        }
+        let (earliest, latest) = if earliest > latest {
+            (latest, earliest)
+        } else {
+            (earliest, latest)
+        };
 
         let mut min_p: Option<Price> = None;
         let mut max_p: Option<Price> = None;
@@ -437,6 +439,11 @@ impl TickAggr {
         highest: Price,
         lowest: Price,
     ) -> Qty {
+        let (earliest, latest) = if earliest > latest {
+            (latest, earliest)
+        } else {
+            (earliest, latest)
+        };
         let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints
