@@ -1,17 +1,18 @@
 ---
-title: "Bar Selection Intensity Metrics — Technical Reference"
+title: "Bar Selection Stats Panel — Complete Reference"
 description: >
-  Comprehensive documentation of the 7-metric intensity analysis overlay shown
-  when a bar range is selected on ODB charts. Covers IWDS, Mann-Whitney AUC,
-  log₂ ratio, conviction, absorption, climax concentration, and regime classification.
+  Complete documentation of the bar selection stats panel shown when a range of ODB bars
+  is selected. Covers the Trader's Guide (pattern recognition, decision tables, divergence
+  signals) and Technical Reference (formulas, thresholds, code locations, regime logic).
 feature: SelectionIntensityMetrics
 source_files:
-  - src/chart/kline.rs # draw_bar_selection_stats()
+  - src/chart/kline/bar_selection.rs # draw_bar_selection_stats(), BarSelectionState
   - data/src/aggr/ticks.rs # OdbMicrostructure.trade_intensity
 key_functions:
-  - "draw_bar_selection_stats(frame, palette, tick_aggr, anchor, end)"
+  - "draw_bar_selection_stats(frame, palette, tick_aggr, anchor, end, stats_box_pos)"
 key_types:
   - BarSample # local struct: raw: f32, is_up: bool
+  - BarSelectionState # anchor/end/brim-drag/stats-box-drag state
   - Regime # local enum: BullConviction/BearConviction/BullAbsorption/BearAbsorption/BullClimax/BearClimax/Contested
 key_variables:
   - rank_norm # Vec<f32> within-selection rank normalisation
@@ -27,20 +28,512 @@ key_constants:
   - REGIME_AUC_HIGH: 0.60
   - REGIME_AUC_LOW: 0.40
   - CLIMAX_THRESHOLD: 0.78
-  - BOX_W: 215.0
+  - STATS_BOX_W: 286.0
 nuances:
   - "rank_norm is within-selection only — two different sessions are directly comparable"
   - "AUC reuses the same sorted order[] as rank_norm — single sort pass for both"
   - "IWDS session baseline cancels: α×mean_up / α×total = mean_up/total"
   - "Regime priority: Climax checked BEFORE Conviction (climax takes precedence)"
   - "absorption shows mean_t of MINORITY bars, not of down-bars specifically"
+  - "BULL/BEAR ABSORPTION label now includes ← flow/AUC split explanation"
+  - "Divergence rows are appended conditionally — box height is dynamic"
 literature:
   - "Cont, Kukanov & Stoikov (2014) — OFI formulation (IWDS analogue)"
   - "Mann-Whitney (1947) — rank-sum test (AUC)"
   - "Shinohara Intensity Ratio — cumulative intensity ratio (related)"
 ---
 
-# Bar Selection Intensity Metrics — Technical Reference
+# Bar Selection Stats Panel
+
+---
+
+## Trader's Guide
+
+This section is written entirely in plain English. No formulas. The goal is to teach
+you what each part of the panel is telling you, so you can act on it.
+
+---
+
+### What the Panel Is Measuring
+
+Every ODB bar has a trade intensity — how many trades per second arrived at the exchange
+while that bar was forming. A bar that formed in 3 seconds with 600 trades has intensity
+200 t/s. A bar that took 45 seconds with 90 trades has intensity 2 t/s.
+
+The panel asks: **were the bars that went up more urgently traded than the bars that went
+down?**
+
+A bar moving up with 200 t/s arriving is a contested, urgent, potentially climactic event.
+The same move with 2 t/s is a slow drift through thin air. Both close higher — the
+microstructure story is opposite.
+
+Select a range of bars with Shift+Click to anchor, then Shift+Click again to set the
+other end. The panel appears at the top of the chart. Drag it anywhere on screen if it
+covers your candles. Drag either highlighted brim to resize the selection in real time.
+
+---
+
+### The Metrics at a Glance
+
+**Header row** — always visible at the top:
+
+```
+15 bars    ↑ 9  (60%)    ↓ 6  (40%)
+```
+
+This is the raw count. 15 bars total, 9 closed up (60%), 6 closed down (40%). This alone
+tells you direction bias, but nothing about intensity.
+
+---
+
+**↑t / ↓t** — intensity rank, within this selection
+
+```
+↑t 0.68  ↑ 124 t/s      ↓t 0.41  ↓ 82 t/s
+```
+
+The first number (0.68, 0.41) is a 0-to-1 score: where did this direction's bars land
+in the intensity ranking within your selection? 0.68 for up-bars means they were, on
+average, in the top 32% of urgency within this window. 0.41 for down-bars means they
+were in the middle.
+
+The second number (124 t/s, 82 t/s) is the raw trades-per-second average for each direction.
+
+Key insight: you can compare two completely different time-of-day selections by the 0-to-1
+score. The raw t/s varies by session (NY open is busier than 3 AM), but "top 32%" means
+the same thing whenever you selected it.
+
+---
+
+**ASCII bar + flow (IWDS)**
+
+```
+[██████░░░░]  flow: +0.22  ← lean
+```
+
+The block bar is a quick visual: center (5 blocks) = neutral. More blocks = buyers more
+urgent. Fewer blocks = sellers more urgent. The `flow` number is exact: how much of the
+total trading urgency flowed through up-bars vs down-bars.
+
++1.0 would mean every single trade happened during up-bars. -1.0 means all trades during
+down-bars. In practice, anything beyond ±0.3 is meaningful directional loading.
+
+The suffix tells you the interpretation at a glance (see "Inline Suffixes" below).
+
+---
+
+**Regime label** — the synthesized verdict
+
+```
+BULL CONVICTION
+```
+
+or
+
+```
+BEAR ABSORPTION ← flow/AUC split
+```
+
+This is the panel's one-line verdict. See "The Regime Label" below for what each label means.
+
+---
+
+**Urgency caption**
+
+```
+buyers 1.4× more urgent  ← structural edge
+```
+
+Raw speed comparison: buyers were arriving 1.4× faster (in trades per second) than
+sellers, on average. The suffix grades how significant that edge is.
+
+---
+
+**P(↑>↓) and log₂**
+
+```
+P(↑>↓): 73%   log₂: +0.74  ← moderate
+```
+
+P(↑>↓) = 73% means: if you randomly pick one up-bar and one down-bar and compare their
+intensity, the up-bar wins 73% of those matchups. 50% means no edge.
+
+log₂ = +0.74 means buyers averaged about 1.67× more raw t/s than sellers (2^0.74 ≈ 1.67).
+Positive = buyers faster. Negative = sellers faster.
+
+---
+
+**conv and absorp**
+
+```
+conv: 1.85×   absorp: 0.46  ← minority active
+```
+
+Conviction asks: is the majority direction (more bars) also the more urgently traded
+direction? 1.85× means yes — the side with more bars was 85% more intense. Below 1.0
+is a warning: the majority direction is less intense than the minority.
+
+Absorption asks: how hard was the losing side fighting? 0.46 = middle of the road —
+the minority was active but not dominant. Above 0.6 = heavy resistance from the minority.
+Below 0.3 = the minority barely showed up.
+
+---
+
+**◈ climax line**
+
+```
+◈ climax: 57% ↑  aligned ✓
+```
+
+Of the most intense bars in your selection (top 25% by urgency), what fraction went up?
+57% up here, with `aligned ✓` meaning the climax direction matches the overall count
+direction. When climax direction and count direction disagree, this line turns orange —
+one of the four divergence signals.
+
+---
+
+### Inline Suffixes: Instant Context
+
+Every major metric line ends with a small interpretation tag. These are designed to
+save you the mental translation step.
+
+**Flow suffixes** (based on |IWDS|):
+
+| Displayed       | What it means                                           |
+| --------------- | ------------------------------------------------------- |
+| `← neutral`     | IWDS < 0.10: no meaningful directional loading          |
+| `← lean`        | 0.10 – 0.30: slight bias, one direction slightly faster |
+| `← bullish`     | 0.30 – 0.60: clear buy-side loading                     |
+| `← bearish`     | 0.30 – 0.60: clear sell-side loading                    |
+| `← strong bull` | > 0.60: dominant buy urgency                            |
+| `← strong bear` | > 0.60: dominant sell urgency                           |
+
+**CONTESTED near-miss** (appears as regime label, not a flow suffix):
+
+```
+CONTESTED — AUC 4pt below gate
+```
+
+IWDS was directional (above 0.15) but AUC missed the conviction threshold by 4 percentage
+points. Almost convicted — worth watching on the next selection update.
+
+**Urgency caption suffixes** (based on raw speed ratio):
+
+| Displayed           | Ratio range | What it means                              |
+| ------------------- | ----------- | ------------------------------------------ |
+| `← marginal`        | < 1.2×      | Barely any speed difference — coin flip    |
+| `← present`         | 1.2 – 1.5×  | Meaningful speed edge                      |
+| `← structural edge` | > 1.5×      | One side consistently arriving much faster |
+
+**P(↑>↓) AUC suffixes** (based on distance from 0.5):
+
+| Displayed       | Distance from 0.5 | What it means                     |
+| --------------- | ----------------- | --------------------------------- |
+| `← weak edge`   | < 5 pts           | Near coin-flip in head-to-head    |
+| `← moderate`    | 5 – 15 pts        | Consistent directional advantage  |
+| `← strong edge` | > 15 pts          | Very consistent head-to-head wins |
+
+**Absorption suffixes** (based on minority mean_t rank):
+
+| Displayed             | Range       | What it means                                    |
+| --------------------- | ----------- | ------------------------------------------------ |
+| `← minority fading`   | < 0.30      | Losing side gave up — move met little resistance |
+| `← minority active`   | 0.30 – 0.50 | Mixed — some resistance but not dominant         |
+| `← minority fighting` | 0.50 – 0.65 | Losing side trading urgently — contested         |
+| `← heavy pushback`    | > 0.65      | Strong resistance — potential absorption pattern |
+
+**Climax alignment** (appended to the climax line when climax is not diverging):
+
+```
+◈ climax: 57% ↑  aligned ✓
+```
+
+`aligned ✓` = the climax direction (which side dominated the most intense moments)
+matches the count direction (which side closed more bars). When they disagree, `aligned ✓`
+disappears and the climax line turns orange — see Divergence Signals.
+
+---
+
+### The Regime Label
+
+The regime label is the panel's single synthesized verdict. It sits prominently in the
+display with a matching colored border on the stats box.
+
+**BULL CONVICTION** (green border)
+
+IWDS > 0.15 and AUC ≥ 0.60: both metrics agree that up-bars dominate. The intensity is
+net positive and up-bars win head-to-head matchups consistently. This is not a prediction —
+it describes what already happened. Can appear mid-trend (continuation) or at a top
+(exhaustion). Use with chart context.
+
+**BEAR CONVICTION** (red border)
+
+Mirror of BULL CONVICTION. Sellers dominating intensity and head-to-head matchups.
+
+**BULL ABSORPTION ← flow/AUC split** (orange border)
+
+IWDS > 0.15 (net buy intensity) but AUC < 0.50 (down-bars win more head-to-head matchups).
+The two metrics are telling opposite stories — hence "flow/AUC split" in the label. Despite
+more total urgency flowing through up-bars, a randomly picked down-bar was more intense
+than a randomly picked up-bar. Classic absorption pattern: a few very intense buy bars
+dominate the total, but the sellers are consistently matching or beating each individual
+buy bar. Suspect the move.
+
+**BEAR ABSORPTION ← flow/AUC split** (orange border)
+
+Mirror of BULL ABSORPTION. Net sell intensity but up-bars win more matchups.
+
+**BULL CLIMAX ◈** (magenta border)
+
+78% or more of the top-quartile-intensity bars (the most frenzied 25% of the selection)
+were up-bars. This is checked before conviction — climax overrides everything because
+concentrated intensity in one direction at the tail is a classic exhaustion signal.
+The `◈` symbol marks this as a reversal-watch condition.
+
+**BEAR CLIMAX ◈** (magenta border)
+
+Mirror. 78%+ of the most frenzied bars were down-bars.
+
+**CONTESTED** (no border)
+
+No strong signal. IWDS is near zero, or AUC is near 50%, or both. The box has no colored
+border by design — when there is no signal, the UI stays quiet.
+
+**CONTESTED — AUC Npt below gate** (no border, but informative)
+
+A special near-miss label: IWDS was directional (≥ 0.15 in magnitude) but AUC missed the
+conviction threshold (0.60 for bull, 0.40 for bear) by N percentage points or fewer (where
+N ≤ 12). The market is close to convinced — the slight AUC miss is worth noting. Example:
+`CONTESTED — AUC 4pt below gate` means AUC was 0.56 when the bull conviction gate is 0.60.
+
+---
+
+### Divergence Signals
+
+Divergence signals are the most actionable output from this panel. They fire when two
+different measurements are telling opposite stories — a situation that tends to precede
+reversals or at minimum indicates contested price discovery.
+
+When a divergence is active, one or two `⚡` rows appear below the main metrics.
+
+---
+
+#### 1. CLIMAX DIVERGENCE (most important)
+
+**What triggers it**: The most frenzied moments of your selection went against the
+directional majority. Specifically: if more bars went up overall but the majority of the
+top-25%-intensity bars went down — or vice versa.
+
+**What it looks like** (climax line turns orange, plus two extra rows):
+
+```
+◈ climax: 65% ↓  (of top-25% bars)
+⚡ DIVERGES: bears 65% of peak moments
+   — vs bull count 60% overall
+```
+
+**Trading interpretation**: 60% of bars closed up. But the 4 most frenzied bars in the
+selection were mostly down-bars. The market's most urgent moments went against the
+directional majority. This is a classic pre-reversal microstructure fingerprint — buyers
+are winning the vote but sellers are winning the intensity battles that matter most. The
+market may be absorbing the move at the tail.
+
+---
+
+#### 2. URGENCY-COUNT SPLIT
+
+**What triggers it**: The side arriving faster (higher mean t/s) is not the side that
+won more bars.
+
+**What it looks like**:
+
+```
+⚡ SPLIT: buyers faster, bears win more bars
+```
+
+or
+
+```
+⚡ SPLIT: sellers faster, bulls win more bars
+```
+
+**Trading interpretation**: Price action and execution speed are telling opposite stories.
+Bears closed more bars — but buyers were arriving faster at the exchange. This means the
+up moves, while fewer, were driven by more urgency. The market may be coiling. Alternatively
+it can indicate weak bear bars being printed mechanically while buyers accumulate.
+
+---
+
+#### 3. FLOW/AUC SPLIT
+
+**How it is surfaced**: this divergence is captured by the ABSORPTION regime label and
+the CONTESTED near-miss label, rather than a separate `⚡` row.
+
+When you see `BULL ABSORPTION ← flow/AUC split` or `BEAR ABSORPTION ← flow/AUC split`,
+that IS the flow/AUC divergence signal. The `← flow/AUC split` suffix explains why
+absorption was triggered.
+
+When you see `CONTESTED — AUC Npt below gate`, the flow/AUC split almost fired — the
+directional flow was present but AUC narrowly missed confirmation.
+
+---
+
+#### 4. CONV-ABSORP CONTEST
+
+**What triggers it**: conviction > 1.5× AND absorption > 0.60 simultaneously. The
+dominant side has a strong intensity edge — but the minority is fighting back at a
+near-climactic level. Both sides are charging simultaneously.
+
+**What it looks like**:
+
+```
+⚡ CONTESTED: high conv + heavy pushback
+```
+
+**Trading interpretation**: This is contested price discovery — the dominant side has
+structural intensity advantage (1.5×+) but the minority is not fading. They are trading
+urgently against the move. This combination often appears at key levels: a strong trend
+bar meeting an order cluster, or a directional move being absorbed by a large participant.
+It does not tell you who wins — only that both sides are fully engaged.
+
+---
+
+### Reading Patterns
+
+These are common combinations and what they typically indicate. None of these is a
+mechanical signal — use them to build context alongside price structure.
+
+---
+
+**Pattern 1: Clean continuation**
+
+- BULL CONVICTION (green border)
+- conv: > 1.3×, absorption: < 0.35
+- No divergence signals
+- climax: aligned ✓
+
+Interpretation: the up-bars were both more numerous AND more intense, head-to-head wins
+were consistent (AUC ≥ 0.60), the minority barely showed up (low absorption), and the
+most frenzied moments were bullish. This is clean, low-resistance directional flow. Does
+not predict the future but confirms the move was supported by urgency.
+
+---
+
+**Pattern 2: Absorption at a level**
+
+- BULL ABSORPTION (orange border) or BEAR ABSORPTION
+- conv: < 1.0 (majority direction less intense than minority)
+- absorption: > 0.60
+- urgency caption: "sellers 1.8× more urgent" despite majority up
+
+Interpretation: the move is going in one direction by bar count but the intensity is
+loading into the other side. A large participant may be absorbing the dominant flow —
+they are taking the other side with urgency. This is a warning to reduce size or tighten
+stops on the dominant side. Classic iceberg or stop-defense behavior.
+
+---
+
+**Pattern 3: Climax exhaustion setup**
+
+- BULL CLIMAX ◈ or BEAR CLIMAX ◈ (magenta border)
+- climax: 80–100% in one direction
+- ⚡ DIVERGES row present (climax direction opposing count direction)
+
+Interpretation: the most frenzied moments were all concentrated in one direction. When
+climax direction matches count direction, the move was intense throughout — potentially
+extended. When climax direction opposes count (the ⚡ DIVERGES case), the market's
+most urgent moments went against the majority — a classic reversal fingerprint.
+
+---
+
+**Pattern 4: Coiling / contested zone**
+
+- CONTESTED or CONTESTED — AUC Npt below gate
+- ⚡ SPLIT: one side faster, other side wins more bars
+- conv: near 1.0
+- absorption: 0.40 – 0.60
+
+Interpretation: no clear intensity edge in either direction. The market is balanced. If
+you also see the urgency-count split, the two simplest measurements (bar count and trade
+speed) disagree — classic consolidation before a directional break.
+
+---
+
+**Pattern 5: Trend with resistance building**
+
+- BULL CONVICTION (green border)
+- conv: > 1.3× (majority direction dominant)
+- absorption: > 0.60 (but not high enough to flip to absorption regime)
+- ⚡ CONTESTED: high conv + heavy pushback
+
+Interpretation: the dominant side has a real edge, but the minority is fighting back hard.
+This often appears as a trend approaching a key level. The conviction side has momentum,
+the minority is defending. Watch for the absorption value to creep higher — if it crosses
+the regime gate on the next selection, the picture has shifted.
+
+---
+
+**Pattern 6: Hollow bull move**
+
+- 60–70% bars up, BULL CONVICTION on bar count
+- flow: ← neutral or ← lean (IWDS near zero)
+- P(↑>↓): ← weak edge (AUC near 50%)
+- conv: < 1.0
+
+Interpretation: more bars went up, but the intensity does not support the direction.
+The up-bars were no more urgent than the down-bars. This is a weak move — it may be
+engineered (passive buy orders filling against urgent sellers) or simply drifting through
+thin air. A more convincing move in either direction would show intensity matching count.
+
+---
+
+### Prediction Checklist
+
+Step-by-step method for reading the panel in real time:
+
+**Step 1: Check the header counts.**
+Is there a clear directional majority? A 70/30 split is meaningful. A 55/45 split is
+not by itself.
+
+**Step 2: Check the regime label and its color.**
+
+- Green/red border = strong signal, both metrics agree
+- Orange border = divergence, treat the direction with caution
+- Magenta border = climax condition, watch for exhaustion
+- No border = no clear signal
+
+**Step 3: Check the flow suffix.**
+Is the intensity loading into the majority direction (aligned) or the minority (divergent)?
+`← strong bull` on a bearish-count selection is a warning.
+
+**Step 4: Check P(↑>↓) and its suffix.**
+Is `← strong edge` present? This means up-bars won consistently in head-to-head — not
+just in total volume. A `← weak edge` on a bullish-count selection means intensity is
+actually balanced.
+
+**Step 5: Check conviction and absorption together.**
+
+- conv > 1.5 + absorption < 0.30: dominant side overwhelming, little resistance — clean
+- conv > 1.5 + absorption > 0.60: dominant side strong but contested — ⚡ CONTESTED fires
+- conv < 1.0 + absorption > 0.60: intensity loading against direction — absorption pattern
+
+**Step 6: Check the climax line.**
+Is `aligned ✓` present? If not, and the climax percentage is high, look for the
+⚡ DIVERGES signal.
+
+**Step 7: Count the ⚡ rows.**
+Zero divergence signals: situation is internally consistent — act with the regime label.
+One signal: one dimension is contradicting the others — reduce confidence.
+Two or more signals: multiple measurements disagreeing — treat as contested regardless
+of the regime label. Wait for the situation to resolve.
+
+---
+
+## Technical Reference
+
+This section contains exact formulas, code locations, thresholds, and rendering details.
+
+---
 
 ## 1. What This Feature Does (Plain Terms)
 
@@ -126,6 +619,8 @@ The selection is created using **Shift+Left Click** on the chart canvas:
 - **Third Shift-click**: resets — the clicked bar becomes the new anchor.
 - **Click on the outermost bar of an existing selection** (the "brim"): drag mode —
   move that boundary while keeping the other fixed.
+- **Left-drag on the stats box**: repositions the floating overlay anywhere on screen.
+  The position is reset to top-center on the third Shift-click (selection restart).
 
 The anchor and end are stored in `BarSelectionState` (wrapped in `RefCell<T>` for
 interior mutability, since `canvas::Program::update()` takes `&self`). Both are
@@ -140,6 +635,7 @@ fn draw_bar_selection_stats(
     tick_aggr: &data::aggr::ticks::TickAggr,
     anchor: usize,
     end: usize,
+    stats_box_pos: Option<iced::Point>,
 )
 ```
 
@@ -156,6 +652,9 @@ clamped to `len - 1`.
 
 `distance = hi - lo` is the number of bar-gaps between the two endpoints. A selection
 of a single bar has `distance = 0`; two adjacent bars have `distance = 1`.
+
+`stats_box_pos` is the user-dragged top-left position of the stats box, or `None` to
+use the default top-center position.
 
 ### Render Layer
 
@@ -317,8 +816,17 @@ within a bar.
 **Literature**: the IWDS formulation is analogous to the order-flow imbalance metric
 in Cont, Kukanov & Stoikov (2014), aggregated at bar granularity.
 
-**Display**: `[██████░░░░]  flow: +0.42` — the ASCII bar visualizes the IWDS value
-(see §9 for details), followed by the numeric value with sign.
+**Display**: `[██████░░░░]  flow: +0.42  ← bullish` — the ASCII bar visualizes the IWDS value
+(see §9 for details), followed by the numeric value with sign, and an inline suffix.
+
+**Inline suffixes** (based on `iwds.abs()`):
+
+| Range       | Suffix                            |
+| ----------- | --------------------------------- |
+| < 0.10      | `← neutral`                       |
+| 0.10 – 0.30 | `← lean`                          |
+| 0.30 – 0.60 | `← bullish` / `← bearish`         |
+| ≥ 0.60      | `← strong bull` / `← strong bear` |
 
 ---
 
@@ -376,7 +884,15 @@ is described in Hanley & McNeil (1982).
 
 - `n_up = 0` or `n_dn = 0`: `auc = f32::NAN` → displayed as `—`
 
-**Display format**: `P(↑>↓): 73%` (formatted as `pct_s(auc)` = `format!("{:.0}%", v * 100.0)`)
+**Display format**: `P(↑>↓): 73%   log₂: +0.74  ← moderate`
+
+**Inline suffixes** (based on `(auc - 0.5).abs()`):
+
+| Distance from 0.5 | Suffix          |
+| ----------------- | --------------- |
+| < 0.05            | `← weak edge`   |
+| 0.05 – 0.15       | `← moderate`    |
+| ≥ 0.15            | `← strong edge` |
 
 ---
 
@@ -417,7 +933,8 @@ where `mean_raw_up` and `mean_raw_dn` are the arithmetic means of raw `trade_int
 - `mean_raw_up = 0.0` or `mean_raw_dn = 0.0` (bars with no microstructure data):
   `log2_ratio = f32::NAN` → displayed as `—`
 
-**Display format**: `log₂(↑/↓): +0.74` (formatted as `lg2_s(v)` = `format!("{v:+.2}")`)
+**Display format**: `log₂: +0.74` (formatted as `lg2_s(v)` = `format!("{v:+.2}")`).
+Displayed on the same line as `P(↑>↓)` with the shared AUC suffix.
 
 ---
 
@@ -462,7 +979,7 @@ A conviction of 1.85 means the same structural relationship at 2 AM and 9:30 AM.
 - Only one direction present: `conviction = f32::NAN` → displayed as `—`
 - `mean_t_dn = 0.0` (all down-bars have zero intensity): `conviction = f32::NAN`
 
-**Display format**: `conv: 1.85×` (formatted as `con_s(v)` = `format!("{v:.2}×")`)
+**Display format**: `conv: 1.85×   absorp: 0.41  ← minority active`
 
 ---
 
@@ -485,16 +1002,17 @@ let absorption = if dominant_up { mean_t_dn } else { mean_t_up };
 `absorption` is simply `mean_t` of the minority-direction bars. It is the rank-normalized
 mean intensity of bars that closed against the dominant trend.
 
-**Important nuance**: absorption is the mean_t of whichever direction has _fewer bars_,
+**Important nuance**: absorption is the mean*t of whichever direction has \_fewer bars*,
 not necessarily the down-bars. In a selection with more down-bars than up-bars, absorption
 shows the mean_t of the up-bars (the minority).
 
 **Interpretation by threshold**:
 
-- `> 0.6`: high absorption — minority bars were in the top 40% of intensity.
+- `> 0.65`: heavy pushback — minority bars were in the top 35% of intensity.
   Suggests active defense, absorption of flow, iceberg orders, or stop-hunting.
-- `0.3 – 0.6`: moderate absorption — mixed signal.
-- `< 0.3`: low absorption — minority bars drifted. The move has little opposition;
+- `0.50 – 0.65`: minority fighting — contested, neither side collapsed.
+- `0.30 – 0.50`: minority active — some resistance, mixed signal.
+- `< 0.30`: minority fading — minority bars drifted. The move has little opposition;
   the trend may continue.
 
 **Edge cases**:
@@ -502,7 +1020,17 @@ shows the mean_t of the up-bars (the minority).
 - Only one direction present: `absorption = f32::NAN` (because the relevant `mean_t` is NaN)
   → displayed as `—`
 
-**Display format**: `absorp: 0.41` (formatted as `t_s(v)` = `format!("{v:.2}")`)
+**Display format**: `absorp: 0.41` (formatted as `t_s(v)` = `format!("{v:.2}")`).
+Displayed on the same line as `conv` with the absorption suffix.
+
+**Inline suffixes** (based on `absorption` value):
+
+| Range       | Suffix                |
+| ----------- | --------------------- |
+| < 0.30      | `← minority fading`   |
+| 0.30 – 0.50 | `← minority active`   |
+| 0.50 – 0.65 | `← minority fighting` |
+| ≥ 0.65      | `← heavy pushback`    |
 
 ---
 
@@ -543,11 +1071,24 @@ format!("◈ climax: {:.0}% {dir}  (of top-25% bars)", frac * 100.0)
 
 So `climax_up_frac = 0.20` displays as `◈ climax: 80% ↓  (of top-25% bars)`.
 
+**Alignment suffix**:
+
+```rust
+let climax_suffix = if !climax_up_frac.is_nan() && !climax_divergence { "  aligned ✓" } else { "" };
+```
+
+`aligned ✓` is appended when the climax direction matches the overall count direction
+(i.e. no climax divergence is active). It is omitted when `climax_divergence` fires
+(the ⚡ DIVERGES rows appear instead).
+
 **Regime thresholds**:
 
 - `≥ 0.78` (78% of top-quartile bars are up): `BULL CLIMAX ◈`
 - `≤ 0.22` (78% of top-quartile bars are down): `BEAR CLIMAX ◈`
 - Otherwise: no climax regime triggered from this metric alone
+
+**Color**: orange when `climax_divergence` is active or when the regime has a border
+(indicating a non-CONTESTED result). `amber_dim` otherwise.
 
 **Why 75th percentile?**: the top quartile by within-selection rank gives a stable
 "tail" sample. Using the top decile (90th) would leave too few bars in short selections.
@@ -562,7 +1103,99 @@ Using the top half would dilute the signal into the median.
 
 ---
 
-## 6. Regime Classification
+## 6. Divergence Detection Logic
+
+Four divergence signals are computed after the main metrics. Each produces one or two
+`⚡` rows appended to the main display lines. Box height is dynamic — it grows to
+accommodate the extra rows.
+
+### 6.1 — Climax Divergence
+
+```rust
+let climax_divergence = !climax_up_frac.is_nan()
+    && (n_up >= n_dn) != (climax_up_frac >= 0.5);
+```
+
+Fires when the peak-intensity direction (climax) opposes the overall bar-count direction.
+
+**Rendered rows** (orange):
+
+```
+⚡ DIVERGES: bears 65% of peak moments
+   — vs bull count 60% overall
+```
+
+The first row states which side dominated the peak-intensity moments and by what
+percentage. The second row states the overall count direction and percentage for comparison.
+The climax line itself also turns orange when this fires.
+
+### 6.2 — Urgency-Count Split
+
+```rust
+let urgency_count_diverge = !mean_raw_up.is_nan() && !mean_raw_dn.is_nan()
+    && (n_up >= n_dn) != (mean_raw_up >= mean_raw_dn);
+```
+
+Fires when the side arriving faster (higher mean raw t/s) is not the side that won more bars.
+
+**Rendered row** (orange):
+
+```
+⚡ SPLIT: buyers faster, bears win more bars
+```
+
+or
+
+```
+⚡ SPLIT: sellers faster, bulls win more bars
+```
+
+### 6.3 — Flow/AUC Split
+
+This divergence is surfaced via the regime label and CONTESTED near-miss, not a separate
+`⚡` row.
+
+**ABSORPTION regime** (`BULL/BEAR ABSORPTION ← flow/AUC split`): fires when IWDS and AUC
+point in opposite directions. The `← flow/AUC split` suffix in the regime label explains
+the cause.
+
+**CONTESTED near-miss** (computed inside the `Regime::Contested` branch):
+
+```rust
+let near_miss = if iwds > 0.15 && !auc.is_nan() {
+    let g = (0.60 - auc) * 100.0;
+    if g > 0.0 && g <= 12.0 { Some(g) } else { None }
+} else if iwds < -0.15 && !auc.is_nan() {
+    let g = (auc - 0.40) * 100.0;
+    if g > 0.0 && g <= 12.0 { Some(g) } else { None }
+} else { None };
+let label = match near_miss {
+    Some(g) => format!("CONTESTED — AUC {g:.0}pt below gate"),
+    None    => "CONTESTED".into(),
+};
+```
+
+The gap `g` is computed in percentage points. A gap ≤ 12 points (e.g. AUC = 0.56 when
+the bull conviction gate is 0.60) produces the near-miss label.
+
+### 6.4 — Conv-Absorp Contest
+
+```rust
+let conv_absorp_contest = !conviction.is_nan() && !absorption.is_nan()
+    && conviction > 1.5 && absorption > 0.60;
+```
+
+Fires when conviction > 1.5× AND absorption > 0.60 simultaneously.
+
+**Rendered row** (orange):
+
+```
+⚡ CONTESTED: high conv + heavy pushback
+```
+
+---
+
+## 7. Regime Classification Rules
 
 After computing all seven metrics, a single `Regime` enum is determined. This is the
 synthesized "verdict" that combines multiple metrics into a human-readable label.
@@ -600,15 +1233,15 @@ let regime = if !climax_up_frac.is_nan() && climax_up_frac >= 0.78 {
 
 ### Regime Table
 
-| Regime            | Condition                   | Color                     | Border         | Microstructure Meaning                                                                        |
-| ----------------- | --------------------------- | ------------------------- | -------------- | --------------------------------------------------------------------------------------------- |
-| `BULL CONVICTION` | IWDS > 0.15 AND AUC ≥ 0.60  | `palette.success` (green) | green (0.65a)  | Both metrics agree: up-bars have more urgency AND more head-to-head wins. Strong bull signal. |
-| `BEAR CONVICTION` | IWDS < -0.15 AND AUC ≤ 0.40 | `palette.danger` (red)    | red (0.65a)    | Both metrics agree: down-bars dominate intensity. Strong bear signal.                         |
-| `BULL ABSORPTION` | IWDS > 0.15 AND AUC < 0.50  | orange (0.95,0.55,0.10)   | orange(0.65a)  | IWDS says net bullish, but AUC says dn-bars win more matchups. Divergence — suspect the move. |
-| `BEAR ABSORPTION` | IWDS < -0.15 AND AUC > 0.50 | orange (0.95,0.55,0.10)   | orange(0.65a)  | IWDS says net bearish, but AUC says up-bars win more matchups. Divergence — suspect the move. |
-| `BULL CLIMAX ◈`   | climax_up_frac ≥ 0.78       | magenta (0.90,0.25,0.80)  | magenta(0.65a) | Top-quartile intensity concentrated in up-bars. Classic buying exhaustion/climax setup.       |
-| `BEAR CLIMAX ◈`   | climax_up_frac ≤ 0.22       | magenta (0.90,0.25,0.80)  | magenta(0.65a) | Top-quartile intensity concentrated in down-bars. Selling climax/exhaustion setup.            |
-| `CONTESTED`       | All others                  | dim grey (0.50,0.50,0.50) | none           | Mixed or weak signals. No clear intensity edge from this selection.                           |
+| Regime            | Condition                   | Color                     | Border         | Label text                                      |
+| ----------------- | --------------------------- | ------------------------- | -------------- | ----------------------------------------------- |
+| `BULL CONVICTION` | IWDS > 0.15 AND AUC ≥ 0.60  | `palette.success` (green) | green (0.65a)  | `BULL CONVICTION`                               |
+| `BEAR CONVICTION` | IWDS < -0.15 AND AUC ≤ 0.40 | `palette.danger` (red)    | red (0.65a)    | `BEAR CONVICTION`                               |
+| `BULL ABSORPTION` | IWDS > 0.15 AND AUC < 0.50  | orange (0.95,0.55,0.10)   | orange(0.65a)  | `BULL ABSORPTION ← flow/AUC split`              |
+| `BEAR ABSORPTION` | IWDS < -0.15 AND AUC > 0.50 | orange (0.95,0.55,0.10)   | orange(0.65a)  | `BEAR ABSORPTION ← flow/AUC split`              |
+| `BULL CLIMAX ◈`   | climax_up_frac ≥ 0.78       | magenta (0.90,0.25,0.80)  | magenta(0.65a) | `BULL CLIMAX ◈`                                 |
+| `BEAR CLIMAX ◈`   | climax_up_frac ≤ 0.22       | magenta (0.90,0.25,0.80)  | magenta(0.65a) | `BEAR CLIMAX ◈`                                 |
+| `CONTESTED`       | All others                  | dim grey (0.50,0.50,0.50) | none           | `CONTESTED` or `CONTESTED — AUC Npt below gate` |
 
 ### Regime Deep-Dive: Conviction
 
@@ -633,6 +1266,9 @@ In orderbook microstructure terms: a large participant may be absorbing the up-s
 flow — taking the other side of every up-bar with equal or greater urgency, and closing
 small down-bars in the process. The market appears to be going up but the intensity
 tells a different story.
+
+The label now reads `BULL ABSORPTION ← flow/AUC split` to make the diagnostic explicit:
+the ABSORPTION regime always means IWDS and AUC are pointing in opposite directions.
 
 ### Regime Deep-Dive: Climax
 
@@ -661,7 +1297,7 @@ no signal, the UI should not shout.
 
 ---
 
-## 7. ASCII Intensity Bar
+## 8. ASCII Intensity Bar
 
 The intensity bar is a 10-character ASCII visualization of IWDS:
 
@@ -682,11 +1318,12 @@ let bar_str = format!("[{}{}]", "█".repeat(fill), "░".repeat(10 - fill));
 
 The center (5 filled blocks) corresponds to IWDS = 0. Left-heavy → sell dominant.
 Right-heavy → buy dominant. This gives an immediate visual before reading any number.
-It appears on the same line as the IWDS numeric value: `[██████░░░░]  flow: +0.22`.
+It appears on the same line as the IWDS numeric value and flow suffix:
+`[██████░░░░]  flow: +0.22  ← lean`.
 
 ---
 
-## 8. Plain-English Caption
+## 9. Plain-English Caption
 
 Below the regime label, a one-line human-readable caption provides a direct verbal
 summary:
@@ -719,86 +1356,107 @@ Examples:
 The caption uses raw means (not rank-normalized) so the multiple is in the same units as
 the t/s values shown in `↑t` / `↓t` lines. Color: `dim_white` (0.75, 0.75, 0.75, 0.65).
 
+An urgency suffix follows the caption on the same line:
+
+**Urgency caption suffixes** (based on `dom / min_raw`):
+
+| Ratio range | Suffix              |
+| ----------- | ------------------- |
+| < 1.2×      | `← marginal`        |
+| 1.2 – 1.5×  | `← present`         |
+| ≥ 1.5×      | `← structural edge` |
+
 ---
 
-## 9. Visual Design and Layout
+## 10. Layout and Rendering Notes
 
 ### Color Palette
 
-| Name        | RGBA                             | Used For                                          |
-| ----------- | -------------------------------- | ------------------------------------------------- |
-| `amber`     | (0.85, 0.65, 0.15, 1.00)         | ASCII bar + IWDS numeric, primary intensity color |
-| `amber_dim` | (0.85, 0.65, 0.15, 0.55)         | `↑t`/`↓t` lines, P(↑>↓), log₂, conv, absorp       |
-| `orange`    | (0.95, 0.55, 0.10, 1.00)         | Absorption regime border/label; climax line color |
-| `magenta`   | (0.90, 0.25, 0.80, 1.00)         | Climax regime border/label                        |
-| `dim`       | (0.50, 0.50, 0.50, 0.65)         | Separator line; CONTESTED regime label            |
-| `dim_white` | (0.75, 0.75, 0.75, 0.65)         | Plain-English caption                             |
-| `neutral`   | `palette.background.strong.text` | Bar count line (`N bars`)                         |
-| `success`   | `palette.success.base.color`     | Up-bar count; BULL CONVICTION label/border        |
-| `danger`    | `palette.danger.base.color`      | Down-bar count; BEAR CONVICTION label/border      |
+| Name        | RGBA                             | Used For                                                                  |
+| ----------- | -------------------------------- | ------------------------------------------------------------------------- |
+| `amber`     | (0.85, 0.65, 0.15, 1.00)         | ASCII bar + IWDS numeric, primary intensity color                         |
+| `amber_dim` | (0.85, 0.65, 0.15, 0.55)         | P(↑>↓), log₂, conv, absorp, climax (non-signal state)                     |
+| `orange`    | (0.95, 0.55, 0.10, 1.00)         | Absorption regime border/label; divergence ⚡ rows; climax when diverging |
+| `magenta`   | (0.90, 0.25, 0.80, 1.00)         | Climax regime border/label                                                |
+| `dim`       | (0.50, 0.50, 0.50, 0.65)         | Separator line; CONTESTED regime label; divergence detail rows            |
+| `dim_white` | (0.75, 0.75, 0.75, 0.65)         | Plain-English caption                                                     |
+| `neutral`   | `palette.background.strong.text` | Bar count line (`N bars`)                                                 |
+| `success`   | `palette.success.base.color`     | Up-bar count; BULL CONVICTION label/border; ↑t row                        |
+| `danger`    | `palette.danger.base.color`      | Down-bar count; BEAR CONVICTION label/border; ↓t row                      |
 
 ### Box Geometry
 
 ```
-Box width:  box_w = 215.0 px
-Box x:      frame.width() / 2.0 - box_w / 2.0  (horizontally centered)
-Box y:      10.0 px from top
-Padding:    x - 8.0 (left), y - 4.0 (top), box_w + 16.0 (total width)
-Background: (0.07, 0.07, 0.07, 0.92)  — near-black, near-opaque
-Border:     1.5 px stroke, border_col at alpha 0.65 (only when regime != CONTESTED)
+Stats box outer width:  STATS_BOX_W = 286.0 px  (box_w + 2 × padding = 270 + 16)
+Inner box_w:            270.0 px
+Default position:       frame.width() / 2.0 - STATS_BOX_W / 2.0, y=6.0 (top-center)
+User-dragged position:  stats_box_pos field in BarSelectionState
+Padding:                x + 8.0 (left), y + 4.0 (top)
+Background:             (0.07, 0.07, 0.07, 0.92) — near-black, near-opaque
+Border:                 1.5 px stroke, border_col at alpha 0.65 (only when regime != CONTESTED)
 ```
 
-Height is computed dynamically from line heights:
+Height is computed dynamically:
 
 ```rust
 let lh_main = ts + 5.0;  // ts=13.0 → 18.0 px per main-size line
 let lh_sm   = sm + 4.0;  // sm=11.0 → 15.0 px per small-size line
-let total_h: f32 = lines.iter()
-    .map(|(_, _, sz)| if (*sz - ts).abs() < 0.5 { lh_main } else { lh_sm })
-    .sum::<f32>() + 12.0;  // +12.0 for top/bottom padding
+let total_h: f32 = lh_main          // header row
+    + 3.0                           // separator
+    + lh_sm                         // ↑t/↓t combined row
+    + lines.iter()
+        .map(|(_, _, sz)| if (*sz - ts).abs() < 0.5 { lh_main } else { lh_sm })
+        .sum::<f32>()
+    + 12.0;                         // top/bottom padding
 ```
 
-### The 12-Line Display (Annotated)
+The `lines` Vec is built from fixed rows plus conditionally appended divergence rows,
+so total height varies between selections.
 
-| Line # | Font Size | Content Example                      | Color        | Section                          |
-| ------ | --------- | ------------------------------------ | ------------ | -------------------------------- |
-| 1      | 13 px     | `15 bars`                            | neutral      | Bar count (distance)             |
-| 2      | 13 px     | `↑ 9  (60%)`                         | success      | Up-bar count + %                 |
-| 3      | 13 px     | `↓ 6  (40%)`                         | danger       | Down-bar count + %               |
-| 4      | 11 px     | `─────────────────────────────`      | dim          | Separator                        |
-| 5      | 11 px     | `↑t 0.68  ↑ 124 t/s`                 | amber_dim    | Up intensity (§5.1)              |
-| 6      | 11 px     | `↓t 0.41  ↓ 82 t/s`                  | amber_dim    | Down intensity (§5.1)            |
-| 7      | 13 px     | `[██████░░░░]  flow: +0.22`          | amber        | ASCII bar + IWDS (§5.2)          |
-| 8      | 13 px     | `BULL CONVICTION`                    | regime_color | Regime label (§6)                |
-| 9      | 11 px     | `buyers 1.8× more urgent`            | dim_white    | Plain-English caption (§8)       |
-| 10     | 11 px     | `P(↑>↓): 73%   log₂(↑/↓): +0.74`     | amber_dim    | AUC + log₂ ratio (§5.3/4)        |
-| 11     | 11 px     | `conv: 1.85×   absorp: 0.41`         | amber_dim    | Conviction + Absorption (§5.5/6) |
-| 12     | 11 px     | `◈ climax: 80% ↑  (of top-25% bars)` | climax_color | Climax concentration (§5.7)      |
+### Display Line Order (Annotated)
 
-Line 4 is a Unicode box-drawing separator. Lines 5-6 show the rank-normalized t values
-and raw t/s side by side. Line 7 is the widest element (ASCII bar + numeric). Lines 10-11
-are the dense data rows. Line 12 uses `orange` color when the regime has a signal
-(border is showing), or `amber_dim` when the regime is CONTESTED — so climax context
-is always visually prominent.
+| Row          | Font | Content example                                    | Color                  |
+| ------------ | ---- | -------------------------------------------------- | ---------------------- |
+| Header       | 13px | `15 bars` / `↑ 9 (60%)` / `↓ 6 (40%)` (3 columns)  | neutral/success/danger |
+| Separator    | —    | thin 0.5px horizontal line                         | dim                    |
+| Intensity    | 11px | `↑t 0.68  ↑ 124 t/s` / `↓t 0.41  ↓ 82 t/s` (2 col) | success/danger         |
+| Flow line    | 13px | `[██████░░░░]  flow: +0.22  ← lean`                | amber                  |
+| Regime       | 13px | `BULL CONVICTION`                                  | regime_color           |
+| Caption      | 11px | `buyers 1.4× more urgent  ← structural edge`       | dim_white              |
+| AUC+log₂     | 11px | `P(↑>↓): 73%   log₂: +0.74  ← moderate`            | amber_dim              |
+| Conv+absorp  | 11px | `conv: 1.85×   absorp: 0.41  ← minority active`    | amber_dim              |
+| Climax       | 11px | `◈ climax: 57% ↑  aligned ✓`                       | orange or amber_dim    |
+| ⚡ div (0-3) | 11px | `⚡ DIVERGES: bears 65% of peak moments` etc.      | orange / dim           |
+
+Divergence rows are appended to the `lines` Vec in this order (when active):
+
+1. Climax divergence (up to 2 rows: signal + detail)
+2. Urgency-count split (1 row)
+3. Conv-absorp contest (1 row)
+
+The `STATS_BOX_H = 290.0` constant in `bar_selection.rs` is used for hit-testing the
+stats box drag zone — it is a conservative approximation of the maximum height including
+all divergence rows.
 
 ---
 
-## 10. Algorithm Complexity
+## 11. Algorithm Complexity
 
 The function processes N bars (where N = `distance + 1` = the selection size):
 
-| Step                     | Complexity | Notes                                         |
-| ------------------------ | ---------- | --------------------------------------------- |
-| Collect `bars` Vec       | O(N)       | One pass over `tick_aggr.datapoints`          |
-| Sort `order` (unstable)  | O(N log N) | Single sort pass, reused by rank_norm AND AUC |
-| Rank normalization       | O(N)       | Linear scan over `order` with tie grouping    |
-| Per-direction aggregates | O(N)       | Single fold over `bars.iter().enumerate()`    |
-| IWDS                     | O(N)       | Two sums over `bars`                          |
-| AUC rank-sum             | O(N)       | Single filtered iteration over `order`        |
-| Log₂ ratio               | O(1)       | Computed from already-computed means          |
-| Conviction + Absorption  | O(1)       | Computed from already-computed means          |
-| Climax filter            | O(N)       | Single scan with `rank_norm[i] > 0.75` filter |
-| Rendering                | O(1)       | Fixed 12 lines, fixed box geometry            |
+| Step                     | Complexity | Notes                                          |
+| ------------------------ | ---------- | ---------------------------------------------- |
+| Collect `bars` Vec       | O(N)       | One pass over `tick_aggr.datapoints`           |
+| Sort `order` (unstable)  | O(N log N) | Single sort pass, reused by rank_norm AND AUC  |
+| Rank normalization       | O(N)       | Linear scan over `order` with tie grouping     |
+| Per-direction aggregates | O(N)       | Single fold over `bars.iter().enumerate()`     |
+| IWDS                     | O(N)       | Two sums over `bars`                           |
+| AUC rank-sum             | O(N)       | Single filtered iteration over `order`         |
+| Log₂ ratio               | O(1)       | Computed from already-computed means           |
+| Conviction + Absorption  | O(1)       | Computed from already-computed means           |
+| Climax filter            | O(N)       | Single scan with `rank_norm[i] > 0.75` filter  |
+| Divergence detection     | O(1)       | Boolean comparisons on already-computed values |
+| Rendering                | O(1)       | Fixed max ~12 lines, dynamic height            |
 
 **Total: O(N log N)** dominated by the sort.
 
@@ -813,7 +1471,7 @@ structure for AUC computation.
 
 ---
 
-## 11. Worked Example: 5-Bar Selection
+## 12. Worked Example: 5-Bar Selection
 
 Suppose a user selects 5 consecutive bars with the following properties:
 
@@ -869,6 +1527,7 @@ Signed sum: `120×(+1) + 45×(+1) + 180×(-1) + 30×(+1) + 90×(-1)`
 `iwds = -75 / 465 = -0.161`
 
 → Slightly net bearish by intensity. IWDS is just below the -0.15 threshold.
+Flow suffix: `← lean` (|IWDS| = 0.161, in the 0.10–0.30 lean band).
 
 ### Step 5: Mann-Whitney AUC
 
@@ -883,7 +1542,8 @@ Signed sum: `120×(+1) + 45×(+1) + 180×(-1) + 30×(+1) + 90×(-1)`
 `auc = 1 / (3 × 2) = 0.167`
 
 Interpretation: up-bars won only 16.7% of head-to-head matchups. Down-bars were
-consistently more intense in direct comparison.
+consistently more intense in direct comparison. AUC suffix: `← strong edge` (distance
+from 0.5 = 0.333, well above the 0.15 threshold).
 
 ### Step 6: Log₂ Ratio
 
@@ -903,8 +1563,8 @@ rank than the minority (down). Exhaustion signal.
 
 `absorption = mean_t_dn = 0.750`
 
-Interpretation: absorption is high (0.75 > 0.6). The down-bars — even though fewer —
-were fighting hard.
+Interpretation: absorption is very high (0.75 > 0.65). Absorption suffix: `← heavy pushback`.
+The down-bars — even though fewer — were fighting hard.
 
 ### Step 8: Climax
 
@@ -917,42 +1577,52 @@ Top quartile: bars where `rank_norm > 0.75`:
 
 The sole top-quartile bar was a down-bar. `climax_up_frac ≤ 0.22` → `BEAR CLIMAX ◈`
 
-### Step 9: Regime Classification
+Climax divergence check: `(n_up >= n_dn) = true` but `(climax_up_frac >= 0.5) = false`
+→ these differ → **climax_divergence = true**.
+
+### Step 9: Divergence Detection
+
+- **Climax divergence**: true (bears dominated peaks, bulls won count) → ⚡ rows
+- **Urgency-count split**: `(n_up >= n_dn) = true` vs `(mean_raw_up >= mean_raw_dn) = false`
+  → these differ → **urgency_count_diverge = true** → ⚡ row
+- **Conv-absorp contest**: conviction = 0.444 < 1.5 → **false**, no ⚡ row
+
+### Step 10: Regime Classification
 
 1. `climax_up_frac = 0.00 ≤ 0.22` → **`BEAR CLIMAX ◈`** (fired first, climax takes priority)
 
-### Step 10: ASCII Bar
+### Step 11: ASCII Bar
 
 `fill = round(5.0 + (-0.161) × 5.0) = round(5.0 - 0.805) = round(4.195) = 4`
 
-`[████░░░░░░]  flow: -0.16`
+`[████░░░░░░]  flow: -0.16  ← lean`
 
 ### Final Display
 
 ```
-5 bars
-↑ 3  (60%)
-↓ 2  (40%)
-─────────────────────────────
-↑t 0.33  ↑ 65 t/s
-↓t 0.75  ↓ 135 t/s
-[████░░░░░░]  flow: -0.16
+15 bars    ↑ 3  (60%)    ↓ 2  (40%)
+─────────────────────────────────────
+↑t 0.33  ↑ 65 t/s      ↓t 0.75  ↓ 135 t/s
+[████░░░░░░]  flow: -0.16  ← lean
 BEAR CLIMAX ◈
-sellers 2.1× more urgent
-P(↑>↓): 17%   log₂(↑/↓): -1.06
-conv: 0.44×   absorp: 0.75
+sellers 2.1× more urgent  ← structural edge
+P(↑>↓): 17%   log₂: -1.06  ← strong edge
+conv: 0.44×   absorp: 0.75  ← heavy pushback
 ◈ climax: 100% ↓  (of top-25% bars)
+⚡ DIVERGES: bears 100% of peak moments
+   — vs bull count 60% overall
+⚡ SPLIT: sellers faster, bulls win more bars
 ```
 
 Box has a magenta border. The pattern: 3 up-bars, 2 down-bars, but the down-bars were
 far more intense. The most frenzied bar was a down-bar. Despite a bar count majority,
 the buying looks exhausted: low conviction (0.44), high seller absorption (0.75), and
-the only top-quartile bar going down. Classic microstructure picture of a top with
-absorption into the rally.
+the only top-quartile bar going down. Two divergence signals fire simultaneously.
+Classic microstructure picture of a top with absorption into the rally.
 
 ---
 
-## 12. Integration Points in the Codebase
+## 13. Integration Points in the Codebase
 
 ### Call Site
 
@@ -960,17 +1630,37 @@ absorption into the rally.
 // src/chart/kline.rs — inside legend cache closure
 if let (Some(anchor), Some(end)) = (state.anchor, state.end) {
     if let PlotData::TickBased(tick_aggr) = &self.data_source {
-        draw_bar_selection_stats(frame, palette, tick_aggr, anchor, end);
+        draw_bar_selection_stats(frame, palette, tick_aggr, anchor, end, state.stats_box_pos);
     }
 }
 ```
 
+### `BarSelectionState` Fields
+
+Defined in `src/chart/kline/bar_selection.rs`:
+
+```rust
+pub(super) struct BarSelectionState {
+    pub(super) anchor: Option<usize>,
+    pub(super) end: Option<usize>,
+    pub(super) shift_held: bool,
+    pub(super) dragging_brim: Option<BrimSide>,
+    pub(super) stats_box_pos: Option<Point>,   // None = default top-centre
+    pub(super) dragging_stats_box: bool,
+    pub(super) stats_drag_offset: (f32, f32),  // cursor offset from box origin at drag-start
+}
+```
+
+`stats_box_pos` is set by left-drag on the stats box and reset to `None` on the third
+Shift-click (selection restart). `stats_drag_offset` records the cursor's position
+relative to the box origin at drag start, ensuring the box does not jump when drag begins.
+
 ### Interaction with `BarSelectionState`
 
 `BarSelectionState` is held in a `RefCell<BarSelectionState>` inside `KlineChart`. The
-legend layer borrows the state immutably to read `anchor` and `end`, then calls
-`draw_bar_selection_stats`. The selection highlight (the yellow brim handles and the
-translucent region between them) is also drawn in the `crosshair` layer, not in `main`.
+legend layer borrows the state immutably to read `anchor`, `end`, and `stats_box_pos`,
+then calls `draw_bar_selection_stats`. The selection highlight (the yellow brim handles
+and the translucent region between them) is drawn in the `crosshair` layer, not in `main`.
 
 Both `legend` and `crosshair` layers are invalidated together on `CursorMoved` events
 (via `clear_crosshair()` which calls both). The `main` (candle bodies) cache is never
@@ -986,7 +1676,7 @@ rejects `u64::MAX` as an endpoint.
 
 ---
 
-## 13. Design Rationale and Limitations
+## 14. Design Rationale and Limitations
 
 ### Why Seven Metrics?
 
@@ -1029,9 +1719,14 @@ Together they form a complete microstructure picture that no single metric can a
    With n=2, one bar will be at 0.0 and one at 1.0; the 1.0 bar exceeds the 0.75 threshold,
    so climax is based on just one bar. Interpret with caution for very short selections.
 
+6. **Divergence signals are independent**: multiple ⚡ rows can fire simultaneously.
+   Two or more active signals means several measurement dimensions are in disagreement —
+   treat the overall regime label with reduced confidence. The panel does not aggregate
+   divergence strength into a single score.
+
 ---
 
-## 14. Relationship to the Trade Intensity Heatmap Indicator
+## 15. Relationship to the Trade Intensity Heatmap Indicator
 
 The bar selection overlay and the `TradeIntensityHeatmap` indicator read from the same
 underlying data — `OdbMicrostructure.trade_intensity: f32` stored in
@@ -1056,39 +1751,55 @@ bar might be rank_norm = 0.5 in a selection that includes even hotter bars.
 
 ---
 
-## 15. Quick Reference Card
+## 16. Quick Reference Card
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  Bar Selection Intensity Metrics — Quick Reference                          │
+│  Bar Selection Stats Panel — Quick Reference                                │
 │                                                                             │
 │  TRIGGER      Shift+Click (anchor) → Shift+Click (end)                     │
+│  RESIZE       Drag either brim handle                                       │
+│  MOVE BOX     Left-drag the stats box                                       │
 │  DATA         OdbMicrostructure.trade_intensity (t/s) per bar               │
 │  LAYER        legend cache (screen-space, cleared on cursor move)           │
 │  COMPLEXITY   O(N log N) sort + O(N) all metrics                            │
 │                                                                             │
 │  ── METRICS ────────────────────────────────────────────────────────────── │
 │  ↑t / ↓t      rank_norm mean per direction, within-selection [0,1]         │
-│               + raw t/s mean in parentheses                                │
+│               + raw t/s mean on same line                                  │
 │  flow (IWDS)  Σ(raw × ±1) / Σ(raw) ∈ [-1,+1]                             │
 │  P(↑>↓)       Mann-Whitney AUC ∈ [0,1]  (0.5 = no edge)                  │
-│  log₂(↑/↓)   log₂(mean_raw_up / mean_raw_dn)  (0 = equal)                │
+│  log₂         log₂(mean_raw_up / mean_raw_dn)  (0 = equal)                │
 │  conv         mean_t(dominant) / mean_t(minority)  (>1 = fuel, <1 = exhaust)│
-│  absorp       mean_t of minority direction  (>0.6 = contested, <0.3 = vacuum)│
+│  absorp       mean_t of minority direction  (>0.65 = heavy pushback)       │
 │  ◈ climax     fraction of top-25%-rank bars that are up                    │
+│                                                                             │
+│  ── INLINE SUFFIXES ─────────────────────────────────────────────────────  │
+│  flow:    neutral / lean / bullish / bearish / strong bull / strong bear   │
+│  urgency: marginal / present / structural edge                              │
+│  P(↑>↓):  weak edge / moderate / strong edge                               │
+│  absorp:  minority fading / active / fighting / heavy pushback              │
+│  climax:  aligned ✓  (when climax dir matches count dir, no divergence)     │
 │                                                                             │
 │  ── REGIMES ─────────────────────────────────────────────────────────────  │
 │  BULL CONVICTION  IWDS>0.15 AND AUC≥0.60   green  — both agree, bullish   │
 │  BEAR CONVICTION  IWDS<-0.15 AND AUC≤0.40  red    — both agree, bearish   │
-│  BULL ABSORPTION  IWDS>0.15 AND AUC<0.50   orange — divergence, suspect   │
-│  BEAR ABSORPTION  IWDS<-0.15 AND AUC>0.50  orange — divergence, suspect   │
+│  BULL ABSORPTION  IWDS>0.15 AND AUC<0.50   orange — flow/AUC split        │
+│  BEAR ABSORPTION  IWDS<-0.15 AND AUC>0.50  orange — flow/AUC split        │
 │  BULL CLIMAX ◈    climax_up_frac≥0.78      magenta — buying exhaustion?    │
 │  BEAR CLIMAX ◈    climax_up_frac≤0.22      magenta — selling exhaustion?   │
 │  CONTESTED        all others               grey   — no clear edge          │
+│  CONTESTED — AUC Npt below gate            grey   — near miss, N ≤ 12pt   │
+│                                                                             │
+│  ── DIVERGENCE SIGNALS (⚡ rows) ─────────────────────────────────────── │
+│  CLIMAX DIVERGENCE  peak dir ≠ count dir   orange  ← most important       │
+│  URGENCY-COUNT SPLIT  faster side ≠ count winner  orange                  │
+│  FLOW/AUC SPLIT  surfaced by ABSORPTION label + CONTESTED near-miss        │
+│  CONV-ABSORP CONTEST  conv>1.5 AND absorp>0.60  orange                    │
 │                                                                             │
 │  ── PRIORITY ─────────────────────────────────────────────────────────── │
 │  Climax checked FIRST (overrides conviction)                               │
 │  Conviction checked before Absorption                                      │
-│  Contested is the fallthrough                                               │
+│  Contested is the fallthrough                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
