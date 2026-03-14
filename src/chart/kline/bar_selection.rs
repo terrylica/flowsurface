@@ -373,6 +373,26 @@ pub(super) fn draw_bar_selection_stats(
         (format!("{climax_line}{climax_suffix}"),                                                         climax_color, sm),
     ];
 
+    // ── Telemetry: log all metrics + active signals on every selection change ──
+    {
+        let div_flags = [
+            if climax_divergence     { "CLIMAX"   } else { "-" },
+            if urgency_count_diverge { "SPLIT"    } else { "-" },
+            if conv_absorp_contest   { "CVAB"     } else { "-" },
+        ];
+        log::debug!(
+            "[bar-sel] n={n} up={up_pct:.0}% dn={dn_pct:.0}% \
+             climax={:.0}% iwds={iwds:+.2} auc={:.2} log2={:.2} \
+             conv={:.2} absorp={:.2} div=[{}]",
+            climax_up_frac * 100.0,
+            auc,
+            log2_ratio,
+            conviction,
+            absorption,
+            div_flags.join(","),
+        );
+    }
+
     // ── Divergence rows (appended when signals are active) ─────────────────
     if climax_divergence && !climax_up_frac.is_nan() {
         let (peak_side, peak_pct) = if climax_up_frac >= 0.5 {
