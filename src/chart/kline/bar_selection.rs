@@ -369,7 +369,7 @@ pub(super) fn draw_bar_selection_stats(
         if ae < 0.05 { "" }
         else if ae < 0.15 { if edge > 0.0 { "← ↑ leads" } else { "← ↓ leads" } }
         else if ae < 0.30 { if edge > 0.0 { "← ↑ edges" } else { "← ↓ edges" } }
-        else { if edge > 0.0 { "← ↑ dominant" } else { "← ↓ dominant" } }
+        else if edge > 0.0 { "← ↑ dominant" } else { "← ↓ dominant" }
     } else { "" };
 
     // ── Format helpers ─────────────────────────────────────────────────────
