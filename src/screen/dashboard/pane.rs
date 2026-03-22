@@ -291,7 +291,7 @@ impl State {
 
                     (content, streams)
                 }
-                // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+                // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
                 ContentKind::OdbChart => {
                     let content = Content::new_kline(
                         kind,
@@ -451,7 +451,7 @@ impl State {
                 } else {
                     let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                     let layout = chart.chart_layout();
-                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
                     let saved_config = chart.kline_config; // Config: Copy
 
                     *chart = KlineChart::new(
@@ -536,7 +536,7 @@ impl State {
                     let layout = chart.chart_layout();
                     let basis = chart.basis();
                     let kind = chart.kind().clone();
-                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
                     let saved_config = chart.kline_config; // Config: Copy
 
                     *chart = KlineChart::new_with_microstructure(
@@ -1125,9 +1125,9 @@ impl State {
 
     // NOTE(fork): Pan the focused chart from the app-level keyboard subscription.
     // Called by `dashboard::Message::ChartKeyNav` when the cursor may be off-chart.
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
     pub fn apply_keyboard_nav(&mut self, event: &iced::keyboard::Event) {
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
         if let Content::Kline { chart: Some(c), .. } = &mut self.content
             && let Some(msg) = c.keyboard_nav_msg(event)
         {
@@ -1872,7 +1872,7 @@ impl Default for State {
 }
 
 #[derive(Default)]
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 #[allow(clippy::large_enum_variant)] // KlineChart grew with OpenDeviationBarProcessor; boxing would cascade
 pub enum Content {
     #[default]
@@ -2018,7 +2018,7 @@ impl Content {
             let mut splits_vec = vec![main_chart_split];
 
             if !enabled_indicators.is_empty() {
-                // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
                 // TradeIntensityHeatmap colours candle bodies, not a subplot panel.
                 let num_indicators = enabled_indicators
                     .iter()
@@ -2048,7 +2048,7 @@ impl Content {
                 include_forming: true,
             });
 
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         let kline_config = settings
             .visual_config
             .clone()
@@ -2215,7 +2215,7 @@ impl Content {
             (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
                 chart.config = cfg;
             }
-            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+            // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
             (Content::Kline { chart: Some(c), .. }, VisualConfig::Kline(cfg)) => {
                 c.set_ofi_ema_period(cfg.ofi_ema_period);
                 c.set_intensity_lookback(cfg.intensity_lookback);

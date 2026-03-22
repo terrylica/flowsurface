@@ -726,7 +726,7 @@ pub async fn fetch_klines(
     }
 }
 
-/// Fetch klines from ClickHouse range bar cache with a specific threshold.
+/// Fetch klines from ClickHouse ODB cache with a specific threshold.
 pub async fn fetch_odb_klines(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
@@ -735,7 +735,7 @@ pub async fn fetch_odb_klines(
     clickhouse::fetch_klines(ticker_info, threshold_dbps, range).await
 }
 
-/// Fetch klines + microstructure + agg_trade_id ranges from ClickHouse range bar cache.
+/// Fetch klines + microstructure + agg_trade_id ranges from ClickHouse ODB cache.
 pub async fn fetch_odb_klines_with_microstructure(
     ticker_info: TickerInfo,
     threshold_dbps: u32,

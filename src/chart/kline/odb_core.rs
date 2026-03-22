@@ -58,7 +58,7 @@ impl KlineChart {
         microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
         agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
         open_time_ms_list: Option<&[Option<u64>]>,
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         kline_config: data::chart::kline::Config,
     ) -> Self {
         // For non-Odb bases or missing microstructure, delegate to plain new()
@@ -227,6 +227,7 @@ impl KlineChart {
             gap_fill_requested: false,
             last_gap_fill_trigger_ms: 0,
             last_sentinel_audit: Instant::now(),
+            last_viewport_digest: Instant::now(),
             sentinel_gap_count: 0,
             sentinel_refetch_pending: false,
             sentinel_healable_gap_min_time_ms: None,
@@ -364,6 +365,39 @@ impl KlineChart {
                         kline.close.to_f32(),
                         tick_aggr.datapoints.len(),
                     );
+
+                    // Bar quality gate: detect malformed bars from upstream pipeline.
+                    // A valid ODB bar must span at least 80% of its threshold.
+                    // Catches regressions like #176 (orphan bars) and #284 (Asclepius).
+                    if let Basis::Odb(threshold_dbps) = self.chart.basis {
+                        let range_dbps =
+                            ((kline.high.to_f32() - kline.low.to_f32()) / kline.open.to_f32())
+                                * 10_000.0;
+                        let min_expected = (threshold_dbps as f32 / 10.0) * 0.8;
+                        if range_dbps < min_expected && range_dbps >= 0.0 {
+                            log::warn!(
+                                "[bar-quality] SUSPECT bar ts={}: range={:.1} dbps < {:.0} \
+                                 (80% of {} threshold). Pipeline may be producing malformed bars.",
+                                kline.time,
+                                range_dbps,
+                                min_expected,
+                                threshold_dbps,
+                            );
+                            if exchange::telegram::should_alert("bar-quality", 300) {
+                                exchange::tg_alert!(
+                                    exchange::telegram::Severity::Warning,
+                                    "bar-quality",
+                                    "Suspect bar: range={:.1}dbps < {:.0} (80% of {}). \
+                                     ts={} close={:.2}",
+                                    range_dbps,
+                                    min_expected,
+                                    threshold_dbps,
+                                    kline.time,
+                                    kline.close.to_f32()
+                                );
+                            }
+                        }
+                    }
 
                     // Oracle: the CORRECT assertion — after store, does the bar have microstructure?
                     let stored_has_micro = tick_aggr

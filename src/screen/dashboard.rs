@@ -60,7 +60,7 @@ pub enum Message {
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
     /// NOTE(fork): App-level keyboard navigation for chart panning without canvas focus.
-    /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+    /// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
     ChartKeyNav(keyboard::Event),
     /// NOTE(fork): Trigger ODB gap-fill via sidecar /catchup endpoint.
     TriggerOdbGapFill {
@@ -525,7 +525,7 @@ impl Dashboard {
             Message::Notification(toast) => {
                 return (Task::none(), Some(Event::Notification(toast)));
             }
-            // NOTE(fork): GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+            // NOTE(fork): GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
             Message::ChartKeyNav(event) => {
                 if let Some((window, pane)) = self.focus
                     && let Some(state) = self.get_mut_pane(main_window.id, window, pane)
@@ -1200,7 +1200,7 @@ impl Dashboard {
                         _ => {}
                     }
 
-                    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+                    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
                     // Clear stale status when fresh data arrives via polling
                     if matches!(pane_state.status, pane::Status::Stale(_))
                         && matches!(stream, StreamKind::OdbKline { .. })
@@ -1370,7 +1370,7 @@ impl Dashboard {
         pane_id: uuid::Uuid,
         streams: Vec<StreamKind>,
     ) -> Task<Message> {
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
         let rb_streams: Vec<_> = streams
             .iter()
             .filter(|s| matches!(s, StreamKind::OdbKline { .. }))
@@ -1485,7 +1485,7 @@ impl Dashboard {
             .flat_map(|(_, _, pane_state)| pane_state.streams.ready_iter().into_iter().flatten());
         self.streams = UniqueStreams::from(all_pane_streams);
 
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
         let rb_count: usize = self
             .streams
             .combined_used()

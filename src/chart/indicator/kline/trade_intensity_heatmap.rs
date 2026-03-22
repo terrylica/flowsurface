@@ -1,4 +1,4 @@
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 //! Rolling log-quantile percentile heatmap for trade intensity.
 //!
 //! Trade intensity has extreme power-law tails (BPR25: skewness=322, max/median = 700,000×).
@@ -44,7 +44,7 @@ use iced::widget::center;
 use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 
 /// Per-bar data point for the heatmap indicator.
 #[derive(Clone, Copy)]

@@ -1,4 +1,4 @@
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
 //! Fork-specific keyboard navigation for chart panning and zooming.
 //!
 //! Wired into `canvas_interaction()` in `src/chart.rs` via the `_ =>` catchall

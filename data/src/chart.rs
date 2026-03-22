@@ -95,7 +95,7 @@ pub enum Basis {
     Odb(u32),
 }
 
-pub const ODB_THRESHOLDS: [u32; 4] = [250, 500, 750, 1000];
+pub const ODB_THRESHOLDS: [u32; 4] = [100, 250, 500, 750];
 
 impl Basis {
     pub fn is_time(&self) -> bool {
@@ -108,10 +108,10 @@ impl Basis {
 
     pub fn odb_options() -> [Basis; 4] {
         [
+            Basis::Odb(100),
             Basis::Odb(250),
             Basis::Odb(500),
             Basis::Odb(750),
-            Basis::Odb(1000),
         ]
     }
 

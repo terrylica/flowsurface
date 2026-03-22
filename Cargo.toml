@@ -61,6 +61,7 @@ rodio = { version = "0.20.1", default-features = false, features = [ "wav" ]}
 
 exchange = { version = "0.1.0", path = "exchange", package = "flowsurface-exchange" }
 data = { version = "0.1.0", path = "data", package = "flowsurface-data" }
+kand = { version = "0.2", default-features = false, features = ["f64", "i32", "check"] }
 qta = { path = "../../eon/mql5/crates/qta" }
 
 [features]

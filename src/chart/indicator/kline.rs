@@ -13,10 +13,11 @@ pub mod ofi_cumulative_ema;
 pub mod open_interest;
 pub mod trade_count;
 pub mod trade_intensity;
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 pub mod trade_intensity_heatmap;
 pub mod volume;
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
+pub mod rsi;
 pub mod zigzag;
 
 pub trait KlineIndicatorImpl {
@@ -111,18 +112,19 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
             Box::new(super::kline::trade_count::TradeCountIndicator::new())
         }
         KlineIndicator::OFI => Box::new(super::kline::ofi::OFIIndicator::new()),
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         KlineIndicator::OFICumulativeEma => {
             Box::new(super::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::new())
         }
         KlineIndicator::TradeIntensity => {
             Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
         }
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         KlineIndicator::TradeIntensityHeatmap => {
             Box::new(super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::new())
         }
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         KlineIndicator::ZigZag => Box::new(super::kline::zigzag::ZigZagOverlayIndicator::new()),
+        KlineIndicator::RSI => Box::new(super::kline::rsi::RsiIndicator::new()),
     }
 }

@@ -21,7 +21,7 @@ pub enum Baseline {
 
 #[derive(Clone, Copy)]
 /// What kind of bar to render.
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 pub enum BarClass {
     /// draw a single bar using secondary strong color
     Single,

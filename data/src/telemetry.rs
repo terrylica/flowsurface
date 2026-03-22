@@ -1,4 +1,4 @@
-// Range bar forensic telemetry — bit-correct NDJSON artifacts
+// ODB forensic telemetry — bit-correct NDJSON artifacts
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/telemetry
 //
 // Activation: compile with `--features telemetry` + runtime `FLOWSURFACE_TELEMETRY=1`.

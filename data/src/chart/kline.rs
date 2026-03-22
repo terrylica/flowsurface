@@ -282,7 +282,7 @@ impl KlineChartKind {
     pub fn min_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles | KlineChartKind::Odb => 1.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 0.5,
         }
     }
 
@@ -334,7 +334,7 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 fn default_ofi_ema_period() -> usize {
     20
 }

@@ -4,7 +4,7 @@ use std::fmt;
 
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
 /// Compact bar timestamp: "2026 Feb 26 14:35:42.123" — year prefix, no weekday, always ms precision.
-/// Used for range-bar open/close fields in the crosshair tooltip.
+/// Used for ODB open/close fields in the crosshair tooltip.
 const FMT_BAR_TIME_MS: &str = "%Y %b %-d %H:%M:%S.%3f";
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -104,7 +104,7 @@ impl UserTimezone {
         })
     }
 
-    /// Formats a timestamp for range bar axis labels.
+    /// Formats a timestamp for open deviation bar axis labels.
     /// `label_span_ms` is the time span between adjacent labels (not between bars).
     pub fn format_odb_label(&self, timestamp: i64, label_span_ms: u64) -> String {
         if let Some(datetime) = DateTime::from_timestamp(timestamp, 0) {
@@ -123,7 +123,7 @@ impl UserTimezone {
         }
     }
 
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     fn format_odb_dt<Tz: chrono::TimeZone>(datetime: &DateTime<Tz>, label_span_ms: u64) -> String
     where
         Tz::Offset: std::fmt::Display,

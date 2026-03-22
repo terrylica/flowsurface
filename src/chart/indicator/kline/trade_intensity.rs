@@ -20,7 +20,7 @@ use std::ops::RangeInclusive;
 /// Trade intensity indicator: trades per second per bar.
 /// Reveals urgency — unique to ODB bars since their duration varies.
 /// Only available for ODB bars with microstructure data.
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 pub struct TradeIntensityIndicator {
     cache: Caches,
     data: BTreeMap<u64, f32>,

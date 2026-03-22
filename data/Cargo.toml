@@ -23,6 +23,7 @@ keyring = { version = "3.6.3", default-features = false, features = ["apple-nati
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 log = { version = "0.4.22", default-features = true, features = ["std"] }
 thiserror = { version = "2.0.12", default-features = true, features = ["std"] }
+kand = { version = "0.2", default-features = false, features = ["f64", "i32", "check"] }
 
 exchange = { version = "0.1.0", path = "../exchange", package = "flowsurface-exchange" }
 

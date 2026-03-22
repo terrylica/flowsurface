@@ -222,7 +222,7 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             indicators,
             link_group,
         } => {
-            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+            // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
             // Ensure ODB charts have a DepthAndTrades stream for live price line.
             // Older persisted layouts may only have OdbKline without DepthAndTrades.
             if kind == data::chart::KlineChartKind::Odb {

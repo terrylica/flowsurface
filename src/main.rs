@@ -911,7 +911,7 @@ impl Flowsurface {
             }
             // NOTE(fork): Chart keyboard navigation — routed to focused pane's chart.
             // Key list is authoritative in keyboard_nav::is_nav_key(); no duplicate here.
-            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+            // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
             if chart::keyboard_nav::is_nav_key(key) {
                 return Some(Message::Dashboard {
                     layout_id: None,

@@ -562,7 +562,7 @@ pub struct Trade {
     pub agg_trade_id: Option<u64>,
 }
 
-// Serialize: range bar forensic telemetry NDJSON artifacts (--features telemetry)
+// Serialize: ODB forensic telemetry NDJSON artifacts (--features telemetry)
 // GitHub Issue: https://github.com/terrylica/flowsurface/issues/telemetry
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Kline {

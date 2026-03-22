@@ -27,9 +27,9 @@ use opendeviationbar_client::{OdbBar, OdbSseClient, OdbSseConfig, OdbSseEvent};
 
 pub use opendeviationbar_core::{FixedPoint, OpenDeviationBar, OpenDeviationBarProcessor};
 
-/// Microstructure fields from ClickHouse range bar cache.
+/// Microstructure fields from ClickHouse ODB cache.
 /// Kept in exchange crate to avoid circular dependency with data crate.
-/// Serialize: range bar forensic telemetry (--features telemetry)
+/// Serialize: ODB forensic telemetry (--features telemetry)
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct ChMicrostructure {
     pub trade_count: u32,
@@ -38,7 +38,7 @@ pub struct ChMicrostructure {
 }
 
 // === opendeviationbar-core in-process integration ===
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 
 /// Convert a flowsurface Trade into an opendeviationbar-core AggTrade.
 ///
@@ -94,11 +94,11 @@ pub fn odb_to_microstructure(bar: &OpenDeviationBar) -> ChMicrostructure {
     }
 }
 
-/// Range bar symbols fetched from ClickHouse at startup.
+/// ODB symbols fetched from ClickHouse at startup.
 /// Populated by `init_odb_symbols()`, accessed synchronously from view code.
 static ODB_SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Fetch available range bar symbols from ClickHouse and cache them.
+/// Fetch available ODB symbols from ClickHouse and cache them.
 /// Called once at startup; gracefully returns empty vec on failure.
 pub async fn init_odb_symbols() -> Vec<String> {
     let sql = "SELECT DISTINCT symbol FROM opendeviationbar_cache.open_deviation_bars ORDER BY symbol FORMAT TabSeparated";
@@ -112,15 +112,15 @@ pub async fn init_odb_symbols() -> Vec<String> {
                 .collect();
             let count = symbols.len();
             if ODB_SYMBOLS.set(symbols).is_err() {
-                log::warn!("range bar symbol cache already initialized");
+                log::warn!("ODB symbol cache already initialized");
             } else {
-                log::info!("cached {count} range bar symbols from ClickHouse");
+                log::info!("cached {count} ODB symbols from ClickHouse");
             }
             // Non-blocking schema coherence check after successful connection
             validate_schema().await;
         }
         Err(e) => {
-            log::warn!("failed to fetch range bar symbols from ClickHouse: {e}");
+            log::warn!("failed to fetch ODB symbols from ClickHouse: {e}");
         }
     }
     ODB_SYMBOLS.get().cloned().unwrap_or_default()
@@ -226,7 +226,7 @@ async fn validate_schema() {
     }
 }
 
-/// Returns the range bar symbol allowlist, or None if not yet loaded or empty.
+/// Returns the ODB symbol allowlist, or None if not yet loaded or empty.
 pub fn odb_symbol_filter() -> Option<&'static [String]> {
     ODB_SYMBOLS
         .get()
@@ -387,11 +387,11 @@ pub async fn fetch_klines(
     Ok(klines)
 }
 
-/// Shared SQL builder for range bar queries (includes microstructure columns).
+/// Shared SQL builder for ODB queries (includes microstructure columns).
 ///
 /// The initial fetch limit is scaled inversely with threshold so all thresholds
 /// show a similar time window. BPR25 (250 dbps) is the reference at 500 bars;
-/// BPR50 gets ~250, BPR100 gets ~125.
+/// BPR50 gets ~250, BPR75 gets ~167. BPR10 gets 13K (floor).
 fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -> String {
     // Both paths use DESC ordering + reverse to get the N most recent bars
     // within the requested window. ASC ordering would return bars from the
@@ -455,7 +455,7 @@ fn parse_microstructure(ck: &ChKline) -> Option<ChMicrostructure> {
     }
 }
 
-/// Fetch klines + microstructure sidecar from ClickHouse range bar cache.
+/// Fetch klines + microstructure sidecar from ClickHouse ODB cache.
 pub async fn fetch_klines_with_microstructure(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
@@ -561,7 +561,7 @@ pub fn connect_kline_stream(
     ticker_info: TickerInfo,
     threshold_dbps: u32,
 ) -> impl Stream<Item = Event> {
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
     log::info!(
         "[CH poll] connect_kline_stream STARTED: {} @{} dbps",
         ticker_info.ticker,
@@ -634,8 +634,8 @@ pub fn connect_kline_stream(
         let mut logged_micro_warning = false;
 
         loop {
-            // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
-            // 5s polling for near-real-time range bar updates (from 60s)
+            // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
+            // 5s polling for near-real-time ODB bar updates (from 60s)
             tokio::time::sleep(Duration::from_secs(5)).await;
 
             let sql = format!(

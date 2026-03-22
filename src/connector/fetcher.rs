@@ -232,7 +232,7 @@ pub fn request_fetch(
                 Some((s, pane_id))
             } else {
                 ready_streams.iter().find_map(|stream| {
-                    if let StreamKind::Kline { .. } = stream {
+                    if matches!(stream, StreamKind::Kline { .. } | StreamKind::OdbKline { .. }) {
                         Some((*stream, pane_id))
                     } else {
                         None
@@ -483,6 +483,39 @@ pub fn kline_fetch_task(
                         microstructure: None,
                         agg_trade_id_ranges: None,
                         open_time_ms_list: None,
+                    };
+                    FetchUpdate::Data {
+                        layout_id,
+                        pane_id,
+                        data,
+                        stream,
+                    }
+                }
+                Err(err) => FetchUpdate::Error {
+                    pane_id,
+                    error: err,
+                },
+            },
+        ),
+        StreamKind::OdbKline {
+            ticker_info,
+            threshold_dbps,
+        } => Task::perform(
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_odb_klines_with_microstructure(ticker_info, threshold_dbps, range),
+                |err: adapter::AdapterError| {
+                    log::error!("ODB kline fetch failed: {err}");
+                    format!("{err}")
+                },
+            ),
+            move |result| match result {
+                Ok((klines, micro, agg_ids, open_time_ms_list)) => {
+                    let data = FetchedData::Klines {
+                        data: klines,
+                        req_id,
+                        microstructure: Some(micro),
+                        agg_trade_id_ranges: Some(agg_ids),
+                        open_time_ms_list: Some(open_time_ms_list),
                     };
                     FetchUpdate::Data {
                         layout_id,

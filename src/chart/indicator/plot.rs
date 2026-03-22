@@ -1,4 +1,4 @@
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
@@ -87,7 +87,7 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
     }
 }
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 /// Series backed by a contiguous `&[Y]` slice where index 0 = oldest bar (forward order).
 /// Used for Odb/Tick indicators that store data in `Vec<Y>` for O(1) rebuild.
 /// Translates the `.rev()` index space used by Odb rendering into slice indices.

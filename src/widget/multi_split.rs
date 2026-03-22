@@ -41,7 +41,7 @@ impl<'a, Message> MultiSplit<'a, Message>
 where
     Message: 'a,
 {
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     pub fn new(
         panels: Vec<Element<'a, Message>>,
         splits: &'a [f32],

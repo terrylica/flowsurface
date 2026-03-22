@@ -1,4 +1,4 @@
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 //! Rolling-window sum of EMA-smoothed OFI. Shows directional accumulation of
 //! smoothed order flow over the last N bars (where N = EMA period) as a bar
 //! histogram with zero baseline. Shares the OFI EMA period from kline::Config.
@@ -10,7 +10,7 @@
 //! **Incremental updates**: EMA state, rolling window and sum are kept on the struct.
 //! `on_insert_trades` processes only newly completed bars in O(1).
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 use crate::chart::{
     Caches, Message, ViewState,
     indicator::{

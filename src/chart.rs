@@ -1219,7 +1219,7 @@ impl ViewState {
         let value = self.base_price_y.to_string(precision);
         let price_width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
 
-        // Range bar timer label ("HH:MM:SS.mmm UTC") needs more room
+        // ODB timer label ("HH:MM:SS.mmm UTC") needs more room
         let width = if matches!(self.basis, Basis::Odb(_)) {
             price_width.max(135.0)
         } else {

@@ -17,7 +17,7 @@ use exchange::{Kline, Trade, Volume};
 use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 
 fn kline_volume_delta(volume: &Volume) -> f32 {
     volume

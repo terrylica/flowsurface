@@ -17,14 +17,16 @@ pub enum KlineIndicator {
     Delta,
     TradeCount,
     OFI,
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     OFICumulativeEma,
     TradeIntensity,
     /// Rolling log-quantile percentile heatmap for trade intensity (open deviation bars).
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     TradeIntensityHeatmap,
     /// Streaming ZigZag swing structure overlay (confirmed + pending pivots).
     ZigZag,
+    /// RSI (Relative Strength Index) powered by kand — momentum oscillator [0,100].
+    RSI,
 }
 
 impl Indicator for KlineIndicator {
@@ -46,7 +48,7 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 8] = [
+    const FOR_SPOT: [KlineIndicator; 9] = [
         KlineIndicator::Volume,
         KlineIndicator::Delta,
         KlineIndicator::TradeCount,
@@ -55,9 +57,10 @@ impl KlineIndicator {
         KlineIndicator::TradeIntensity,
         KlineIndicator::TradeIntensityHeatmap,
         KlineIndicator::ZigZag,
+        KlineIndicator::RSI,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 9] = [
+    const FOR_PERPS: [KlineIndicator; 10] = [
         KlineIndicator::Volume,
         KlineIndicator::OpenInterest,
         KlineIndicator::Delta,
@@ -67,6 +70,7 @@ impl KlineIndicator {
         KlineIndicator::TradeIntensity,
         KlineIndicator::TradeIntensityHeatmap,
         KlineIndicator::ZigZag,
+        KlineIndicator::RSI,
     ];
 }
 
@@ -82,6 +86,7 @@ impl Display for KlineIndicator {
             KlineIndicator::TradeIntensity => write!(f, "Trade Intensity"),
             KlineIndicator::TradeIntensityHeatmap => write!(f, "Intensity Heatmap"),
             KlineIndicator::ZigZag => write!(f, "ZigZag"),
+            KlineIndicator::RSI => write!(f, "RSI"),
         }
     }
 }

@@ -1,5 +1,5 @@
 // FILE-SIZE-OK: upstream file, splitting out of scope for this fork
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/91
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
 use super::{
     Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, ViewState, indicator,
     request_fetch, scale::linear::PriceInfoLabel,
@@ -216,7 +216,7 @@ impl PlotConstants for KlineChart {
 ///
 /// OFI-family indicators use `ofi_ema_period`; `TradeIntensityHeatmap` uses
 /// `intensity_lookback`. All others use default construction.
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 fn make_indicator_with_config(
     which: KlineIndicator,
     cfg: &data::chart::kline::Config,
@@ -277,7 +277,7 @@ pub struct KlineChart {
     /// completed bar leaking into the new forming bar.
     sse_reset_fence_agg_id: Option<u64>,
     /// Kline chart configuration (e.g. OFI EMA period).
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     pub(crate) kline_config: data::chart::kline::Config,
     // ── Production telemetry fields ──
     /// WS trade count since last throughput log (reset every 30s).
@@ -309,6 +309,8 @@ pub struct KlineChart {
     /// Sentinel: earliest bar_time_ms among healable gaps from the last audit.
     /// Used to distinguish live-session gaps (not in CH yet) from historical gaps.
     sentinel_healable_gap_min_time_ms: Option<u64>,
+    /// Viewport digest: periodic log of what's visually displayed (every 60s, ODB only).
+    last_viewport_digest: Instant,
     /// Bar range selection state (ODB charts only).
     /// Right-click: 1st = set anchor, 2nd = set end, 3rd = clear.
     /// RefCell: `canvas::Program::update()` takes `&self`, interior mutability needed.
@@ -325,7 +327,7 @@ impl KlineChart {
         enabled_indicators: &[KlineIndicator],
         ticker_info: TickerInfo,
         kind: &KlineChartKind,
-        // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+        // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         kline_config: data::chart::kline::Config,
     ) -> Self {
         match basis {
@@ -430,6 +432,7 @@ impl KlineChart {
                     gap_fill_requested: false,
                     last_gap_fill_trigger_ms: 0,
                     last_sentinel_audit: Instant::now(),
+                    last_viewport_digest: Instant::now(),
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
                     sentinel_healable_gap_min_time_ms: None,
@@ -515,6 +518,7 @@ impl KlineChart {
                     gap_fill_requested: false,
                     last_gap_fill_trigger_ms: 0,
                     last_sentinel_audit: Instant::now(),
+                    last_viewport_digest: Instant::now(),
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
                     sentinel_healable_gap_min_time_ms: None,
@@ -633,6 +637,7 @@ impl KlineChart {
                     gap_fill_requested: false,
                     last_gap_fill_trigger_ms: 0,
                     last_sentinel_audit: Instant::now(),
+                    last_viewport_digest: Instant::now(),
                     sentinel_gap_count: 0,
                     sentinel_refetch_pending: false,
                     sentinel_healable_gap_min_time_ms: None,
@@ -980,7 +985,7 @@ impl KlineChart {
     }
 
     /// Update the OFI EMA period: rebuild the indicator with the new period.
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     pub fn set_ofi_ema_period(&mut self, period: usize) {
         self.kline_config.ofi_ema_period = period;
         if self.indicators[KlineIndicator::OFI].is_some() {
@@ -1002,7 +1007,7 @@ impl KlineChart {
     }
 
     /// Update intensity heatmap lookback window: rebuild the indicator with new params.
-    // GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+    // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
     pub fn set_intensity_lookback(&mut self, lookback: usize) {
         self.kline_config.intensity_lookback = lookback;
         if self.indicators[KlineIndicator::TradeIntensityHeatmap].is_some() {
@@ -1027,7 +1032,7 @@ impl KlineChart {
 
     /// NOTE(fork): Compute a keyboard navigation message using this chart's current state.
     /// Called from the app-level `keyboard::listen()` subscription to navigate without canvas focus.
-    /// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/100
+    /// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/100
     pub fn keyboard_nav_msg(&self, event: &iced::keyboard::Event) -> Option<super::Message> {
         super::keyboard_nav::process(event, self.state())
     }
@@ -1430,6 +1435,81 @@ impl KlineChart {
                         .await;
                     });
                 }
+            }
+        }
+
+        // ── Viewport digest: periodic bar quality summary (every 60s, ODB only) ──
+        // Always-on (not behind telemetry feature flag) so we can bootstrap
+        // analysis of what the user sees from the log file alone.
+        if self.chart.basis.is_odb()
+            && let Some(t) = now
+            && t.duration_since(self.last_viewport_digest) >= std::time::Duration::from_secs(60)
+            && let PlotData::TickBased(tick_aggr) = &self.data_source
+            && !tick_aggr.datapoints.is_empty()
+        {
+            self.last_viewport_digest = t;
+            let threshold_dbps = match self.chart.basis {
+                Basis::Odb(d) => d,
+                _ => 250,
+            };
+            let total = tick_aggr.datapoints.len();
+            let newest_ts = tick_aggr.datapoints.last().map(|dp| dp.kline.time).unwrap_or(0);
+            let oldest_ts = tick_aggr.datapoints.first().map(|dp| dp.kline.time).unwrap_or(0);
+            let min_expected = (threshold_dbps as f32 / 10.0) * 0.8;
+
+            // Scan last 50 bars for quality stats
+            let tail_n = total.min(50);
+            let tail = &tick_aggr.datapoints[total - tail_n..];
+            let mut min_range: f32 = f32::MAX;
+            let mut max_range: f32 = 0.0;
+            let mut sum_range: f32 = 0.0;
+            let mut suspect_count: usize = 0;
+            for dp in tail {
+                let k = &dp.kline;
+                let range = ((k.high.to_f32() - k.low.to_f32()) / k.open.to_f32()) * 10_000.0;
+                min_range = min_range.min(range);
+                max_range = max_range.max(range);
+                sum_range += range;
+                if range < min_expected {
+                    suspect_count += 1;
+                }
+            }
+            let avg_range = sum_range / tail_n as f32;
+
+            let forming_info = self.odb_processor.as_ref().and_then(|p| {
+                p.get_incomplete_bar().map(|b| {
+                    let dev = ((b.high.to_f64() - b.low.to_f64()) / b.open.to_f64()) * 10_000.0;
+                    (b.agg_record_count, dev)
+                })
+            });
+
+            log::warn!(
+                "[viewport] BPR{} total={} oldest={} newest={} \
+                 tail{}=[min={:.1} avg={:.1} max={:.1} dbps] suspect={} \
+                 forming=[{}] reconciled={}",
+                threshold_dbps / 10,
+                total,
+                oldest_ts,
+                newest_ts,
+                tail_n,
+                min_range,
+                avg_range,
+                max_range,
+                suspect_count,
+                forming_info.map_or("none".to_string(), |(tc, dev)| {
+                    format!("{tc} trades, {dev:.1}dbps")
+                }),
+                self.ch_reconcile_count,
+            );
+
+            if suspect_count > tail_n / 4 {
+                log::warn!(
+                    "[viewport] >25% of recent bars are under-threshold ({}/{} < {:.0} dbps). \
+                     Upstream pipeline may be producing malformed bars.",
+                    suspect_count,
+                    tail_n,
+                    min_expected,
+                );
             }
         }
 

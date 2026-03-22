@@ -1,4 +1,4 @@
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 //! Streaming ZigZag swing structure overlay for the main candle chart.
 //!
 //! Draws confirmed pivot lines (solid) and pending pivot line (dashed) directly

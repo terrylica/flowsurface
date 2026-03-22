@@ -20,7 +20,7 @@ use std::ops::RangeInclusive;
 
 /// Trade count indicator: individual_trade_count per bar.
 /// Only available for ODB bars with microstructure data from ClickHouse.
-// GitHub Issue: https://github.com/terrylica/rangebar-py/issues/97
+// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 pub struct TradeCountIndicator {
     cache: Caches,
     data: BTreeMap<u64, f32>,
