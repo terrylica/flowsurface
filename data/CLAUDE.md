@@ -33,7 +33,7 @@ pub enum Basis {
     Odb(u32),           // Threshold in dbps (e.g., 250 = 0.25%)
 }
 
-pub const ODB_THRESHOLDS: [u32; 4] = [250, 500, 750, 1000];
+pub const ODB_THRESHOLDS: [u32; 4] = [100, 250, 500, 750];
 ```
 
 | Basis  | Storage      | X-Axis      | Data Source              |

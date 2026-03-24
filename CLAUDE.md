@@ -116,7 +116,7 @@ Stream 4: Gap-fill — ODB sidecar Ariadne + /trades/gap-fill
 | `KlineChartKind::Odb`    | `data/src/chart/kline.rs`            | Chart type variant                         |
 | `RangeBarMicrostructure` | `data/src/aggr/ticks.rs`             | Sidecar: trade_count, ofi, trade_intensity |
 | `ChKline`                | `exchange/src/adapter/clickhouse.rs` | ClickHouse row deserialization             |
-| `ODB_THRESHOLDS`         | `data/src/chart.rs`                  | `[250, 500, 750, 1000]` dbps               |
+| `ODB_THRESHOLDS`         | `data/src/chart.rs`                  | `[100, 250, 500, 750]` dbps                |
 | `ContentKind::OdbChart`  | `data/src/layout/pane.rs`            | Pane serialization variant                 |
 
 **Threshold display**: `BPR{dbps/10}` — BPR25 = 250 dbps = 0.25%, BPR50 = 500 dbps, etc.
