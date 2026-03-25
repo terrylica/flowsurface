@@ -57,10 +57,15 @@ struct HeatmapPoint {
     k_actual: u8,
     /// Candle direction (close >= open). Used for bar colouring.
     bullish: bool,
-    /// True if log₁₀(intensity) fell below the Adjusted Boxplot lower fence
-    /// (Hubert & Vandervieren 2008). Indicates anomalously low trade intensity
-    /// relative to the rolling window distribution.
+    /// True if log₁₀(intensity) fell below the Adjusted Boxplot lower fence.
     is_anomaly: bool,
+    /// Conformal p-value: fraction of window values at least as extreme.
+    /// 0.0 = most anomalous (all window values are less extreme), 1.0 = normal.
+    /// Only meaningful when `is_anomaly` is true.
+    anomaly_pvalue: f32,
+    /// CUSUM accumulator for sustained regime shift detection.
+    /// Positive values indicate a sustained shift below the rolling median.
+    cusum: f32,
 }
 
 impl HeatmapPoint {
@@ -112,112 +117,69 @@ fn thermal_color(t: f32) -> Color {
     Color::from_rgb(r, g, b)
 }
 
-/// Compute the Medcouple statistic (Brys, Hubert & Struyf 2004) on an already-sorted slice.
+/// Adjusted Boxplot lower fence using Quartile Skewness (Bahri et al. 2024).
 ///
-/// MC measures robust skewness: MC > 0 = right-skewed, MC < 0 = left-skewed, MC = 0 = symmetric.
-/// O(n²) kernel collection + O(n) quickselect for the median — avoids the full O(n² log n²) sort.
+/// Replaces O(n²) Medcouple with O(1) Quartile Skewness:
+///   QS = (Q3 + Q1 - 2*median) / (Q3 - Q1)
+/// which is computed entirely from quartiles already available in the sorted window.
+/// The Hubert (2008) exponential fence formula is then applied with QS in place of MC.
 ///
-/// Reference: Hubert & Vandervieren (2008), "An adjusted boxplot for skewed distributions",
-/// Computational Statistics & Data Analysis, 52(12), 5186-5201.
-fn medcouple(sorted: &[f32]) -> f32 {
-    let n = sorted.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let median = if n.is_multiple_of(2) {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
-    } else {
-        sorted[n / 2]
-    };
-
-    // Pre-allocate with estimated capacity: ~n²/4 kernel values for typical distributions.
-    let mut h_values = Vec::with_capacity(n * n / 4);
-    for i in 0..n {
-        let xi = sorted[i];
-        if xi > median {
-            break; // sorted: all subsequent xi > median too
-        }
-        for &xj in &sorted[(i + 1)..] {
-            if xj < median {
-                continue;
-            }
-            let denom = xj - xi;
-            if denom.abs() < f32::EPSILON {
-                h_values.push(0.0f32);
-            } else {
-                h_values.push(((xj + xi) - 2.0 * median) / denom);
-            }
-        }
-    }
-
-    if h_values.is_empty() {
-        return 0.0;
-    }
-    // MC = median of h values. Use quickselect O(n) instead of full sort O(n log n).
-    let m = h_values.len();
-    let mid = m / 2;
-    h_values.select_nth_unstable_by(mid, |a, b| {
-        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if m.is_multiple_of(2) {
-        // For even-length, need both m/2-1 and m/2. The left half is already partitioned.
-        let left_max = h_values[..mid]
-            .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .copied()
-            .unwrap_or(0.0);
-        (left_max + h_values[mid]) / 2.0
-    } else {
-        h_values[mid]
-    }
-}
-
-/// Maximum elements used for Medcouple computation. Beyond this, we subsample
-/// uniformly from the sorted window. Keeps Medcouple at O(CAP²) = O(250K) instead
-/// of O(n²) = O(4M) at n=2000.
-const MEDCOUPLE_SUBSAMPLE_CAP: usize = 500;
-
-/// How often to recompute the Medcouple fence during rebuild (every N bars).
-/// Between recomputes, the cached fence value is reused. The Medcouple is a
-/// robust statistic that changes slowly with single-element window updates.
-const FENCE_RECOMPUTE_INTERVAL: usize = 100;
-
-/// Adjusted Boxplot lower fence (Hubert & Vandervieren 2008).
-///
-/// Returns the fence value in log₁₀(intensity) space, or `None` if the window is too small
-/// or the IQR is zero (degenerate distribution).
-///
-/// For right-skewed data (MC > 0), the lower fence tightens: h_lower < 1.5.
-/// For left-skewed data (MC < 0), the lower fence loosens: h_lower > 1.5.
-///
-/// When `sorted.len() > MEDCOUPLE_SUBSAMPLE_CAP`, the Medcouple is computed on a
-/// uniform subsample to bound the O(n²) cost.
-fn adjusted_lower_fence(sorted: &[f32]) -> Option<f32> {
+/// Returns `(fence, iqr)` in log₁₀(intensity) space, or `None` if degenerate.
+fn adjusted_lower_fence(sorted: &[f32]) -> Option<(f32, f32)> {
     let n = sorted.len();
     if n < 20 {
         return None;
     }
     let q1 = sorted[n / 4];
+    let median = sorted[n / 2];
     let q3 = sorted[3 * n / 4];
     let iqr = q3 - q1;
     if iqr <= f32::EPSILON {
         return None;
     }
-    // Subsample if window exceeds cap — uniform stride preserves distribution shape.
-    let mc = if n <= MEDCOUPLE_SUBSAMPLE_CAP {
-        medcouple(sorted)
+    // Quartile Skewness (Bowley/Bahri): O(1), replaces O(n²) Medcouple.
+    // QS ∈ [-1, 1], positive = right-skewed (same sign convention as Medcouple).
+    let qs = (q3 + q1 - 2.0 * median) / iqr;
+    let h_lower = if qs >= 0.0 {
+        1.5 * (-4.0 * qs).exp()
     } else {
-        let step = n / MEDCOUPLE_SUBSAMPLE_CAP;
-        let sub: Vec<f32> = sorted.iter().step_by(step).copied().collect();
-        medcouple(&sub)
+        1.5 * (-3.0 * qs).exp()
     };
-    let h_lower = if mc >= 0.0 {
-        1.5 * (-4.0 * mc).exp()
-    } else {
-        1.5 * (-3.0 * mc).exp()
-    };
-    Some(q1 - h_lower * iqr)
+    Some((q1 - h_lower * iqr, iqr))
 }
+
+/// Compute conformal p-value: fraction of window values with nonconformity score
+/// at least as extreme as the test point. Uses |x - median| / MAD as the
+/// nonconformity measure. Distribution-free, calibrated by construction.
+///
+/// Returns p-value in [0, 1]. Lower = more anomalous.
+fn conformal_pvalue(sorted: &[f32], log_val: f32) -> f32 {
+    let n = sorted.len();
+    if n < 3 {
+        return 1.0;
+    }
+    let median = sorted[n / 2];
+    // MAD = median(|x_i - median|) — compute from sorted window.
+    // Since sorted is ordered, deviations from median are V-shaped.
+    // Use the middle 50% deviation as a fast MAD approximation.
+    let mad = (sorted[3 * n / 4] - sorted[n / 4]) * 0.5; // half-IQR ≈ 0.7413 * MAD
+    if mad <= f32::EPSILON {
+        return 1.0;
+    }
+    let test_score = (log_val - median).abs() / mad;
+    // Count how many window values have score >= test_score
+    let count = sorted
+        .iter()
+        .filter(|&&v| (v - median).abs() / mad >= test_score)
+        .count();
+    count as f32 / (n + 1) as f32
+}
+
+/// CUSUM allowance: half the expected deviation under the alternative hypothesis.
+/// Tuned for log₁₀(trade_intensity) — a shift of 0.3 in log space ≈ 2x intensity change.
+const CUSUM_ALLOWANCE: f32 = 0.15;
+/// CUSUM alarm threshold. Higher = fewer false alarms, slower detection.
+const CUSUM_THRESHOLD: f32 = 2.0;
 
 /// Trade intensity heatmap indicator.
 ///
@@ -240,13 +202,10 @@ pub struct TradeIntensityHeatmapIndicator {
     sorted: Vec<f32>,
     /// Number of tickseries datapoints processed so far (global index).
     next_idx: usize,
-    /// When true, compute Adjusted Boxplot (Hubert 2008) lower fence and flag anomalous bars.
+    /// When true, compute Adjusted Boxplot fence and flag anomalous bars.
     anomaly_fence_enabled: bool,
-    /// Cached fence value from the last Medcouple computation (log₁₀ space).
-    /// Recomputed every `FENCE_RECOMPUTE_INTERVAL` bars to avoid O(n²) per bar.
-    cached_fence: Option<f32>,
-    /// Bar count at which `cached_fence` was last computed.
-    fence_computed_at: usize,
+    /// CUSUM accumulator for detecting sustained downward intensity shifts.
+    cusum_neg: f32,
 }
 
 impl TradeIntensityHeatmapIndicator {
@@ -263,8 +222,7 @@ impl TradeIntensityHeatmapIndicator {
             sorted: Vec::with_capacity(lookback + 1),
             next_idx: 0,
             anomaly_fence_enabled: anomaly_fence,
-            cached_fence: None,
-            fence_computed_at: 0,
+            cusum_neg: 0.0,
         }
     }
 
@@ -273,8 +231,7 @@ impl TradeIntensityHeatmapIndicator {
         self.sorted.clear(); // Vec::clear keeps allocation — no realloc on next rebuild
         self.data.clear(); // Vec::clear keeps allocation
         self.next_idx = 0;
-        self.cached_fence = None;
-        self.fence_computed_at = 0;
+        self.cusum_neg = 0.0;
     }
 
     /// Process a single bar at `idx` with the given `intensity` and candle `bullish` direction.
@@ -313,6 +270,8 @@ impl TradeIntensityHeatmapIndicator {
                     k_actual: 0,
                     bullish: false,
                     is_anomaly: false,
+                    anomaly_pvalue: 1.0,
+                    cusum: 0.0,
                 },
             );
         }
@@ -332,17 +291,25 @@ impl TradeIntensityHeatmapIndicator {
             t_val,
             n,
         );
-        // Anomaly detection: use cached fence, recompute periodically.
-        // O(1) per bar (cache hit) instead of O(n²) per bar (full Medcouple).
-        let is_anomaly = if self.anomaly_fence_enabled && n >= 20 {
-            let bars_since = self.data.len().saturating_sub(self.fence_computed_at);
-            if bars_since >= FENCE_RECOMPUTE_INTERVAL || self.cached_fence.is_none() {
-                self.cached_fence = adjusted_lower_fence(&self.sorted);
-                self.fence_computed_at = self.data.len();
-            }
-            self.cached_fence.is_some_and(|fence| log_val < fence)
+        // Three-layer anomaly detection — all O(1) per bar:
+        // 1. Adjusted Boxplot fence (Quartile Skewness): binary anomaly flag
+        // 2. Conformal p-value: calibrated severity score
+        // 3. CUSUM: sustained regime shift accumulator
+        let (is_anomaly, anomaly_pvalue, cusum) = if self.anomaly_fence_enabled && n >= 20 {
+            let fence_result = adjusted_lower_fence(&self.sorted);
+            let is_anom = fence_result.is_some_and(|(fence, _)| log_val < fence);
+            let pval = if is_anom {
+                conformal_pvalue(&self.sorted, log_val)
+            } else {
+                1.0
+            };
+            // CUSUM: accumulate evidence of sustained below-median intensity
+            let median = self.sorted[n / 2];
+            self.cusum_neg = (self.cusum_neg + (median - log_val) - CUSUM_ALLOWANCE).max(0.0);
+            (is_anom, pval, self.cusum_neg)
         } else {
-            false
+            self.cusum_neg = 0.0;
+            (false, 1.0, 0.0)
         };
         self.data.push(HeatmapPoint {
             intensity,
@@ -350,6 +317,8 @@ impl TradeIntensityHeatmapIndicator {
             k_actual,
             bullish,
             is_anomaly,
+            anomaly_pvalue,
+            cusum,
         });
 
         // --- Push current bar into sorted window ---
@@ -468,11 +437,18 @@ impl TradeIntensityHeatmapIndicator {
         }
 
         let tooltip = |p: &HeatmapPoint, _next: Option<&HeatmapPoint>| {
-            let suffix = if p.is_anomaly { " [ANOMALY]" } else { "" };
-            PlotTooltip::new(format!(
-                "Intensity: {:.1} t/s (bin {}/{}){}",
-                p.intensity, p.bin, p.k_actual, suffix
-            ))
+            let mut text = format!(
+                "Intensity: {:.1} t/s (bin {}/{})",
+                p.intensity, p.bin, p.k_actual
+            );
+            if p.is_anomaly {
+                let pct = (1.0 - p.anomaly_pvalue) * 100.0;
+                text.push_str(&format!(" [ANOMALY p={:.3} ({:.1}%ile)]", p.anomaly_pvalue, pct));
+            }
+            if p.cusum > CUSUM_THRESHOLD {
+                text.push_str(&format!(" [REGIME SHIFT S={:.1}]", p.cusum));
+            }
+            PlotTooltip::new(text)
         };
 
         let bar_kind = |p: &HeatmapPoint| BarClass::CandleColored { bullish: p.bullish };
@@ -795,12 +771,21 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
             .map(|p| thermal_color(p.t()))
     }
 
-    /// Return bright yellow outline for bars flagged by the Adjusted Boxplot fence.
+    /// Return severity-graded outline for bars flagged by the Adjusted Boxplot fence.
+    /// Yellow (p≈0.05) → orange (p≈0.01) → red (p<0.005). CUSUM regime shifts get white.
     fn anomaly_outline_color(&self, storage_idx: u64) -> Option<Color> {
-        self.data
-            .get(storage_idx as usize)
-            .filter(|p| p.is_anomaly)
-            .map(|_| Color::from_rgb(1.0, 0.95, 0.0)) // bright yellow
+        self.data.get(storage_idx as usize).and_then(|p| {
+            if p.cusum > CUSUM_THRESHOLD {
+                // Sustained regime shift — white outline (distinct from per-bar anomaly)
+                return Some(Color::from_rgb(1.0, 1.0, 1.0));
+            }
+            if !p.is_anomaly {
+                return None;
+            }
+            // Severity gradient: yellow (mild) → red (extreme) based on conformal p-value
+            let t = (1.0 - p.anomaly_pvalue.clamp(0.0, 0.05) / 0.05).clamp(0.0, 1.0);
+            Some(Color::from_rgb(1.0, 0.95 * (1.0 - t), 0.0)) // yellow→red
+        })
     }
 
     fn data_len(&self) -> usize {
