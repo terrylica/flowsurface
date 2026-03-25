@@ -4,6 +4,7 @@ pub mod indicator;
 pub(crate) mod interaction;
 pub mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
 pub mod kline;
+pub(crate) mod legend;
 pub(crate) mod scale;
 pub(crate) mod session;
 pub(crate) mod view_state;
@@ -14,6 +15,8 @@ pub use interaction::{AxisScaleClicked, Interaction, Message};
 pub(crate) use interaction::canvas_interaction;
 pub(crate) use interaction::{ZOOM_SENSITIVITY, TEXT_SIZE};
 pub use view_state::{Caches, PlotConstants, ViewState};
+pub use legend::draw_watermark;
+pub(crate) use legend::draw_volume_bar;
 
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::style;
@@ -23,10 +26,9 @@ use data::chart::{Autoscale, Basis, PlotData, indicator::Indicator};
 
 use scale::{AxisLabelsX, AxisLabelsY};
 
-use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Cache, Canvas, Geometry};
+use iced::widget::canvas::{self, Canvas};
 use iced::{
-    Alignment, Element, Length, Point, Renderer, Size, Theme, Vector,
+    Alignment, Element, Length, Theme, Vector,
     padding,
     widget::{button, center, column, container, mouse_area, row, rule, text},
 };
@@ -401,32 +403,6 @@ pub fn view<'a, T: Chart>(
     .into()
 }
 
-pub fn draw_watermark(
-    cache: &Cache,
-    renderer: &Renderer,
-    bounds_size: Size,
-    palette: &Extended,
-) -> Geometry {
-    cache.draw(renderer, bounds_size, |frame| {
-        let content = format!(
-            "v{} \u{00B7} ODB {} \u{00B7} {}",
-            env!("CARGO_PKG_VERSION"),
-            env!("FLOWSURFACE_ODB_VERSION"),
-            env!("FLOWSURFACE_BUILD_TIME"),
-        );
-        frame.fill_text(canvas::Text {
-            content,
-            position: Point::new(8.0, bounds_size.height - 8.0),
-            size: iced::Pixels(13.0),
-            color: palette.background.base.text.scale_alpha(0.3),
-            font: style::AZERET_MONO,
-            align_x: Alignment::Start.into(),
-            align_y: Alignment::End.into(),
-            ..canvas::Text::default()
-        });
-    })
-}
-
 pub(crate) fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Action> {
     let range_clone = range.clone();
     match handler.add_request(range) {
@@ -447,71 +423,3 @@ pub(crate) fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> 
     }
 }
 
-pub(crate) fn draw_volume_bar(
-    frame: &mut canvas::Frame,
-    start_x: f32,
-    start_y: f32,
-    buy_qty: f32,
-    sell_qty: f32,
-    max_qty: f32,
-    bar_length: f32,
-    thickness: f32,
-    buy_color: iced::Color,
-    sell_color: iced::Color,
-    bar_color_alpha: f32,
-    horizontal: bool,
-) {
-    let total_qty = buy_qty + sell_qty;
-    if total_qty <= 0.0 || max_qty <= 0.0 {
-        return;
-    }
-
-    let total_bar_length = (total_qty / max_qty) * bar_length;
-
-    let buy_proportion = buy_qty / total_qty;
-    let sell_proportion = sell_qty / total_qty;
-
-    let buy_bar_length = buy_proportion * total_bar_length;
-    let sell_bar_length = sell_proportion * total_bar_length;
-
-    if horizontal {
-        let start_y = start_y - (thickness / 2.0);
-
-        if sell_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(start_x, start_y),
-                Size::new(sell_bar_length, thickness),
-                sell_color.scale_alpha(bar_color_alpha),
-            );
-        }
-
-        if buy_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(start_x + sell_bar_length, start_y),
-                Size::new(buy_bar_length, thickness),
-                buy_color.scale_alpha(bar_color_alpha),
-            );
-        }
-    } else {
-        let start_x = start_x - (thickness / 2.0);
-
-        if sell_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(start_x, start_y + (bar_length - sell_bar_length)),
-                Size::new(thickness, sell_bar_length),
-                sell_color.scale_alpha(bar_color_alpha),
-            );
-        }
-
-        if buy_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(
-                    start_x,
-                    start_y + (bar_length - sell_bar_length - buy_bar_length),
-                ),
-                Size::new(thickness, buy_bar_length),
-                buy_color.scale_alpha(bar_color_alpha),
-            );
-        }
-    }
-}
