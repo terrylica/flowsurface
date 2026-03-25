@@ -1,110 +1,69 @@
 //! Reusable anomaly detection primitives for rolling-window statistical analysis.
 //!
 //! **Design for upstream extraction**: This module is pure math with zero framework
-//! dependencies (no iced, no async, no alloc beyond what `&[f32]` provides). It can
-//! be extracted into a standalone crate (e.g., `opendeviationbar-anomaly`) for use as
-//! ClickHouse columnar features computed during bar construction in opendeviationbar-py.
+//! dependencies. Can be extracted into a standalone crate for ClickHouse columnar
+//! features in opendeviationbar-py.
 //!
-//! Three complementary layers, all O(1) per bar on a pre-sorted window:
-//! 1. **Adjusted Boxplot fence** — Quartile Skewness (Bahri 2024) + Hubert (2008) exponential formula
-//! 2. **Conformal p-values** — distribution-free calibrated severity scoring
-//! 3. **CUSUM** — cumulative sum control chart for sustained regime shift detection
+//! Two complementary layers — **zero magic numbers**, only interpretable statistical parameters:
+//! 1. **Conformal rank** — distribution-free anomaly detection via empirical rank (Vovk 2005)
+//! 2. **CUSUM** — cumulative sum control chart for sustained regime shift detection (Page 1954)
 //!
 //! All functions operate on a sorted `&[f32]` window (ascending order).
-//! For upstream use with f64, the algorithms are identical — only the type changes.
 
-/// Result from the adjusted boxplot fence computation.
-///
-/// Contains all intermediate values needed for downstream severity scoring,
-/// so callers don't need to recompute quartiles.
-#[derive(Debug, Clone, Copy)]
-pub struct FenceResult {
-    /// Lower fence value. Observations below this are flagged as anomalous.
-    pub fence: f32,
-    /// Interquartile range (Q3 - Q1). Used for graduated severity: `(fence - x) / iqr`.
-    pub iqr: f32,
-    /// Quartile Skewness (Bowley coefficient) in [-1, 1]. Positive = right-skewed.
-    /// Equivalent to Medcouple at 12.5% breakdown point (vs MC's 25%).
-    pub skewness: f32,
-}
+/// Default significance level for anomaly detection.
+/// α = 0.05 means "flag if in the bottom 5% of the rolling window."
+/// This is a standard significance level, not a magic constant — it has a clear
+/// probabilistic interpretation: P(false alarm) ≤ α under exchangeability.
+pub const DEFAULT_ANOMALY_ALPHA: f32 = 0.05;
 
-/// Adjusted Boxplot lower fence using Quartile Skewness (Bahri et al. 2024).
+/// Conformal anomaly test: is `value` in the bottom α-fraction of `sorted`?
 ///
-/// Replaces O(n²) Medcouple with O(1) Quartile Skewness:
-///   `QS = (Q3 + Q1 - 2*median) / (Q3 - Q1)`
-/// The Hubert (2008) exponential formula adapts the fence multiplier for skewness:
-///   `h_lower = 1.5 * exp(-4*QS)` when QS >= 0 (right-skewed → tighter fence)
-///   `h_lower = 1.5 * exp(-3*QS)` when QS < 0 (left-skewed → looser fence)
-///   `fence = Q1 - h_lower * IQR`
-///
-/// # Requirements
-/// - `sorted` must be in ascending order
-/// - At least 20 elements for stable quartile estimates
-///
-/// # Returns
-/// `None` if window too small or degenerate (IQR ≈ 0).
-///
-/// # References
-/// - Hubert & Vandervieren (2008), "An adjusted boxplot for skewed distributions"
-/// - Bahri et al. (2024), "Online boxplot derived outlier detection"
-pub fn adjusted_lower_fence(sorted: &[f32]) -> Option<FenceResult> {
-    let n = sorted.len();
-    if n < 20 {
-        return None;
-    }
-    let q1 = sorted[n / 4];
-    let median = sorted[n / 2];
-    let q3 = sorted[3 * n / 4];
-    let iqr = q3 - q1;
-    if iqr <= f32::EPSILON {
-        return None;
-    }
-    let qs = (q3 + q1 - 2.0 * median) / iqr;
-    let h_lower = if qs >= 0.0 {
-        1.5 * (-4.0 * qs).exp()
-    } else {
-        1.5 * (-3.0 * qs).exp()
-    };
-    Some(FenceResult {
-        fence: q1 - h_lower * iqr,
-        iqr,
-        skewness: qs,
-    })
-}
-
-/// Compute conformal p-value: fraction of window values with nonconformity score
-/// at least as extreme as the test point.
-///
-/// Uses `|x - median| / MAD` as the nonconformity measure (MAD approximated as
-/// half-IQR for O(1) computation on sorted data).
+/// Pure rank-based — automatically handles skewness, heavy tails, multimodality.
+/// No magic numbers, no skewness adjustments, no calibration constants.
 ///
 /// # Guarantees
 /// - Distribution-free: valid under exchangeability (no distributional assumptions)
-/// - Calibrated: P(p-value ≤ α) ≤ α for any significance level α
-/// - Range: [0, 1] where lower = more anomalous
+/// - Finite-sample exact: P(false alarm) ≤ α for any n, any distribution
+/// - Invariant to monotone transformations (rank-based)
+///
+/// # Returns
+/// `true` if `value` is below the α-quantile of the window.
 ///
 /// # Complexity
-/// O(n) — iterates the sorted window once. For O(1) amortized, maintain a
-/// pre-computed count of values exceeding each nonconformity threshold.
+/// O(log n) — single binary search on the sorted window.
 ///
 /// # References
 /// - Vovk, Gammerman & Shafer (2005), "Algorithmic Learning in a Random World"
+pub fn is_anomalous(sorted: &[f32], value: f32, alpha: f32) -> bool {
+    let n = sorted.len();
+    if n < 20 {
+        return false;
+    }
+    let rank = sorted.partition_point(|&v| v < value);
+    let p_value = (rank + 1) as f32 / (n + 1) as f32;
+    p_value < alpha
+}
+
+/// Compute conformal p-value: empirical rank of `value` within the sorted window.
+///
+/// p-value = (rank + 1) / (n + 1), where rank = number of window values < value.
+/// Lower p-value = more extreme (more anomalous).
+///
+/// # Guarantees
+/// Same as `is_anomalous` — distribution-free, finite-sample exact.
+///
+/// # Returns
+/// p-value in (0, 1]. Values near 0 are extreme outliers; 0.5 is median.
+///
+/// # Complexity
+/// O(log n) — single binary search.
 pub fn conformal_pvalue(sorted: &[f32], value: f32) -> f32 {
     let n = sorted.len();
     if n < 3 {
         return 1.0;
     }
-    let median = sorted[n / 2];
-    let mad = (sorted[3 * n / 4] - sorted[n / 4]) * 0.5;
-    if mad <= f32::EPSILON {
-        return 1.0;
-    }
-    let test_score = (value - median).abs() / mad;
-    let count = sorted
-        .iter()
-        .filter(|&&v| (v - median).abs() / mad >= test_score)
-        .count();
-    count as f32 / (n + 1) as f32
+    let rank = sorted.partition_point(|&v| v < value);
+    (rank + 1) as f32 / (n + 1) as f32
 }
 
 /// CUSUM (Cumulative Sum) control chart for detecting sustained downward shifts.
@@ -119,14 +78,7 @@ pub fn conformal_pvalue(sorted: &[f32], value: f32) -> f32 {
 /// * `allowance` — minimum shift to detect (half the expected deviation under H₁)
 ///
 /// # Returns
-/// Updated CUSUM value (≥ 0). Compare against `DEFAULT_CUSUM_THRESHOLD` to trigger alarms.
-///
-/// # Example (upstream columnar use)
-/// ```text
-/// // In opendeviationbar-py bar construction:
-/// let cusum = cusum_negative(prev_cusum, log10_intensity, window_median, 0.15);
-/// bar.anomaly_cusum = cusum;  // stored as ClickHouse Float32 column
-/// ```
+/// Updated CUSUM value (≥ 0). Compare against a threshold to trigger alarms.
 ///
 /// # References
 /// - Page (1954), "Continuous Inspection Schemes"

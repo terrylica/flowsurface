@@ -232,18 +232,12 @@ impl TradeIntensityHeatmapIndicator {
             t_val,
             n,
         );
-        // Three-layer anomaly detection — all O(1) per bar:
-        // 1. Adjusted Boxplot fence (Quartile Skewness): binary anomaly flag
-        // 2. Conformal p-value: calibrated severity score
-        // 3. CUSUM: sustained regime shift accumulator
+        // Two-layer anomaly detection — O(log n) per bar, zero magic numbers:
+        // 1. Conformal rank: is this bar in the bottom α% of the rolling window?
+        // 2. CUSUM: sustained regime shift accumulator
         let (is_anomaly, anomaly_pvalue, cusum) = if self.anomaly_fence_enabled && n >= 20 {
-            let fence_result = anomaly::adjusted_lower_fence(&self.sorted);
-            let is_anom = fence_result.is_some_and(|r| log_val < r.fence);
-            let pval = if is_anom {
-                anomaly::conformal_pvalue(&self.sorted, log_val)
-            } else {
-                1.0
-            };
+            let pval = anomaly::conformal_pvalue(&self.sorted, log_val);
+            let is_anom = pval < anomaly::DEFAULT_ANOMALY_ALPHA;
             // CUSUM: accumulate evidence of sustained below-median intensity
             let median = self.sorted[n / 2];
             self.cusum_neg = anomaly::cusum_negative(self.cusum_neg, log_val, median, CUSUM_ALLOWANCE);
@@ -712,20 +706,21 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
             .map(|p| thermal_color(p.t()))
     }
 
-    /// Return severity-graded outline for bars flagged by the Adjusted Boxplot fence.
-    /// Yellow (p≈0.05) → orange (p≈0.01) → red (p<0.005). CUSUM regime shifts get white.
+    /// Return severity-graded outline for anomalous bars.
+    /// Yellow (p≈α) → red (p→0) based on conformal p-value. CUSUM regime shifts: white.
     fn anomaly_outline_color(&self, storage_idx: u64) -> Option<Color> {
         self.data.get(storage_idx as usize).and_then(|p| {
             if p.cusum > CUSUM_THRESHOLD {
-                // Sustained regime shift — white outline (distinct from per-bar anomaly)
                 return Some(Color::from_rgb(1.0, 1.0, 1.0));
             }
             if !p.is_anomaly {
                 return None;
             }
-            // Severity gradient: yellow (mild) → red (extreme) based on conformal p-value
-            let t = (1.0 - p.anomaly_pvalue.clamp(0.0, 0.05) / 0.05).clamp(0.0, 1.0);
-            Some(Color::from_rgb(1.0, 0.95 * (1.0 - t), 0.0)) // yellow→red
+            // Severity: p-value normalized to [0,1] within the anomaly range [0, α].
+            // p near α → yellow (mild), p near 0 → red (extreme).
+            let alpha = anomaly::DEFAULT_ANOMALY_ALPHA;
+            let t = (1.0 - p.anomaly_pvalue / alpha).clamp(0.0, 1.0);
+            Some(Color::from_rgb(1.0, 0.95 * (1.0 - t), 0.0))
         })
     }
 
