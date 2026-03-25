@@ -2220,6 +2220,7 @@ impl Content {
                 c.set_ofi_ema_period(cfg.ofi_ema_period);
                 c.set_intensity_lookback(cfg.intensity_lookback);
                 c.set_thermal_wicks(cfg.thermal_wicks);
+                c.set_anomaly_fence(cfg.anomaly_fence);
                 c.set_show_sessions(cfg.show_sessions);
             }
             _ => {}

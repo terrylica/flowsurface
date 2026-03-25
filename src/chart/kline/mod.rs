@@ -1013,7 +1013,7 @@ impl KlineChart {
         self.kline_config.intensity_lookback = lookback;
         if self.indicators[KlineIndicator::TradeIntensityHeatmap].is_some() {
             let mut new_indi: Box<dyn KlineIndicatorImpl> = Box::new(
-                indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_lookback(lookback),
+                indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_config(lookback, self.kline_config.anomaly_fence),
             );
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::TradeIntensityHeatmap] = Some(new_indi);
@@ -1023,6 +1023,22 @@ impl KlineChart {
 
     pub fn set_thermal_wicks(&mut self, enabled: bool) {
         self.kline_config.thermal_wicks = enabled;
+        self.invalidate(None);
+    }
+
+    pub fn set_anomaly_fence(&mut self, enabled: bool) {
+        self.kline_config.anomaly_fence = enabled;
+        // Rebuild heatmap indicator — anomaly flags must be recomputed for all bars
+        if self.indicators[KlineIndicator::TradeIntensityHeatmap].is_some() {
+            let mut new_indi: Box<dyn KlineIndicatorImpl> = Box::new(
+                indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_config(
+                    self.kline_config.intensity_lookback,
+                    enabled,
+                ),
+            );
+            new_indi.rebuild_from_source(&self.data_source);
+            self.indicators[KlineIndicator::TradeIntensityHeatmap] = Some(new_indi);
+        }
         self.invalidate(None);
     }
 

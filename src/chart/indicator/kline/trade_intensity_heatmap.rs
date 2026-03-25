@@ -229,10 +229,6 @@ impl TradeIntensityHeatmapIndicator {
         Self::with_config(2000, true)
     }
 
-    pub fn with_lookback(lookback: usize) -> Self {
-        Self::with_config(lookback, true)
-    }
-
     pub fn with_config(lookback: usize, anomaly_fence: bool) -> Self {
         Self {
             cache: Caches::default(),
