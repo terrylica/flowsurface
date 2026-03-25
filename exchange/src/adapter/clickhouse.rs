@@ -131,8 +131,8 @@ pub async fn init_odb_symbols() -> Vec<String> {
 async fn validate_schema() {
     // Check expected columns exist in the open_deviation_bars table
     let expected_cols = [
-        "close_time_ms",
-        "open_time_ms",
+        "close_time_us",
+        "open_time_us",
         "open",
         "high",
         "low",
@@ -186,7 +186,7 @@ async fn validate_schema() {
     // the compiled crate version to detect sidecar↔app version skew.
     let crate_ver = opendeviationbar_core::Checkpoint::library_version();
     let ver_sql = "SELECT opendeviationbar_version FROM opendeviationbar_cache.open_deviation_bars \
-                   ORDER BY close_time_ms DESC LIMIT 1 FORMAT TabSeparated";
+                   ORDER BY close_time_us DESC LIMIT 1 FORMAT TabSeparated";
     match query(ver_sql).await {
         Ok(body) => {
             if let Some(sidecar_ver) = body
@@ -325,9 +325,9 @@ pub fn bare_symbol(ticker_info: &TickerInfo) -> String {
 
 #[derive(Debug, Deserialize, serde::Serialize)]
 struct ChKline {
-    close_time_ms: i64,
+    close_time_us: i64,
     #[serde(default)]
-    open_time_ms: Option<i64>,
+    open_time_us: Option<i64>,
     open: f64,
     high: f64,
     low: f64,
@@ -368,7 +368,7 @@ pub async fn fetch_klines(
             .map_err(|e| AdapterError::ParseError(format!("ClickHouse kline parse: {e}")))?;
 
         klines.push(Kline::new(
-            ck.close_time_ms as u64,
+            (ck.close_time_us / 1000) as u64,
             ck.open as f32,
             ck.high as f32,
             ck.low as f32,
@@ -396,7 +396,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     // Both paths use DESC ordering + reverse to get the N most recent bars
     // within the requested window. ASC ordering would return bars from the
     // beginning of time, creating gaps when loading historical data.
-    let cols = "close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
+    let cols = "close_time_us, open_time_us, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity, \
                 first_agg_trade_id, last_agg_trade_id";
     // Filter by ouroboros_mode (default: 'day'). Day-mode is the current production
@@ -423,20 +423,23 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
              FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
                AND ouroboros_mode = '{}' \
-             ORDER BY close_time_ms DESC \
+             ORDER BY close_time_us DESC \
              LIMIT {adaptive_limit} \
              FORMAT JSONEachRow",
             *OUROBOROS_MODE
         )
     } else {
         let (start, end) = range.unwrap();
+        // App passes ms timestamps; CH column is in µs — convert at boundary.
+        let start_us = start.saturating_mul(1000);
+        let end_us = end.saturating_mul(1000);
         format!(
             "SELECT {cols} \
              FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
                AND ouroboros_mode = '{}' \
-               AND close_time_ms BETWEEN {start} AND {end} \
-             ORDER BY close_time_ms DESC \
+               AND close_time_us BETWEEN {start_us} AND {end_us} \
+             ORDER BY close_time_us DESC \
              LIMIT 2000 \
              FORMAT JSONEachRow",
             *OUROBOROS_MODE
@@ -477,7 +480,7 @@ pub async fn fetch_klines_with_microstructure(
     let mut klines = Vec::new();
     let mut micro = Vec::new();
     let mut agg_id_ranges = Vec::new();
-    let mut open_time_ms_vec: Vec<Option<u64>> = Vec::new();
+    let mut open_time_ms_list: Vec<Option<u64>> = Vec::new();
 
     for line in body.lines() {
         let line = line.trim();
@@ -488,7 +491,7 @@ pub async fn fetch_klines_with_microstructure(
             .map_err(|e| AdapterError::ParseError(format!("ClickHouse kline parse: {e}")))?;
 
         klines.push(Kline::new(
-            ck.close_time_ms as u64,
+            (ck.close_time_us / 1000) as u64,
             ck.open as f32,
             ck.high as f32,
             ck.low as f32,
@@ -501,16 +504,16 @@ pub async fn fetch_klines_with_microstructure(
         ));
         micro.push(parse_microstructure(&ck));
         agg_id_ranges.push(ck.first_agg_trade_id.zip(ck.last_agg_trade_id));
-        open_time_ms_vec.push(ck.open_time_ms.map(|ms| ms as u64));
+        open_time_ms_list.push(ck.open_time_us.map(|us| (us / 1000) as u64));
     }
 
     // DESC order → reverse to ascending (oldest first)
     klines.reverse();
     micro.reverse();
     agg_id_ranges.reverse();
-    open_time_ms_vec.reverse();
+    open_time_ms_list.reverse();
 
-    Ok((klines, micro, agg_id_ranges, open_time_ms_vec))
+    Ok((klines, micro, agg_id_ranges, open_time_ms_list))
 }
 
 // -- Backfill request (Issue #97: on-demand trigger for opendeviationbar-py) --
@@ -584,7 +587,7 @@ pub fn connect_kline_stream(
         // (e.g. SSH tunnel not yet up) would otherwise set last_ts=0, causing
         // the poll loop to crawl from epoch through all historical data.
         let max_ts_sql = format!(
-            "SELECT max(close_time_ms) AS ts FROM opendeviationbar_cache.open_deviation_bars \
+            "SELECT max(close_time_us) AS ts FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                AND ouroboros_mode = '{}' FORMAT JSONEachRow",
             symbol, threshold_dbps, *OUROBOROS_MODE
@@ -639,13 +642,13 @@ pub fn connect_kline_stream(
             tokio::time::sleep(Duration::from_secs(5)).await;
 
             let sql = format!(
-                "SELECT close_time_ms, open_time_ms, open, high, low, close, buy_volume, sell_volume, \
+                "SELECT close_time_us, open_time_us, open, high, low, close, buy_volume, sell_volume, \
                         individual_trade_count, ofi, trade_intensity \
                  FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                    AND ouroboros_mode = '{}' \
-                   AND close_time_ms > {} \
-                 ORDER BY close_time_ms ASC \
+                   AND close_time_us > {} \
+                 ORDER BY close_time_us ASC \
                  LIMIT 100 \
                  FORMAT JSONEachRow",
                 symbol, threshold_dbps, *OUROBOROS_MODE, last_ts
@@ -660,10 +663,12 @@ pub fn connect_kline_stream(
                             continue;
                         }
                         if let Ok(ck) = serde_json::from_str::<ChKline>(line) {
-                            let ts = ck.close_time_ms as u64;
-                            if ts > last_ts {
-                                last_ts = ts;
+                            // last_ts stays in µs for SQL WHERE clause comparison
+                            let ts_us = ck.close_time_us as u64;
+                            if ts_us > last_ts {
+                                last_ts = ts_us;
                             }
+                            let ts = (ck.close_time_us / 1000) as u64;
                             let raw_f64 = [
                                 ck.open,
                                 ck.high,
@@ -700,7 +705,7 @@ pub fn connect_kline_stream(
                                     Some(raw_f64),
                                     ck.first_agg_trade_id.zip(ck.last_agg_trade_id),
                                     micro,
-                                    ck.open_time_ms.map(|ms| ms as u64),
+                                    ck.open_time_us.map(|us| (us / 1000) as u64),
                                 ))
                                 .await;
                             count += 1;
@@ -717,12 +722,12 @@ pub fn connect_kline_stream(
 
                         // Defense in depth: if last_ts is >30 days behind now,
                         // the watermark likely started from 0 due to a failed init.
-                        // Re-query max(close_time_ms) to jump to the present.
-                        let now_ms = std::time::SystemTime::now()
+                        // Re-query max(close_time_us) to jump to the present.
+                        let now_us = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
+                            .map(|d| d.as_micros() as u64)
                             .unwrap_or(0);
-                        if last_ts < now_ms.saturating_sub(30 * 86_400_000) {
+                        if last_ts < now_us.saturating_sub(30 * 86_400_000_000) {
                             log::warn!(
                                 "[CH poll] {} @{}: last_ts={} is >30 days stale, re-initializing watermark",
                                 symbol,
