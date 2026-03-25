@@ -115,7 +115,7 @@ fn thermal_color(t: f32) -> Color {
 /// Compute the Medcouple statistic (Brys, Hubert & Struyf 2004) on an already-sorted slice.
 ///
 /// MC measures robust skewness: MC > 0 = right-skewed, MC < 0 = left-skewed, MC = 0 = symmetric.
-/// O(n²) naive implementation — acceptable for n ≤ 7000 (~50ms worst case on Apple Silicon).
+/// O(n²) kernel collection + O(n) quickselect for the median — avoids the full O(n² log n²) sort.
 ///
 /// Reference: Hubert & Vandervieren (2008), "An adjusted boxplot for skewed distributions",
 /// Computational Statistics & Data Analysis, 52(12), 5186-5201.
@@ -130,21 +130,19 @@ fn medcouple(sorted: &[f32]) -> f32 {
         sorted[n / 2]
     };
 
-    // Collect all h(xi, xj) kernel values where xi <= median <= xj and xi != xj.
-    // h(xi, xj) = ((xj - median) + (xi - median)) / (xj - xi)
-    //           = ((xj + xi) - 2*median) / (xj - xi)
-    let mut h_values = Vec::new();
+    // Pre-allocate with estimated capacity: ~n²/4 kernel values for typical distributions.
+    let mut h_values = Vec::with_capacity(n * n / 4);
     for i in 0..n {
-        for j in (i + 1)..n {
-            let xi = sorted[i];
-            let xj = sorted[j];
-            // Only pairs where xi <= median <= xj contribute
-            if xi > median || xj < median {
+        let xi = sorted[i];
+        if xi > median {
+            break; // sorted: all subsequent xi > median too
+        }
+        for &xj in &sorted[(i + 1)..] {
+            if xj < median {
                 continue;
             }
             let denom = xj - xi;
             if denom.abs() < f32::EPSILON {
-                // Both equal to median → h = 0 by convention (sign function)
                 h_values.push(0.0f32);
             } else {
                 h_values.push(((xj + xi) - 2.0 * median) / denom);
@@ -155,13 +153,22 @@ fn medcouple(sorted: &[f32]) -> f32 {
     if h_values.is_empty() {
         return 0.0;
     }
-    // MC = median of all h values
-    h_values.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // MC = median of h values. Use quickselect O(n) instead of full sort O(n log n).
     let m = h_values.len();
+    let mid = m / 2;
+    h_values.select_nth_unstable_by(mid, |a, b| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+    });
     if m.is_multiple_of(2) {
-        (h_values[m / 2 - 1] + h_values[m / 2]) / 2.0
+        // For even-length, need both m/2-1 and m/2. The left half is already partitioned.
+        let left_max = h_values[..mid]
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .copied()
+            .unwrap_or(0.0);
+        (left_max + h_values[mid]) / 2.0
     } else {
-        h_values[m / 2]
+        h_values[mid]
     }
 }
 

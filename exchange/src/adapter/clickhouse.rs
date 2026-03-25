@@ -357,13 +357,10 @@ pub async fn fetch_klines(
     let sql = build_odb_sql(&symbol, threshold_dbps, range);
 
     let body = query(&sql).await?;
-    let mut klines = Vec::new();
+    let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let mut klines = Vec::with_capacity(lines.len());
 
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+    for line in lines.into_iter().rev() {
         let ck: ChKline = serde_json::from_str(line)
             .map_err(|e| AdapterError::ParseError(format!("ClickHouse kline parse: {e}")))?;
 
@@ -380,9 +377,6 @@ pub async fn fetch_klines(
             min_tick,
         ));
     }
-
-    // DESC order → reverse to ascending (oldest first)
-    klines.reverse();
 
     Ok(klines)
 }
@@ -477,16 +471,16 @@ pub async fn fetch_klines_with_microstructure(
     let sql = build_odb_sql(&symbol, threshold_dbps, range);
 
     let body = query(&sql).await?;
-    let mut klines = Vec::new();
-    let mut micro = Vec::new();
-    let mut agg_id_ranges = Vec::new();
-    let mut open_time_ms_list: Vec<Option<u64>> = Vec::new();
+    // Collect non-empty lines first, then iterate in reverse to avoid 4x .reverse() on output Vecs.
+    // SQL returns DESC order; reverse-iterating gives ASC (oldest first) directly.
+    let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let n = lines.len();
+    let mut klines = Vec::with_capacity(n);
+    let mut micro = Vec::with_capacity(n);
+    let mut agg_id_ranges = Vec::with_capacity(n);
+    let mut open_time_ms_list: Vec<Option<u64>> = Vec::with_capacity(n);
 
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
+    for line in lines.into_iter().rev() {
         let ck: ChKline = serde_json::from_str(line)
             .map_err(|e| AdapterError::ParseError(format!("ClickHouse kline parse: {e}")))?;
 
@@ -506,12 +500,6 @@ pub async fn fetch_klines_with_microstructure(
         agg_id_ranges.push(ck.first_agg_trade_id.zip(ck.last_agg_trade_id));
         open_time_ms_list.push(ck.open_time_us.map(|us| (us / 1000) as u64));
     }
-
-    // DESC order → reverse to ascending (oldest first)
-    klines.reverse();
-    micro.reverse();
-    agg_id_ranges.reverse();
-    open_time_ms_list.reverse();
 
     Ok((klines, micro, agg_id_ranges, open_time_ms_list))
 }
