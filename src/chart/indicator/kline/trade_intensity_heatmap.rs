@@ -117,69 +117,10 @@ fn thermal_color(t: f32) -> Color {
     Color::from_rgb(r, g, b)
 }
 
-/// Adjusted Boxplot lower fence using Quartile Skewness (Bahri et al. 2024).
-///
-/// Replaces O(n²) Medcouple with O(1) Quartile Skewness:
-///   QS = (Q3 + Q1 - 2*median) / (Q3 - Q1)
-/// which is computed entirely from quartiles already available in the sorted window.
-/// The Hubert (2008) exponential fence formula is then applied with QS in place of MC.
-///
-/// Returns `(fence, iqr)` in log₁₀(intensity) space, or `None` if degenerate.
-fn adjusted_lower_fence(sorted: &[f32]) -> Option<(f32, f32)> {
-    let n = sorted.len();
-    if n < 20 {
-        return None;
-    }
-    let q1 = sorted[n / 4];
-    let median = sorted[n / 2];
-    let q3 = sorted[3 * n / 4];
-    let iqr = q3 - q1;
-    if iqr <= f32::EPSILON {
-        return None;
-    }
-    // Quartile Skewness (Bowley/Bahri): O(1), replaces O(n²) Medcouple.
-    // QS ∈ [-1, 1], positive = right-skewed (same sign convention as Medcouple).
-    let qs = (q3 + q1 - 2.0 * median) / iqr;
-    let h_lower = if qs >= 0.0 {
-        1.5 * (-4.0 * qs).exp()
-    } else {
-        1.5 * (-3.0 * qs).exp()
-    };
-    Some((q1 - h_lower * iqr, iqr))
-}
+use data::anomaly;
 
-/// Compute conformal p-value: fraction of window values with nonconformity score
-/// at least as extreme as the test point. Uses |x - median| / MAD as the
-/// nonconformity measure. Distribution-free, calibrated by construction.
-///
-/// Returns p-value in [0, 1]. Lower = more anomalous.
-fn conformal_pvalue(sorted: &[f32], log_val: f32) -> f32 {
-    let n = sorted.len();
-    if n < 3 {
-        return 1.0;
-    }
-    let median = sorted[n / 2];
-    // MAD = median(|x_i - median|) — compute from sorted window.
-    // Since sorted is ordered, deviations from median are V-shaped.
-    // Use the middle 50% deviation as a fast MAD approximation.
-    let mad = (sorted[3 * n / 4] - sorted[n / 4]) * 0.5; // half-IQR ≈ 0.7413 * MAD
-    if mad <= f32::EPSILON {
-        return 1.0;
-    }
-    let test_score = (log_val - median).abs() / mad;
-    // Count how many window values have score >= test_score
-    let count = sorted
-        .iter()
-        .filter(|&&v| (v - median).abs() / mad >= test_score)
-        .count();
-    count as f32 / (n + 1) as f32
-}
-
-/// CUSUM allowance: half the expected deviation under the alternative hypothesis.
-/// Tuned for log₁₀(trade_intensity) — a shift of 0.3 in log space ≈ 2x intensity change.
-const CUSUM_ALLOWANCE: f32 = 0.15;
-/// CUSUM alarm threshold. Higher = fewer false alarms, slower detection.
-const CUSUM_THRESHOLD: f32 = 2.0;
+const CUSUM_ALLOWANCE: f32 = anomaly::DEFAULT_CUSUM_ALLOWANCE;
+const CUSUM_THRESHOLD: f32 = anomaly::DEFAULT_CUSUM_THRESHOLD;
 
 /// Trade intensity heatmap indicator.
 ///
@@ -296,16 +237,16 @@ impl TradeIntensityHeatmapIndicator {
         // 2. Conformal p-value: calibrated severity score
         // 3. CUSUM: sustained regime shift accumulator
         let (is_anomaly, anomaly_pvalue, cusum) = if self.anomaly_fence_enabled && n >= 20 {
-            let fence_result = adjusted_lower_fence(&self.sorted);
-            let is_anom = fence_result.is_some_and(|(fence, _)| log_val < fence);
+            let fence_result = anomaly::adjusted_lower_fence(&self.sorted);
+            let is_anom = fence_result.is_some_and(|r| log_val < r.fence);
             let pval = if is_anom {
-                conformal_pvalue(&self.sorted, log_val)
+                anomaly::conformal_pvalue(&self.sorted, log_val)
             } else {
                 1.0
             };
             // CUSUM: accumulate evidence of sustained below-median intensity
             let median = self.sorted[n / 2];
-            self.cusum_neg = (self.cusum_neg + (median - log_val) - CUSUM_ALLOWANCE).max(0.0);
+            self.cusum_neg = anomaly::cusum_negative(self.cusum_neg, log_val, median, CUSUM_ALLOWANCE);
             (is_anom, pval, self.cusum_neg)
         } else {
             self.cusum_neg = 0.0;

@@ -1,4 +1,5 @@
 pub mod aggr;
+pub mod anomaly;
 pub mod audio;
 pub mod chart;
 pub mod conditional_ema;
