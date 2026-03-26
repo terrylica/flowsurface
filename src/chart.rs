@@ -24,7 +24,7 @@ use iced::{
     widget::{button, center, column, container, mouse_area, row, rule, text},
 };
 
-const ZOOM_SENSITIVITY: f32 = 30.0;
+const ZOOM_SENSITIVITY: f32 = 60.0;
 const TEXT_SIZE: f32 = 12.0;
 
 #[derive(Default, Debug, Clone, Copy)]
