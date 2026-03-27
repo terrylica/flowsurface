@@ -23,8 +23,8 @@ pub fn setup(is_debug: bool) -> Result<(), Error> {
         log::Level::Info
     };
 
-    let level_filter = std::env::var("RUST_LOG")
-        .ok()
+    let level_filter = exchange::config::APP_CONFIG
+        .rust_log
         .as_deref()
         .map(str::parse::<log::Level>)
         .transpose()?

@@ -36,6 +36,7 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
+use exchange::config::APP_CONFIG;
 use std::{borrow::Cow, collections::HashMap, vec};
 
 fn main() {
@@ -158,7 +159,7 @@ impl Flowsurface {
                 size,
                 position,
                 exit_on_close_request: false,
-                level: if std::env::var("FLOWSURFACE_ALWAYS_ON_TOP").is_ok() {
+                level: if APP_CONFIG.always_on_top {
                     iced::window::Level::AlwaysOnTop
                 } else {
                     iced::window::Level::default()
@@ -210,7 +211,7 @@ impl Flowsurface {
                 Message::Tick(std::time::Instant::now())
             });
 
-        let set_on_top: Task<Message> = if std::env::var("FLOWSURFACE_ALWAYS_ON_TOP").is_ok() {
+        let set_on_top: Task<Message> = if APP_CONFIG.always_on_top {
             iced::window::set_level(main_window_id, iced::window::Level::AlwaysOnTop)
         } else {
             Task::none()
