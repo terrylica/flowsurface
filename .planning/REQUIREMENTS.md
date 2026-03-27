@@ -9,10 +9,10 @@ Requirements for this refactoring milestone. Each maps to roadmap phases.
 
 ### Config Centralization
 
-- [ ] **CFG-01**: All env var reads centralized in a single `AppConfig` struct with `LazyLock` initialization
-- [ ] **CFG-02**: Duplicate reads eliminated -- CH_HOST, CH_PORT, SSE_HOST, SSE_PORT each read exactly once
-- [ ] **CFG-03**: Config validated eagerly at startup -- missing or invalid vars produce clear error messages before any network calls
-- [ ] **CFG-04**: clickhouse.rs and telegram.rs import config values from the shared struct, not from `std::env::var` directly
+- [x] **CFG-01**: All env var reads centralized in a single `AppConfig` struct with `LazyLock` initialization
+- [x] **CFG-02**: Duplicate reads eliminated -- CH_HOST, CH_PORT, SSE_HOST, SSE_PORT each read exactly once
+- [x] **CFG-03**: Config validated eagerly at startup -- missing or invalid vars produce clear error messages before any network calls
+- [x] **CFG-04**: clickhouse.rs and telegram.rs import config values from the shared struct, not from `std::env::var` directly
 
 ### God Module Splits -- pane.rs
 
@@ -80,10 +80,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase                      | Status  |
 | ----------- | -------------------------- | ------- |
-| CFG-01      | Phase 1                    | Pending |
-| CFG-02      | Phase 1                    | Pending |
-| CFG-03      | Phase 1                    | Pending |
-| CFG-04      | Phase 1                    | Pending |
+| CFG-01      | Phase 1                    | Complete |
+| CFG-02      | Phase 1                    | Complete |
+| CFG-03      | Phase 1                    | Complete |
+| CFG-04      | Phase 1                    | Complete |
 | PANE-01     | Phase 4                    | Pending |
 | PANE-02     | Phase 5                    | Pending |
 | PANE-03     | Phase 5                    | Pending |
