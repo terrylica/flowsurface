@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 01-01-PLAN.md
-last_updated: "2026-03-27T22:52:36.947Z"
+status: verifying
+stopped_at: Completed 01-02-PLAN.md
+last_updated: "2026-03-27T23:06:11.688Z"
 last_activity: 2026-03-27
 progress:
   total_phases: 8
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 
 Phase: 01 (Config Centralization) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-03-27
 
 Progress: [..........] 0%
@@ -53,6 +53,7 @@ Progress: [..........] 0%
 
 _Updated after each plan completion_
 | Phase 01 P01 | 20min | 2 tasks | 4 files |
+| Phase 01 P02 | 11min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,7 @@ Recent decisions affecting current work:
 - [Roadmap]: VER-01/VER-02/VER-03 are cross-cutting constraints on every phase, not standalone phases
 - [Phase 01]: eprintln! for config parse warnings (LazyLock inits before logger)
 - [Phase 01]: Config struct over DI -- LazyLock<AppConfig> is idiomatic Rust
+- [Phase 01]: All env var access centralized via APP_CONFIG LazyLock; zero scattered reads in src/ and exchange/src/
 
 ### Pending Todos
 
@@ -78,6 +80,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-27T22:52:36.945Z
-Stopped at: Completed 01-01-PLAN.md
+Last session: 2026-03-27T23:06:11.686Z
+Stopped at: Completed 01-02-PLAN.md
 Resume file: None

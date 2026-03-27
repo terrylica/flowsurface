@@ -34,9 +34,9 @@ Requirements for this refactoring milestone. Each maps to roadmap phases.
 
 ### Verification
 
-- [ ] **VER-01**: `cargo clippy -- -D warnings` passes after every phase
-- [ ] **VER-02**: Zero behavior changes -- all existing ODB, charting, and exchange functionality works identically
-- [ ] **VER-03**: No new `unsafe` code introduced
+- [x] **VER-01**: `cargo clippy -- -D warnings` passes after every phase
+- [x] **VER-02**: Zero behavior changes -- all existing ODB, charting, and exchange functionality works identically
+- [x] **VER-03**: No new `unsafe` code introduced
 
 ## v2 Requirements
 
@@ -93,9 +93,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | QUAL-01     | Phase 3                    | Pending |
 | QUAL-02     | Phase 2                    | Pending |
 | QUAL-03     | Phase 8                    | Pending |
-| VER-01      | Phases 1-8 (cross-cutting) | Pending |
-| VER-02      | Phases 1-8 (cross-cutting) | Pending |
-| VER-03      | Phases 1-8 (cross-cutting) | Pending |
+| VER-01      | Phases 1-8 (cross-cutting) | Complete |
+| VER-02      | Phases 1-8 (cross-cutting) | Complete |
+| VER-03      | Phases 1-8 (cross-cutting) | Complete |
 
 **Coverage:**
 

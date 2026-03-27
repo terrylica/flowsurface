@@ -40,7 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 
 - [x] 01-01-PLAN.md -- Create AppConfig struct + migrate exchange crate (clickhouse.rs, telegram.rs)
-- [ ] 01-02-PLAN.md -- Migrate main crate (main.rs, logger.rs) + final verification
+- [x] 01-02-PLAN.md -- Migrate main crate (main.rs, logger.rs) + final verification
 
 ### Phase 2: Must-Use Safety Net
 
