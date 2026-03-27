@@ -35,7 +35,12 @@ Decimal phases appear between their surrounding integers in numeric order.
 2. `grep -r 'std::env::var' src/ exchange/src/` returns zero hits outside the config module
 3. App starts correctly with default config (no env vars set) and with full `.mise.toml` config
 4. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 2 plans
+
+Plans:
+
+- [ ] 01-01-PLAN.md -- Create AppConfig struct + migrate exchange crate (clickhouse.rs, telegram.rs)
+- [ ] 01-02-PLAN.md -- Migrate main crate (main.rs, logger.rs) + final verification
 
 ### Phase 2: Must-Use Safety Net
 
@@ -135,7 +140,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 
 | Phase                             | Plans Complete | Status      | Completed |
 | --------------------------------- | -------------- | ----------- | --------- |
-| 1. Config Centralization          | 0/TBD          | Not started | -         |
+| 1. Config Centralization          | 0/2            | Planning    | -         |
 | 2. Must-Use Safety Net            | 0/TBD          | Not started | -         |
 | 3. Bool-to-Enum Cleanup           | 0/TBD          | Not started | -         |
 | 4. Pane Content Extraction        | 0/TBD          | Not started | -         |
