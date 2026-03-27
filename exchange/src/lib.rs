@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod config;
 pub mod connect;
 pub mod depth;
 pub mod health;
