@@ -13,6 +13,7 @@ use super::{
     super::{Kline, Price, TickerInfo, Trade, Volume, de_string_to_f32},
     AdapterError, Event, StreamKind,
 };
+use crate::config::APP_CONFIG;
 use crate::tg_alert;
 use crate::unit::{MinTicksize, Qty};
 
@@ -235,23 +236,8 @@ pub fn odb_symbol_filter() -> Option<&'static [String]> {
         .map(|v| v.as_slice())
 }
 
-static CLICKHOUSE_HOST: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("FLOWSURFACE_CH_HOST").unwrap_or_else(|_| "bigblack".to_string())
-});
-
-static OUROBOROS_MODE: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("FLOWSURFACE_OUROBOROS_MODE").unwrap_or_else(|_| "day".to_string())
-});
-
-static CLICKHOUSE_PORT: LazyLock<u16> = LazyLock::new(|| {
-    std::env::var("FLOWSURFACE_CH_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8123)
-});
-
 fn base_url() -> String {
-    format!("http://{}:{}", *CLICKHOUSE_HOST, *CLICKHOUSE_PORT)
+    APP_CONFIG.base_url()
 }
 
 /// Shared HTTP client — reuses connections through the SSH tunnel instead of
@@ -447,7 +433,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
              ORDER BY close_time_us DESC \
              LIMIT {adaptive_limit} \
              FORMAT JSONEachRow",
-            *OUROBOROS_MODE
+            APP_CONFIG.ouroboros_mode
         )
     } else {
         let (start, end) = range.unwrap();
@@ -463,7 +449,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
              ORDER BY close_time_us DESC \
              LIMIT 2000 \
              FORMAT JSONEachRow",
-            *OUROBOROS_MODE
+            APP_CONFIG.ouroboros_mode
         )
     }
 }
@@ -565,7 +551,7 @@ pub async fn request_backfill(symbol: &str, threshold_dbps: u32) -> Result<bool,
         "INSERT INTO opendeviationbar_cache.backfill_requests \
          (symbol, threshold_decimal_bps, source, ouroboros_mode) VALUES \
          ('{symbol}', {threshold_dbps}, 'flowsurface', '{}')",
-        *OUROBOROS_MODE
+        APP_CONFIG.ouroboros_mode
     );
 
     query(&insert_sql).await?;
@@ -605,7 +591,7 @@ pub fn connect_kline_stream(
             "SELECT max(close_time_us) AS ts FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                AND ouroboros_mode = '{}' FORMAT JSONEachRow",
-            symbol, threshold_dbps, *OUROBOROS_MODE
+            symbol, threshold_dbps, APP_CONFIG.ouroboros_mode
         );
         let mut last_ts: u64 = 0;
         for attempt in 1..=3 {
@@ -666,7 +652,7 @@ pub fn connect_kline_stream(
                  ORDER BY close_time_us ASC \
                  LIMIT 100 \
                  FORMAT JSONEachRow",
-                symbol, threshold_dbps, *OUROBOROS_MODE, last_ts
+                symbol, threshold_dbps, APP_CONFIG.ouroboros_mode, last_ts
             );
 
             match query(&sql).await {
@@ -815,15 +801,6 @@ pub fn connect_kline_stream(
 
 // -- SSE streaming (push-based, replaces polling when enabled) --
 
-static SSE_HOST: LazyLock<String> =
-    LazyLock::new(|| std::env::var("FLOWSURFACE_SSE_HOST").unwrap_or_else(|_| "localhost".into()));
-static SSE_PORT: LazyLock<u16> = LazyLock::new(|| {
-    std::env::var("FLOWSURFACE_SSE_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(18081)
-});
-
 static SSE_CONNECTED: AtomicBool = AtomicBool::new(false);
 
 pub fn sse_connected() -> bool {
@@ -831,9 +808,7 @@ pub fn sse_connected() -> bool {
 }
 
 pub fn sse_enabled() -> bool {
-    std::env::var("FLOWSURFACE_SSE_ENABLED")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false)
+    APP_CONFIG.sse_enabled
 }
 
 fn odb_bar_to_kline_tuple(
@@ -901,8 +876,8 @@ pub fn connect_sse_stream(
             );
 
             let client = OdbSseClient::new(OdbSseConfig {
-                host: SSE_HOST.clone(),
-                port: *SSE_PORT,
+                host: APP_CONFIG.sse_host.clone(),
+                port: APP_CONFIG.sse_port,
                 symbols: vec![symbol.clone()],
                 thresholds: vec![threshold_dbps],
             });
@@ -1149,7 +1124,7 @@ pub async fn fetch_catchup(
 
     let url = format!(
         "http://{}:{}/catchup/{symbol}/{threshold_dbps}",
-        *SSE_HOST, *SSE_PORT
+        APP_CONFIG.sse_host, APP_CONFIG.sse_port
     );
 
     // Retry loop for transient errors from the sidecar:

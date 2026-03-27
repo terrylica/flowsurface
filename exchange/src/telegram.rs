@@ -6,13 +6,8 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
+use crate::config::APP_CONFIG;
 use reqwest::Client;
-
-static BOT_TOKEN: LazyLock<Option<String>> =
-    LazyLock::new(|| std::env::var("FLOWSURFACE_TG_BOT_TOKEN").ok());
-
-static CHAT_ID: LazyLock<Option<String>> =
-    LazyLock::new(|| std::env::var("FLOWSURFACE_TG_CHAT_ID").ok());
 
 static HTTP: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
@@ -23,12 +18,14 @@ static HTTP: LazyLock<Client> = LazyLock::new(|| {
 
 /// Returns true if Telegram alerting is configured.
 pub fn is_configured() -> bool {
-    BOT_TOKEN.is_some() && CHAT_ID.is_some()
+    APP_CONFIG.tg_configured()
 }
 
 /// Send a plain-text alert. No-ops if not configured.
 pub async fn send_alert(message: &str) {
-    let (Some(token), Some(chat_id)) = (BOT_TOKEN.as_deref(), CHAT_ID.as_deref()) else {
+    let (Some(token), Some(chat_id)) =
+        (APP_CONFIG.tg_bot_token.as_deref(), APP_CONFIG.tg_chat_id.as_deref())
+    else {
         return;
     };
 
@@ -74,7 +71,9 @@ pub async fn alert(severity: Severity, component: &str, detail: &str) {
 /// Blocking send for use in panic hooks and other sync contexts.
 /// Creates a one-shot tokio runtime — do NOT call from within an async runtime.
 pub fn send_alert_blocking(message: &str) {
-    let (Some(token), Some(chat_id)) = (BOT_TOKEN.as_deref(), CHAT_ID.as_deref()) else {
+    let (Some(token), Some(chat_id)) =
+        (APP_CONFIG.tg_bot_token.as_deref(), APP_CONFIG.tg_chat_id.as_deref())
+    else {
         return;
     };
 
@@ -111,10 +110,10 @@ pub async fn startup_health_check() {
         return;
     }
 
-    let ch_host = std::env::var("FLOWSURFACE_CH_HOST").unwrap_or_else(|_| "localhost".into());
-    let ch_port = std::env::var("FLOWSURFACE_CH_PORT").unwrap_or_else(|_| "18123".into());
-    let sse_host = std::env::var("FLOWSURFACE_SSE_HOST").unwrap_or_else(|_| "localhost".into());
-    let sse_port = std::env::var("FLOWSURFACE_SSE_PORT").unwrap_or_else(|_| "18081".into());
+    let ch_host = &APP_CONFIG.ch_host;
+    let ch_port = APP_CONFIG.ch_port;
+    let sse_host = &APP_CONFIG.sse_host;
+    let sse_port = APP_CONFIG.sse_port;
 
     let probe = Client::builder()
         .timeout(std::time::Duration::from_secs(5))
