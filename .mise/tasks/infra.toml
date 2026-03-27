@@ -25,13 +25,28 @@ zt_local_status() {
   sudo zerotier-cli info 2>/dev/null | awk '{ print $5 }'
 }
 
+SSH_KEEPALIVE_OPTS="-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=8"
+SSH_FORWARD_OPTS="-NL 18123:localhost:8123 -L 18081:localhost:8081"
+
 try_ssh_tunnel() {
   local host="$1"
   local label="$2"
   echo "  Trying SSH tunnel via ${label} (${host})..."
-  if ssh -o ConnectTimeout=8 -fNL 18123:localhost:8123 -L 18081:localhost:8081 "$host" 2>/dev/null; then
-    echo "SSH tunnel started via ${label}: localhost:18123→${host}:8123 + localhost:18081→${host}:8081"
-    return 0
+  if command -v autossh >/dev/null 2>&1; then
+    # autossh restarts SSH on exit; -M 0 disables monitor port (relies on SSH keepalive)
+    AUTOSSH_PIDFILE="/tmp/flowsurface-tunnel.pid"
+    export AUTOSSH_PIDFILE
+    if autossh -M 0 -f $SSH_KEEPALIVE_OPTS $SSH_FORWARD_OPTS "$host" 2>/dev/null; then
+      echo "SSH tunnel started via autossh (${label}): localhost:18123→${host}:8123 + localhost:18081→${host}:8081"
+      echo "  autossh will auto-reconnect on tunnel death"
+      return 0
+    fi
+  else
+    if ssh $SSH_KEEPALIVE_OPTS -f $SSH_FORWARD_OPTS "$host" 2>/dev/null; then
+      echo "SSH tunnel started via ${label}: localhost:18123→${host}:8123 + localhost:18081→${host}:8081"
+      echo "  TIP: brew install autossh — enables auto-reconnect on tunnel death"
+      return 0
+    fi
   fi
   return 1
 }
@@ -100,11 +115,22 @@ exit 1
 ["tunnel:stop"]
 description = "Stop SSH tunnel to bigblack ClickHouse"
 run = """
+# Kill autossh parent first (if present) so it doesn't respawn
+AUTOSSH_PID=""
+if [ -f /tmp/flowsurface-tunnel.pid ]; then
+  AUTOSSH_PID=$(cat /tmp/flowsurface-tunnel.pid 2>/dev/null)
+  if [ -n "$AUTOSSH_PID" ] && kill -0 "$AUTOSSH_PID" 2>/dev/null; then
+    kill "$AUTOSSH_PID"
+    echo "autossh stopped (pid $AUTOSSH_PID)"
+  fi
+  rm -f /tmp/flowsurface-tunnel.pid
+fi
+
 PID=$(lsof -ti:18123 2>/dev/null)
 if [ -n "$PID" ]; then
   kill $PID
   echo "Tunnel stopped (pid $PID)"
-else
+elif [ -z "$AUTOSSH_PID" ]; then
   echo "No tunnel running on port 18123"
 fi
 """

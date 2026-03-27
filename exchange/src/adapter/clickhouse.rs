@@ -1,3 +1,4 @@
+// FILE-SIZE-OK: monolithic adapter — CH HTTP, SSE, catchup, SQL builder are tightly coupled
 //! ClickHouse adapter for precomputed open deviation bars from opendeviationbar-py cache.
 //!
 //! Reads from `opendeviationbar_cache.open_deviation_bars` table via ClickHouse HTTP interface.
@@ -263,57 +264,82 @@ static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .expect("reqwest client build")
 });
 
+/// Maximum retries for transient connection/timeout errors.
+const CH_MAX_RETRIES: u32 = 3;
+
 pub async fn query(sql: &str) -> Result<String, AdapterError> {
     let url = base_url();
     let sql_preview: String = sql.chars().take(120).collect();
     log::debug!("[CH] POST {url} — {sql_preview}…");
 
-    let resp = HTTP_CLIENT
-        .post(&url)
-        .body(sql.to_string())
-        .send()
-        .await
-        .map_err(|e| {
-            log::error!(
-                "[CH] reqwest failed: {e} (is_timeout={}, is_connect={}, url={url})",
-                e.is_timeout(),
-                e.is_connect()
-            );
-            tg_alert!(
-                crate::telegram::Severity::Critical,
-                "clickhouse",
-                "CH request failed: {e} (timeout={}, connect={})",
-                e.is_timeout(),
-                e.is_connect()
-            );
-            AdapterError::request_failed(&reqwest::Method::POST, &url, e)
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        log::error!("[CH] HTTP {status}: {body} — SQL: {sql_preview}…");
-        let body_preview = &body[..body.len().min(200)];
-        tg_alert!(
-            crate::telegram::Severity::Critical,
-            "clickhouse",
-            "CH HTTP {status}: {body_preview} — SQL: {sql_preview}…"
-        );
-        return Err(AdapterError::ParseError(format!(
-            "ClickHouse HTTP {}: {}",
-            status, body
-        )));
+    for attempt in 1..=CH_MAX_RETRIES {
+        match HTTP_CLIENT
+            .post(&url)
+            .body(sql.to_string())
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    log::error!("[CH] HTTP {status}: {body} — SQL: {sql_preview}…");
+                    let body_preview = &body[..body.len().min(200)];
+                    tg_alert!(
+                        crate::telegram::Severity::Critical,
+                        "clickhouse",
+                        "CH HTTP {status}: {body_preview} — SQL: {sql_preview}…"
+                    );
+                    // HTTP errors (bad SQL, schema mismatch) won't be fixed by retrying
+                    return Err(AdapterError::ParseError(format!(
+                        "ClickHouse HTTP {}: {}",
+                        status, body
+                    )));
+                }
+                return resp.text().await.map_err(|e| {
+                    log::error!("[CH] response body read failed: {e}");
+                    tg_alert!(
+                        crate::telegram::Severity::Warning,
+                        "clickhouse",
+                        "CH response body read failed"
+                    );
+                    AdapterError::from(e)
+                });
+            }
+            Err(e) => {
+                let retryable = e.is_connect() || e.is_timeout();
+                log::warn!(
+                    "[CH] attempt {}/{}: {e} (connect={}, timeout={}, retryable={retryable}, url={url})",
+                    attempt,
+                    CH_MAX_RETRIES,
+                    e.is_connect(),
+                    e.is_timeout(),
+                );
+                if !retryable || attempt == CH_MAX_RETRIES {
+                    log::error!(
+                        "[CH] reqwest failed after {attempt} attempt(s): {e} (url={url})"
+                    );
+                    tg_alert!(
+                        crate::telegram::Severity::Critical,
+                        "clickhouse",
+                        "CH request failed after {attempt} attempts: {e} (timeout={}, connect={})",
+                        e.is_timeout(),
+                        e.is_connect()
+                    );
+                    return Err(AdapterError::request_failed(
+                        &reqwest::Method::POST,
+                        &url,
+                        e,
+                    ));
+                }
+                // Exponential backoff: 1s, 2s, 4s
+                let delay = Duration::from_secs(1 << (attempt - 1));
+                log::info!("[CH] retrying in {:?}...", delay);
+                tokio::time::sleep(delay).await;
+            }
+        }
     }
-
-    resp.text().await.map_err(|e| {
-        log::error!("[CH] response body read failed: {e}");
-        tg_alert!(
-            crate::telegram::Severity::Warning,
-            "clickhouse",
-            "CH response body read failed"
-        );
-        AdapterError::from(e)
-    })
+    unreachable!("CH_MAX_RETRIES loop always returns")
 }
 
 /// Extract the bare symbol name from a ticker (e.g. "BTCUSDT" from a BinanceLinear ticker).
