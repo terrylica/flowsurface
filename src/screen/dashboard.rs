@@ -9,7 +9,7 @@ pub use sidebar::Sidebar;
 
 use super::DashboardError;
 use crate::{
-    chart,
+    chart::{self, kline::GapFillProgress},
     connector::{
         ResolvedStream,
         fetcher::{self, FetchRange, FetchedData, InfoKind, catchup_sip},
@@ -1010,7 +1010,7 @@ impl Dashboard {
 
                 if last_trade_time < until_time {
                     if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &batch, false)
+                        self.insert_fetched_trades(main_window, pane_id, &batch, GapFillProgress::Streaming)
                     {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
@@ -1022,7 +1022,7 @@ impl Dashboard {
                         .collect::<Vec<_>>();
 
                     if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, true)
+                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, GapFillProgress::Complete)
                     {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
@@ -1099,7 +1099,7 @@ impl Dashboard {
         main_window: window::Id,
         pane_id: uuid::Uuid,
         trades: &[Trade],
-        is_batches_done: bool,
+        progress: GapFillProgress,
     ) -> Result<(), DashboardError> {
         let pane_state = self
             .get_mut_pane_state_by_uuid(main_window, pane_id)
@@ -1121,9 +1121,9 @@ impl Dashboard {
         match &mut pane_state.content {
             pane::Content::Kline { chart, .. } => {
                 if let Some(c) = chart {
-                    c.insert_raw_trades(trades.to_owned(), is_batches_done);
+                    c.insert_raw_trades(trades.to_owned(), progress);
 
-                    if is_batches_done {
+                    if progress == GapFillProgress::Complete {
                         pane_state.status = pane::Status::Ready;
                     }
                     Ok(())

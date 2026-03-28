@@ -11,6 +11,15 @@ pub struct GapFillRequest {
     pub threshold_dbps: u32,
 }
 
+/// Whether a gap-fill batch is still streaming or has completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapFillProgress {
+    /// More batches are expected from the sidecar.
+    Streaming,
+    /// Final batch received — flush buffered bars and set dedup fence.
+    Complete,
+}
+
 /// Classification of agg_trade_id anomalies between consecutive ODB bars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarGapKind {
@@ -1256,7 +1265,7 @@ impl KlineChart {
         None
     }
 
-    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, is_batches_done: bool) {
+    pub fn insert_raw_trades(&mut self, raw_trades: Vec<Trade>, progress: GapFillProgress) {
         if self.chart.basis.is_odb() && self.odb_processor.is_some() {
             // Gap-fill path: feed REST-fetched trades through OpenDeviationBarProcessor.
             //
@@ -1341,7 +1350,7 @@ impl KlineChart {
             self.raw_trades.extend(raw_trades);
         }
 
-        if is_batches_done {
+        if progress == GapFillProgress::Complete {
             // Set dedup fence from the last gap-fill trade's agg_trade_id.
             if let Some(last_id) = self.raw_trades.iter().rev().find_map(|t| t.agg_trade_id) {
                 self.gap_fill_fence_agg_id = Some(last_id);

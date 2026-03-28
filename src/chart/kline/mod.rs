@@ -38,7 +38,7 @@ mod crosshair;
 use crosshair::draw_crosshair_tooltip;
 
 mod odb_core;
-pub use odb_core::BarGapKind;
+pub use odb_core::{BarGapKind, GapFillProgress};
 #[cfg(test)]
 use odb_core::GapFillRequest;
 
