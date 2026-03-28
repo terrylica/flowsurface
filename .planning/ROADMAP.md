@@ -138,7 +138,11 @@ Plans:
 3. kline/mod.rs is below 1800 LOC (measured by `wc -l`)
 4. No new RefCell borrow sites introduced -- all existing borrow discipline preserved
 5. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 07-01-PLAN.md -- Extract 4 ODB lifecycle methods to kline/odb_lifecycle.rs + relocate lifecycle tests
 
 ### Phase 8: Indicator Ceremony Reduction
 
@@ -166,5 +170,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Pane Content Extraction        | 1/1            | Complete    | 2026-03-28 |
 | 5. Pane Stream Setup Extraction   | 1/1            | Complete    | 2026-03-28 |
 | 6. Kline Data Ops Extraction      | 0/1            | Planned     | -          |
-| 7. Kline ODB Lifecycle Extraction | 0/TBD          | Not started | -          |
+| 7. Kline ODB Lifecycle Extraction | 0/1            | Planned     | -          |
 | 8. Indicator Ceremony Reduction   | 0/TBD          | Not started | -          |
