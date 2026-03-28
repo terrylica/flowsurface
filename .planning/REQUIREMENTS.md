@@ -28,7 +28,7 @@ Requirements for this refactoring milestone. Each maps to roadmap phases.
 
 ### Code Quality
 
-- [ ] **QUAL-01**: 5 bool flag arguments replaced with enums or split into separate functions (adapter.rs, conditional_ema.rs, heatmap.rs, odb_core.rs, ladder.rs)
+- [x] **QUAL-01**: 5 bool flag arguments replaced with enums or split into separate functions (adapter.rs, conditional_ema.rs, heatmap.rs, odb_core.rs, ladder.rs)
 - [x] **QUAL-02**: `#[must_use]` added to Task/Effect return types in pane.rs and dashboard.rs before any code is moved
 - [ ] **QUAL-03**: Indicator addition ceremony reduced from 36 file touch points to 6 or fewer
 
@@ -78,21 +78,21 @@ Deferred to future milestone. Tracked but not in current roadmap.
 
 Which phases cover which requirements. Updated during roadmap creation.
 
-| Requirement | Phase                      | Status  |
-| ----------- | -------------------------- | ------- |
+| Requirement | Phase                      | Status   |
+| ----------- | -------------------------- | -------- |
 | CFG-01      | Phase 1                    | Complete |
 | CFG-02      | Phase 1                    | Complete |
 | CFG-03      | Phase 1                    | Complete |
 | CFG-04      | Phase 1                    | Complete |
-| PANE-01     | Phase 4                    | Pending |
-| PANE-02     | Phase 5                    | Pending |
-| PANE-03     | Phase 5                    | Pending |
-| KLINE-01    | Phase 6                    | Pending |
-| KLINE-02    | Phase 7                    | Pending |
-| KLINE-03    | Phase 7                    | Pending |
-| QUAL-01     | Phase 3                    | Pending |
+| PANE-01     | Phase 4                    | Pending  |
+| PANE-02     | Phase 5                    | Pending  |
+| PANE-03     | Phase 5                    | Pending  |
+| KLINE-01    | Phase 6                    | Pending  |
+| KLINE-02    | Phase 7                    | Pending  |
+| KLINE-03    | Phase 7                    | Pending  |
+| QUAL-01     | Phase 3                    | Complete |
 | QUAL-02     | Phase 2                    | Complete |
-| QUAL-03     | Phase 8                    | Pending |
+| QUAL-03     | Phase 8                    | Pending  |
 | VER-01      | Phases 1-8 (cross-cutting) | Complete |
 | VER-02      | Phases 1-8 (cross-cutting) | Complete |
 | VER-03      | Phases 1-8 (cross-cutting) | Complete |
