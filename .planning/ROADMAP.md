@@ -159,7 +159,7 @@ Plans:
 
 Plans:
 
-- [ ] 08-01-PLAN.md -- Consolidate dual factory into single make_indicator + update CLAUDE.md checklist
+- [x] 08-01-PLAN.md -- Consolidate dual factory into single make_indicator + update CLAUDE.md checklist
 
 ## Progress
 

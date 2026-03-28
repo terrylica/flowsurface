@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 07-01-PLAN.md
-last_updated: "2026-03-28T02:55:51.614Z"
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-03-28T03:09:52.190Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 8
-  completed_phases: 7
-  total_plans: 8
-  completed_plans: 8
+  completed_phases: 8
+  total_plans: 9
+  completed_plans: 9
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Every feature change should touch the minimum number of files necessary
-**Current focus:** Phase 07 — Kline ODB Lifecycle Extraction
+**Current focus:** Phase 08 — Indicator Ceremony Reduction
 
 ## Current Position
 
-Phase: 8
-Plan: Not started
+Phase: 08 (Indicator Ceremony Reduction) — EXECUTING
+Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-03-28
 
@@ -59,6 +59,7 @@ _Updated after each plan completion_
 | Phase 05 P01 | 5min | 1 tasks | 2 files |
 | Phase 06 P01 | 13min | 2 tasks | 2 files |
 | Phase 07 P01 | 7min | 2 tasks | 2 files |
+| Phase 08 P01 | 2min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,8 @@ Recent decisions affecting current work:
 - [Phase 06]: pub(super) for internal-only data ops methods; exact code copy with no logic changes
 - [Phase 07]: All guard conditions moved INTO helper methods for maximum LOC reduction
 - [Phase 07]: pub(super) lifecycle methods follow same pattern as odb_core.rs and data_ops.rs
+- [Phase 08]: Consolidated make_empty + make_indicator_with_config into single make_indicator(which, cfg)
+- [Phase 08]: Removed dead new() constructors -- always use config-aware constructors
 
 ### Pending Todos
 
@@ -92,6 +95,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T02:47:45.108Z
-Stopped at: Completed 07-01-PLAN.md
+Last session: 2026-03-28T03:09:52.187Z
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None
