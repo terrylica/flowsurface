@@ -120,7 +120,11 @@ Plans:
 2. Historical kline loading works (open pane -> bars appear)
 3. Live trade insertion works (new trades flow into forming bar)
 4. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 06-01-PLAN.md -- Extract 5 data operation methods to kline/data_ops.rs
 
 ### Phase 7: Kline ODB Lifecycle Extraction
 
@@ -160,7 +164,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 2. Must-Use Safety Net            | 1/1            | Complete    | 2026-03-28 |
 | 3. Bool-to-Enum Cleanup           | 1/1            | Complete    | 2026-03-28 |
 | 4. Pane Content Extraction        | 1/1            | Complete    | 2026-03-28 |
-| 5. Pane Stream Setup Extraction   | 0/1            | Planned     | -          |
-| 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -          |
+| 5. Pane Stream Setup Extraction   | 1/1            | Complete    | 2026-03-28 |
+| 6. Kline Data Ops Extraction      | 0/1            | Planned     | -          |
 | 7. Kline ODB Lifecycle Extraction | 0/TBD          | Not started | -          |
 | 8. Indicator Ceremony Reduction   | 0/TBD          | Not started | -          |
