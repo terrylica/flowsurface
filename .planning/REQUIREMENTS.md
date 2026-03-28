@@ -23,8 +23,8 @@ Requirements for this refactoring milestone. Each maps to roadmap phases.
 ### God Module Splits -- kline/mod.rs
 
 - [x] **KLINE-01**: Data operation methods (TickAggr access, aggregation queries) extracted to `kline/data_ops.rs` (~200 LOC reduction)
-- [ ] **KLINE-02**: ODB lifecycle orchestration (gap-fill, reconciliation, sidecar) extracted to `kline/odb_lifecycle.rs` (~600 LOC reduction)
-- [ ] **KLINE-03**: kline/mod.rs reduced below 1800 LOC after extractions while preserving all canvas rendering behavior
+- [x] **KLINE-02**: ODB lifecycle orchestration (gap-fill, reconciliation, sidecar) extracted to `kline/odb_lifecycle.rs` (~600 LOC reduction)
+- [x] **KLINE-03**: kline/mod.rs reduced below 1800 LOC after extractions while preserving all canvas rendering behavior
 
 ### Code Quality
 
@@ -88,8 +88,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PANE-02     | Phase 5                    | Complete |
 | PANE-03     | Phase 5                    | Complete |
 | KLINE-01    | Phase 6                    | Complete |
-| KLINE-02    | Phase 7                    | Pending  |
-| KLINE-03    | Phase 7                    | Pending  |
+| KLINE-02    | Phase 7                    | Complete |
+| KLINE-03    | Phase 7                    | Complete |
 | QUAL-01     | Phase 3                    | Complete |
 | QUAL-02     | Phase 2                    | Complete |
 | QUAL-03     | Phase 8                    | Pending  |

@@ -142,7 +142,7 @@ Plans:
 
 Plans:
 
-- [ ] 07-01-PLAN.md -- Extract 4 ODB lifecycle methods to kline/odb_lifecycle.rs + relocate lifecycle tests
+- [x] 07-01-PLAN.md -- Extract 4 ODB lifecycle methods to kline/odb_lifecycle.rs + relocate lifecycle tests
 
 ### Phase 8: Indicator Ceremony Reduction
 

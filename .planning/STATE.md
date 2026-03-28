@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-03-28T02:29:13.573Z"
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-03-28T02:47:45.110Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 8
-  completed_phases: 6
-  total_plans: 7
-  completed_plans: 7
+  completed_phases: 7
+  total_plans: 8
+  completed_plans: 8
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Every feature change should touch the minimum number of files necessary
-**Current focus:** Phase 06 — Kline Data Ops Extraction
+**Current focus:** Phase 07 — Kline ODB Lifecycle Extraction
 
 ## Current Position
 
-Phase: 7
-Plan: Not started
+Phase: 07 (Kline ODB Lifecycle Extraction) — EXECUTING
+Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-03-28
 
@@ -58,6 +58,7 @@ _Updated after each plan completion_
 | Phase 04 P01 | 5min | 2 tasks | 2 files |
 | Phase 05 P01 | 5min | 1 tasks | 2 files |
 | Phase 06 P01 | 13min | 2 tasks | 2 files |
+| Phase 07 P01 | 7min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -77,6 +78,8 @@ Recent decisions affecting current work:
 - [Phase 04]: git mv pane.rs to pane/mod.rs preserves history; pub(super) for cross-submodule factory methods
 - [Phase 05]: Free functions with individual field refs for borrow-checker-safe extraction from pane State
 - [Phase 06]: pub(super) for internal-only data ops methods; exact code copy with no logic changes
+- [Phase 07]: All guard conditions moved INTO helper methods for maximum LOC reduction
+- [Phase 07]: pub(super) lifecycle methods follow same pattern as odb_core.rs and data_ops.rs
 
 ### Pending Todos
 
@@ -89,6 +92,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T02:19:47.951Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-03-28T02:47:45.108Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None
