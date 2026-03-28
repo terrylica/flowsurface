@@ -1,4 +1,4 @@
-// FILE-SIZE-OK: upstream file, splitting out of scope for this fork
+// FILE-SIZE-OK: upstream pane state machine — Content extracted to content.rs, stream setup next (Phase 5)
 // GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/89
 use crate::{
     chart::{self, comparison::ComparisonChart, kline::KlineChart},
@@ -25,10 +25,7 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    chart::{
-        Basis,
-        indicator::UiIndicator,
-    },
+    chart::{Basis, indicator::UiIndicator},
     layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
     stream::PersistStreamKind,
 };
