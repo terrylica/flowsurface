@@ -194,13 +194,7 @@ impl State {
         ticker_info: TickerInfo,
         klines: &[Kline],
     ) {
-        stream_setup::insert_hist_klines(
-            &mut self.content,
-            req_id,
-            timeframe,
-            ticker_info,
-            klines,
-        );
+        stream_setup::insert_hist_klines(&mut self.content, req_id, timeframe, ticker_info, klines);
     }
 
     pub fn insert_odb_klines(
@@ -1406,4 +1400,3 @@ fn basis_modifier<'a>(
         .height(widget::PANE_CONTROL_BTN_HEIGHT)
         .into()
 }
-

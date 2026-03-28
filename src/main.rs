@@ -29,6 +29,7 @@ use widget::{
     tooltip,
 };
 
+use exchange::config::APP_CONFIG;
 use iced::{
     Alignment, Element, Subscription, Task, keyboard, padding,
     widget::{
@@ -36,7 +37,6 @@ use iced::{
         tooltip::Position as TooltipPosition,
     },
 };
-use exchange::config::APP_CONFIG;
 use std::{borrow::Cow, collections::HashMap, vec};
 
 fn main() {

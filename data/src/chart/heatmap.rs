@@ -312,11 +312,8 @@ impl HistoricalDepth {
                     if !(run_ref.until_time >= earliest && run_ref.start_time <= latest) {
                         return false;
                     }
-                    let order_size = market_type.qty_in_quote_value(
-                        run_ref.qty(),
-                        *price_at_level,
-                        unit,
-                    );
+                    let order_size =
+                        market_type.qty_in_quote_value(run_ref.qty(), *price_at_level, unit);
                     order_size > order_size_filter
                 })
                 .collect::<Vec<&OrderRun>>();
@@ -494,8 +491,7 @@ impl HistoricalDepth {
                     continue;
                 }
 
-                let order_size =
-                    market_type.qty_in_quote_value(run.qty(), *price, unit);
+                let order_size = market_type.qty_in_quote_value(run.qty(), *price, unit);
 
                 if order_size > order_size_filter {
                     max_depth_qty = max_depth_qty.max(run.qty());

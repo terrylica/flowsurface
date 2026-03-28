@@ -23,9 +23,10 @@ pub fn is_configured() -> bool {
 
 /// Send a plain-text alert. No-ops if not configured.
 pub async fn send_alert(message: &str) {
-    let (Some(token), Some(chat_id)) =
-        (APP_CONFIG.tg_bot_token.as_deref(), APP_CONFIG.tg_chat_id.as_deref())
-    else {
+    let (Some(token), Some(chat_id)) = (
+        APP_CONFIG.tg_bot_token.as_deref(),
+        APP_CONFIG.tg_chat_id.as_deref(),
+    ) else {
         return;
     };
 
@@ -71,9 +72,10 @@ pub async fn alert(severity: Severity, component: &str, detail: &str) {
 /// Blocking send for use in panic hooks and other sync contexts.
 /// Creates a one-shot tokio runtime — do NOT call from within an async runtime.
 pub fn send_alert_blocking(message: &str) {
-    let (Some(token), Some(chat_id)) =
-        (APP_CONFIG.tg_bot_token.as_deref(), APP_CONFIG.tg_chat_id.as_deref())
-    else {
+    let (Some(token), Some(chat_id)) = (
+        APP_CONFIG.tg_bot_token.as_deref(),
+        APP_CONFIG.tg_chat_id.as_deref(),
+    ) else {
         return;
     };
 

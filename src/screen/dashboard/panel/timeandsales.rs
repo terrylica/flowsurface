@@ -138,11 +138,8 @@ impl TimeAndSales {
                     is_sell: trade.is_sell,
                 };
 
-                let trade_size_value = market_type.qty_in_quote_value(
-                    trade_display.qty,
-                    trade.price,
-                    unit,
-                );
+                let trade_size_value =
+                    market_type.qty_in_quote_value(trade_display.qty, trade.price, unit);
 
                 if trade_size_value >= size_filter {
                     self.max_filtered_qty = self.max_filtered_qty.max(trade_display.qty);
@@ -240,11 +237,8 @@ impl TimeAndSales {
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.display.qty,
-                        t.display.price,
-                        unit,
-                    );
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.display.qty, t.display.price, unit);
                     trade_size >= size_filter
                 })
                 .map(|e| e.display.qty)
@@ -465,11 +459,8 @@ impl canvas::Program<Message> for TimeAndSales {
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.display.qty,
-                        t.display.price,
-                        unit,
-                    );
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.display.qty, t.display.price, unit);
                     trade_size >= self.config.trade_size_filter
                 })
                 .rev()

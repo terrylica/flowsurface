@@ -1009,9 +1009,12 @@ impl Dashboard {
                 let last_trade_time = batch.last().map_or(0, |trade| trade.time);
 
                 if last_trade_time < until_time {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &batch, GapFillProgress::Streaming)
-                    {
+                    if let Err(reason) = self.insert_fetched_trades(
+                        main_window,
+                        pane_id,
+                        &batch,
+                        GapFillProgress::Streaming,
+                    ) {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
                 } else {
@@ -1021,9 +1024,12 @@ impl Dashboard {
                         .copied()
                         .collect::<Vec<_>>();
 
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, GapFillProgress::Complete)
-                    {
+                    if let Err(reason) = self.insert_fetched_trades(
+                        main_window,
+                        pane_id,
+                        &filtered_batch,
+                        GapFillProgress::Complete,
+                    ) {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
                 }

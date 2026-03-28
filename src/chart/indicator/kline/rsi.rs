@@ -76,7 +76,15 @@ impl RsiIndicator {
         let mut avg_loss_out = vec![0.0_f64; n];
 
         // Use kand batch RSI
-        if rsi(closes, self.period, &mut rsi_out, &mut avg_gain_out, &mut avg_loss_out).is_err() {
+        if rsi(
+            closes,
+            self.period,
+            &mut rsi_out,
+            &mut avg_gain_out,
+            &mut avg_loss_out,
+        )
+        .is_err()
+        {
             return;
         }
 

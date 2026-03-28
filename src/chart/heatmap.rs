@@ -543,11 +543,8 @@ impl canvas::Program<Message> for HeatmapChart {
 
                         runs.iter()
                             .filter(|run| {
-                                let order_size = market_type.qty_in_quote_value(
-                                    run.qty(),
-                                    *price,
-                                    unit,
-                                );
+                                let order_size =
+                                    market_type.qty_in_quote_value(run.qty(), *price, unit);
                                 order_size > self.visual_config.order_size_filter
                             })
                             .for_each(|run| {
@@ -618,11 +615,8 @@ impl canvas::Program<Message> for HeatmapChart {
                         let y_position = chart.price_to_y(trade.price);
                         let trade_qty = f32::from(trade.qty);
 
-                        let trade_size = market_type.qty_in_quote_value(
-                            trade_qty,
-                            trade.price,
-                            unit,
-                        );
+                        let trade_size =
+                            market_type.qty_in_quote_value(trade_qty, trade.price, unit);
 
                         if trade_size > self.visual_config.trade_size_filter {
                             let color = if trade.is_sell {

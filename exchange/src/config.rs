@@ -60,11 +60,7 @@ impl AppConfig {
             ch_host: parse_env_string("FLOWSURFACE_CH_HOST", "bigblack"),
             ch_port: parse_env_u16("FLOWSURFACE_CH_PORT", 8123),
             ouroboros_mode: parse_env_string("FLOWSURFACE_OUROBOROS_MODE", "day"),
-            sse_enabled: parse_env_bool(
-                "FLOWSURFACE_SSE_ENABLED",
-                &["true", "1"],
-                false,
-            ),
+            sse_enabled: parse_env_bool("FLOWSURFACE_SSE_ENABLED", &["true", "1"], false),
             sse_host: parse_env_string("FLOWSURFACE_SSE_HOST", "localhost"),
             sse_port: parse_env_u16("FLOWSURFACE_SSE_PORT", 18081),
             tg_bot_token: parse_env_optional("FLOWSURFACE_TG_BOT_TOKEN"),
@@ -90,9 +86,7 @@ impl AppConfig {
 fn parse_env_u16(key: &str, default: u16) -> u16 {
     match std::env::var(key) {
         Ok(v) => v.parse().unwrap_or_else(|_| {
-            eprintln!(
-                "[flowsurface] {key}={v:?} is not a valid u16, using {default}"
-            );
+            eprintln!("[flowsurface] {key}={v:?} is not a valid u16, using {default}");
             default
         }),
         Err(_) => default,
@@ -102,9 +96,7 @@ fn parse_env_u16(key: &str, default: u16) -> u16 {
 fn parse_env_bool(key: &str, truthy: &[&str], default: bool) -> bool {
     match std::env::var(key) {
         Ok(v) if truthy.contains(&v.to_lowercase().as_str()) => true,
-        Ok(v) if v == "0" || v.to_lowercase() == "false" || v.is_empty() => {
-            false
-        }
+        Ok(v) if v == "0" || v.to_lowercase() == "false" || v.is_empty() => false,
         Ok(v) => {
             eprintln!(
                 "[flowsurface] {key}={v:?} is not a recognized boolean, \

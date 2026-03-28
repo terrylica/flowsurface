@@ -259,12 +259,7 @@ pub async fn query(sql: &str) -> Result<String, AdapterError> {
     log::debug!("[CH] POST {url} — {sql_preview}…");
 
     for attempt in 1..=CH_MAX_RETRIES {
-        match HTTP_CLIENT
-            .post(&url)
-            .body(sql.to_string())
-            .send()
-            .await
-        {
+        match HTTP_CLIENT.post(&url).body(sql.to_string()).send().await {
             Ok(resp) => {
                 if !resp.status().is_success() {
                     let status = resp.status();
@@ -302,9 +297,7 @@ pub async fn query(sql: &str) -> Result<String, AdapterError> {
                     e.is_timeout(),
                 );
                 if !retryable || attempt == CH_MAX_RETRIES {
-                    log::error!(
-                        "[CH] reqwest failed after {attempt} attempt(s): {e} (url={url})"
-                    );
+                    log::error!("[CH] reqwest failed after {attempt} attempt(s): {e} (url={url})");
                     tg_alert!(
                         crate::telegram::Severity::Critical,
                         "clickhouse",
@@ -370,7 +363,11 @@ pub async fn fetch_klines(
     let sql = build_odb_sql(&symbol, threshold_dbps, range);
 
     let body = query(&sql).await?;
-    let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let mut klines = Vec::with_capacity(lines.len());
 
     for line in lines.into_iter().rev() {
@@ -486,7 +483,11 @@ pub async fn fetch_klines_with_microstructure(
     let body = query(&sql).await?;
     // Collect non-empty lines first, then iterate in reverse to avoid 4x .reverse() on output Vecs.
     // SQL returns DESC order; reverse-iterating gives ASC (oldest first) directly.
-    let lines: Vec<&str> = body.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
     let n = lines.len();
     let mut klines = Vec::with_capacity(n);
     let mut micro = Vec::with_capacity(n);
@@ -928,9 +929,7 @@ pub fn connect_sse_stream(
                     OdbSseEvent::Heartbeat => {}
                     OdbSseEvent::DeserializationError { error, raw_data } => {
                         let preview = &raw_data[..raw_data.len().min(120)];
-                        log::warn!(
-                            "[SSE] deser error: {error}, data: {preview}"
-                        );
+                        log::warn!("[SSE] deser error: {error}, data: {preview}");
                         tg_alert!(
                             crate::telegram::Severity::Warning,
                             "sse",

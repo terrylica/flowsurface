@@ -196,10 +196,7 @@ pub(super) fn build_content_and_streams(
                 (c, s)
             }
             ContentKind::Ladder => {
-                let config = settings
-                    .visual_config
-                    .clone()
-                    .and_then(|cfg| cfg.ladder());
+                let config = settings.visual_config.clone().and_then(|cfg| cfg.ladder());
                 let c = Content::Ladder(Some(Ladder::new(
                     config,
                     derived_plan.ticker_info,
@@ -216,8 +213,7 @@ pub(super) fn build_content_and_streams(
                     .clone()
                     .and_then(|cfg| cfg.comparison());
                 let basis = derived_plan.basis.unwrap_or(Basis::Time(Timeframe::M15));
-                let c =
-                    Content::Comparison(Some(ComparisonChart::new(basis, &tickers, config)));
+                let c = Content::Comparison(Some(ComparisonChart::new(basis, &tickers, config)));
 
                 let s = by_basis_default(
                     derived_plan.basis,
@@ -310,7 +306,11 @@ pub(super) fn apply_ticksize_change(
             }
         }
     }
-    if !is_client { Some(Effect::RefreshStreams) } else { None }
+    if !is_client {
+        Some(Effect::RefreshStreams)
+    } else {
+        None
+    }
 }
 
 /// Applies a basis change to content and streams.
@@ -361,25 +361,18 @@ pub(super) fn apply_basis_change(
                         };
                         let mut new_streams = vec![kline_stream];
 
-                        if matches!(
-                            c.kind,
-                            data::chart::KlineChartKind::Footprint { .. }
-                        ) {
-                            let depth_aggr =
-                                if base_ticker.exchange().is_depth_client_aggr() {
-                                    StreamTicksize::Client
-                                } else {
-                                    StreamTicksize::ServerSide(
-                                        settings
-                                            .tick_multiply
-                                            .unwrap_or(TickMultiplier(1)),
-                                    )
-                                };
+                        if matches!(c.kind, data::chart::KlineChartKind::Footprint { .. }) {
+                            let depth_aggr = if base_ticker.exchange().is_depth_client_aggr() {
+                                StreamTicksize::Client
+                            } else {
+                                StreamTicksize::ServerSide(
+                                    settings.tick_multiply.unwrap_or(TickMultiplier(1)),
+                                )
+                            };
                             new_streams.push(StreamKind::Depth {
                                 ticker_info: base_ticker,
                                 depth_aggr,
-                                push_freq:
-                                    exchange::PushFrequency::ServerDefault,
+                                push_freq: exchange::PushFrequency::ServerDefault,
                             });
                             new_streams.push(StreamKind::Trades {
                                 ticker_info: base_ticker,
@@ -389,30 +382,25 @@ pub(super) fn apply_basis_change(
                         *streams = ResolvedStream::Ready(new_streams);
                         let action = c.set_basis(new_basis);
 
-                        if let Some(chart::Action::RequestFetch(fetch)) = action
-                        {
+                        if let Some(chart::Action::RequestFetch(fetch)) = action {
                             return Some(Effect::RequestFetch(fetch));
                         }
                         None
                     }
                     Basis::Tick(_) => {
-                        let depth_aggr =
-                            if base_ticker.exchange().is_depth_client_aggr() {
-                                StreamTicksize::Client
-                            } else {
-                                StreamTicksize::ServerSide(
-                                    settings
-                                        .tick_multiply
-                                        .unwrap_or(TickMultiplier(1)),
-                                )
-                            };
+                        let depth_aggr = if base_ticker.exchange().is_depth_client_aggr() {
+                            StreamTicksize::Client
+                        } else {
+                            StreamTicksize::ServerSide(
+                                settings.tick_multiply.unwrap_or(TickMultiplier(1)),
+                            )
+                        };
 
                         *streams = ResolvedStream::Ready(vec![
                             StreamKind::Depth {
                                 ticker_info: base_ticker,
                                 depth_aggr,
-                                push_freq:
-                                    exchange::PushFrequency::ServerDefault,
+                                push_freq: exchange::PushFrequency::ServerDefault,
                             },
                             StreamKind::Trades {
                                 ticker_info: base_ticker,
@@ -426,23 +414,19 @@ pub(super) fn apply_basis_change(
                             ticker_info: base_ticker,
                             threshold_dbps: threshold,
                         };
-                        let depth_aggr =
-                            if base_ticker.exchange().is_depth_client_aggr() {
-                                StreamTicksize::Client
-                            } else {
-                                StreamTicksize::ServerSide(
-                                    settings
-                                        .tick_multiply
-                                        .unwrap_or(TickMultiplier(1)),
-                                )
-                            };
+                        let depth_aggr = if base_ticker.exchange().is_depth_client_aggr() {
+                            StreamTicksize::Client
+                        } else {
+                            StreamTicksize::ServerSide(
+                                settings.tick_multiply.unwrap_or(TickMultiplier(1)),
+                            )
+                        };
                         let new_streams = vec![
                             rb_stream,
                             StreamKind::Depth {
                                 ticker_info: base_ticker,
                                 depth_aggr,
-                                push_freq:
-                                    exchange::PushFrequency::ServerDefault,
+                                push_freq: exchange::PushFrequency::ServerDefault,
                             },
                             StreamKind::Trades {
                                 ticker_info: base_ticker,
@@ -452,8 +436,7 @@ pub(super) fn apply_basis_change(
                         *streams = ResolvedStream::Ready(new_streams);
                         let action = c.set_basis(new_basis);
 
-                        if let Some(chart::Action::RequestFetch(fetch)) = action
-                        {
+                        if let Some(chart::Action::RequestFetch(fetch)) = action {
                             return Some(Effect::RequestFetch(fetch));
                         }
                         None
@@ -520,9 +503,7 @@ pub(super) fn insert_hist_oi(
     match content {
         Content::Kline { chart, .. } => {
             let Some(chart) = chart else {
-                log::warn!(
-                    "insert_hist_oi: chart not yet initialized, dropping OI data"
-                );
+                log::warn!("insert_hist_oi: chart not yet initialized, dropping OI data");
                 return;
             };
             chart.insert_open_interest(req_id, oi);
@@ -550,9 +531,7 @@ pub(super) fn insert_hist_klines(
             chart, indicators, ..
         } => {
             let Some(chart) = chart else {
-                log::warn!(
-                    "insert_hist_klines: chart not yet initialized, dropping kline data"
-                );
+                log::warn!("insert_hist_klines: chart not yet initialized, dropping kline data");
                 exchange::tg_alert!(
                     exchange::telegram::Severity::Info,
                     "pane",
@@ -636,9 +615,7 @@ pub(super) fn insert_odb_klines(
     req_id: Option<uuid::Uuid>,
     ticker_info: TickerInfo,
     klines: &[Kline],
-    microstructure: Option<
-        &[Option<exchange::adapter::clickhouse::ChMicrostructure>],
-    >,
+    microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
     agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
     open_time_ms_list: Option<&[Option<u64>]>,
 ) {
@@ -664,8 +641,7 @@ pub(super) fn insert_odb_klines(
                     open_time_ms_list,
                 );
             } else {
-                let (raw_trades, tick_size) =
-                    (chart.raw_trades(), chart.tick_size());
+                let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
                 let layout = chart.chart_layout();
                 let basis = chart.basis();
                 let kind = chart.kind().clone();

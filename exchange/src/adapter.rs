@@ -1,8 +1,7 @@
 use super::{Ticker, Timeframe};
 use crate::{
     Kline, OpenInterest, Price, PushFrequency, TickMultiplier, TickerInfo, TickerStats, Trade,
-    depth::Depth,
-    unit::qty::SizeUnit,
+    depth::Depth, unit::qty::SizeUnit,
 };
 
 use enum_map::{Enum, EnumMap};

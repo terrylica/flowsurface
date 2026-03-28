@@ -782,6 +782,10 @@ impl BidAskArea {
 }
 
 #[inline]
-pub(super) fn should_show_text(cell_height_unscaled: f32, cell_width_unscaled: f32, min_w: f32) -> bool {
+pub(super) fn should_show_text(
+    cell_height_unscaled: f32,
+    cell_width_unscaled: f32,
+    min_w: f32,
+) -> bool {
     cell_height_unscaled > 8.0 && cell_width_unscaled > min_w
 }

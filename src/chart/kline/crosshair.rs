@@ -149,8 +149,7 @@ pub(super) fn draw_crosshair_tooltip(
                         .and_then(|dp| dp.open_time_ms)
                         .map(|ms| ms as i64)
                         .or_else(|| {
-                            (fwd > 0)
-                                .then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64)
+                            (fwd > 0).then(|| tick_aggr.datapoints[fwd - 1].kline.time as i64)
                         });
                     (open, close)
                 };

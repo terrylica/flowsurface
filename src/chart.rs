@@ -11,12 +11,12 @@ pub(crate) mod view_state;
 
 // Re-export all public types so downstream `use super::*` and
 // `use crate::chart::{...}` continue to work unchanged.
-pub use interaction::{AxisScaleClicked, Interaction, Message};
 pub(crate) use interaction::canvas_interaction;
-pub(crate) use interaction::{ZOOM_SENSITIVITY, TEXT_SIZE};
-pub use view_state::{Caches, PlotConstants, ViewState};
-pub use legend::draw_watermark;
+pub use interaction::{AxisScaleClicked, Interaction, Message};
+pub(crate) use interaction::{TEXT_SIZE, ZOOM_SENSITIVITY};
 pub(crate) use legend::draw_volume_bar;
+pub use legend::draw_watermark;
+pub use view_state::{Caches, PlotConstants, ViewState};
 
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::style;
@@ -28,8 +28,7 @@ use scale::{AxisLabelsX, AxisLabelsY};
 
 use iced::widget::canvas::{self, Canvas};
 use iced::{
-    Alignment, Element, Length, Theme, Vector,
-    padding,
+    Alignment, Element, Length, Theme, Vector, padding,
     widget::{button, center, column, container, mouse_area, row, rule, text},
 };
 
@@ -423,4 +422,3 @@ pub(crate) fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> 
         }
     }
 }
-

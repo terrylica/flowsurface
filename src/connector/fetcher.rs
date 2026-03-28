@@ -232,7 +232,10 @@ pub fn request_fetch(
                 Some((s, pane_id))
             } else {
                 ready_streams.iter().find_map(|stream| {
-                    if matches!(stream, StreamKind::Kline { .. } | StreamKind::OdbKline { .. }) {
+                    if matches!(
+                        stream,
+                        StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                    ) {
                         Some((*stream, pane_id))
                     } else {
                         None

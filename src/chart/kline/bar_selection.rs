@@ -41,10 +41,14 @@ pub(super) const STATS_BOX_H: f32 = 290.0;
 ///
 /// `lo` = right brim (newer, lower visual_idx), `hi` = left brim (older).
 /// Screen formula: `screen_x = (chart_x + translation.x) * scaling + bounds_width / 2`
-pub(super) fn brim_screen_xs(chart: &ViewState, bounds_size: Size, lo: usize, hi: usize) -> (f32, f32) {
-    let to_screen = |chart_x: f32| {
-        (chart_x + chart.translation.x) * chart.scaling + bounds_size.width / 2.0
-    };
+pub(super) fn brim_screen_xs(
+    chart: &ViewState,
+    bounds_size: Size,
+    lo: usize,
+    hi: usize,
+) -> (f32, f32) {
+    let to_screen =
+        |chart_x: f32| (chart_x + chart.translation.x) * chart.scaling + bounds_size.width / 2.0;
     // ODB: interval_to_x(idx) = -(idx as f32) * cell_width
     let right_chart_x = -(lo as f32) * chart.cell_width + chart.cell_width / 2.0;
     let left_chart_x = -(hi as f32) * chart.cell_width - chart.cell_width / 2.0;
@@ -68,12 +72,22 @@ pub(super) fn draw_selection_highlight(
     frame.fill_rectangle(
         Point::new(left_sx, 0.0),
         Size::new(w, bounds_size.height),
-        iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.02 },
+        iced::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 0.3,
+            a: 0.02,
+        },
     );
 
     // Brim handle strips — one full bar wide so the clickable zone is obvious.
     let handle_w = (chart.cell_width * chart.scaling).clamp(3.0, 60.0);
-    let handle_color = iced::Color { r: 1.0, g: 1.0, b: 0.3, a: 0.22 };
+    let handle_color = iced::Color {
+        r: 1.0,
+        g: 1.0,
+        b: 0.3,
+        a: 0.22,
+    };
     frame.fill_rectangle(
         Point::new(left_sx, 0.0),
         Size::new(handle_w, bounds_size.height),
@@ -154,7 +168,10 @@ pub(super) fn draw_bar_selection_stats(
     // ── Within-selection rank normalisation (shared by ↑t/↓t and AUC) ─────
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_unstable_by(|&a, &b| {
-        bars[a].raw.partial_cmp(&bars[b].raw).unwrap_or(std::cmp::Ordering::Equal)
+        bars[a]
+            .raw
+            .partial_cmp(&bars[b].raw)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut rank_norm = vec![0.5_f32; n];
     if n > 1 {
@@ -174,26 +191,52 @@ pub(super) fn draw_bar_selection_stats(
 
     // ── Per-direction aggregates ───────────────────────────────────────────
     let (sum_t_up, sum_raw_up, sum_t_dn, sum_raw_dn) =
-        bars.iter().enumerate().fold((0_f32, 0_f32, 0_f32, 0_f32), |(su, ru, sd, rd), (i, b)| {
-            if b.is_up { (su + rank_norm[i], ru + b.raw, sd, rd) }
-            else       { (su, ru, sd + rank_norm[i], rd + b.raw) }
-        });
-    let mean_t_up   = if n_up > 0 { sum_t_up   / n_up as f32 } else { f32::NAN };
-    let mean_t_dn   = if n_dn > 0 { sum_t_dn   / n_dn as f32 } else { f32::NAN };
-    let mean_raw_up = if n_up > 0 { sum_raw_up / n_up as f32 } else { f32::NAN };
-    let mean_raw_dn = if n_dn > 0 { sum_raw_dn / n_dn as f32 } else { f32::NAN };
+        bars.iter()
+            .enumerate()
+            .fold((0_f32, 0_f32, 0_f32, 0_f32), |(su, ru, sd, rd), (i, b)| {
+                if b.is_up {
+                    (su + rank_norm[i], ru + b.raw, sd, rd)
+                } else {
+                    (su, ru, sd + rank_norm[i], rd + b.raw)
+                }
+            });
+    let mean_t_up = if n_up > 0 {
+        sum_t_up / n_up as f32
+    } else {
+        f32::NAN
+    };
+    let mean_t_dn = if n_dn > 0 {
+        sum_t_dn / n_dn as f32
+    } else {
+        f32::NAN
+    };
+    let mean_raw_up = if n_up > 0 {
+        sum_raw_up / n_up as f32
+    } else {
+        f32::NAN
+    };
+    let mean_raw_dn = if n_dn > 0 {
+        sum_raw_dn / n_dn as f32
+    } else {
+        f32::NAN
+    };
 
     // ── IWDS ──────────────────────────────────────────────────────────────
     let total_raw: f32 = bars.iter().map(|b| b.raw).sum();
     let iwds = if total_raw > 0.0 {
-        bars.iter().map(|b| b.raw * if b.is_up { 1.0 } else { -1.0 }).sum::<f32>() / total_raw
+        bars.iter()
+            .map(|b| b.raw * if b.is_up { 1.0 } else { -1.0 })
+            .sum::<f32>()
+            / total_raw
     } else {
         0.0
     };
 
     // ── Mann-Whitney AUC via rank-sum O(N log N) ───────────────────────────
     let auc: f32 = if n_up > 0 && n_dn > 0 {
-        let r_up: f32 = order.iter().enumerate()
+        let r_up: f32 = order
+            .iter()
+            .enumerate()
             .filter(|(_, orig)| bars[**orig].is_up)
             .map(|(rank_0, _)| rank_0 as f32 + 1.0)
             .sum();
@@ -213,7 +256,11 @@ pub(super) fn draw_bar_selection_stats(
     // ── Conviction and Absorption ──────────────────────────────────────────
     let dominant_up = n_up >= n_dn;
     let conviction = if dominant_up {
-        if !mean_t_dn.is_nan() && mean_t_dn > 0.0 { mean_t_up / mean_t_dn } else { f32::NAN }
+        if !mean_t_dn.is_nan() && mean_t_dn > 0.0 {
+            mean_t_up / mean_t_dn
+        } else {
+            f32::NAN
+        }
     } else if !mean_t_up.is_nan() && mean_t_up > 0.0 {
         mean_t_dn / mean_t_up
     } else {
@@ -222,10 +269,18 @@ pub(super) fn draw_bar_selection_stats(
     // absorption removed — it was ρ=−1.00 with conviction (mathematical inverse); replaced by `edge`.
 
     // ── Climax concentration ───────────────────────────────────────────────
-    let (top_n, top_up) = bars.iter().enumerate()
+    let (top_n, top_up) = bars
+        .iter()
+        .enumerate()
         .filter(|(i, _)| rank_norm[*i] > 0.75)
-        .fold((0_usize, 0_usize), |(t, u), (_, b)| (t + 1, if b.is_up { u + 1 } else { u }));
-    let climax_up_frac = if top_n > 0 { top_up as f32 / top_n as f32 } else { f32::NAN };
+        .fold((0_usize, 0_usize), |(t, u), (_, b)| {
+            (t + 1, if b.is_up { u + 1 } else { u })
+        });
+    let climax_up_frac = if top_n > 0 {
+        top_up as f32 / top_n as f32
+    } else {
+        f32::NAN
+    };
 
     // ── Continuous divergence scores — no threshold gates, always rankable ─
     // climax_skew: (climax_up_frac − count_up_frac). Range [-1, +1].
@@ -255,7 +310,15 @@ pub(super) fn draw_bar_selection_stats(
     let bar_str = format!("[{}{}]", "█".repeat(fill), "░".repeat(10 - fill));
 
     // ── Regime classification ──────────────────────────────────────────────
-    enum Regime { BullConviction, BearConviction, BullAbsorption, BearAbsorption, BullClimax, BearClimax, Contested }
+    enum Regime {
+        BullConviction,
+        BearConviction,
+        BullAbsorption,
+        BearAbsorption,
+        BullClimax,
+        BearClimax,
+        Contested,
+    }
     let regime = if !climax_up_frac.is_nan() && climax_up_frac >= 0.78 {
         Regime::BullClimax
     } else if !climax_up_frac.is_nan() && climax_up_frac <= 0.22 {
@@ -273,58 +336,101 @@ pub(super) fn draw_bar_selection_stats(
     };
 
     // ── Colors ────────────────────────────────────────────────────────────
-    let amber     = iced::Color { r: 0.85, g: 0.65, b: 0.15, a: 1.00 };
-    let amber_dim = iced::Color { r: 0.85, g: 0.65, b: 0.15, a: 0.55 };
-    let orange    = iced::Color { r: 0.95, g: 0.55, b: 0.10, a: 1.00 };
-    let magenta   = iced::Color { r: 0.90, g: 0.25, b: 0.80, a: 1.00 };
-    let dim       = iced::Color { r: 0.50, g: 0.50, b: 0.50, a: 0.65 };
-    let dim_white = iced::Color { r: 0.75, g: 0.75, b: 0.75, a: 0.65 };
-    let neutral   = palette.background.strong.text;
-    let success   = palette.success.base.color;
-    let danger    = palette.danger.base.color;
-
-    let (regime_color, border_col, regime_label): (iced::Color, Option<iced::Color>, String) = match regime {
-        Regime::BullConviction => (success, Some(success), "BULL CONVICTION".into()),
-        Regime::BearConviction => (danger,  Some(danger),  "BEAR CONVICTION".into()),
-        Regime::BullAbsorption => (orange,  Some(orange),  "BULL ABSORPTION ← flow/AUC split".into()),
-        Regime::BearAbsorption => (orange,  Some(orange),  "BEAR ABSORPTION ← flow/AUC split".into()),
-        Regime::BullClimax     => (magenta, Some(magenta), "BULL CLIMAX ◈".into()),
-        Regime::BearClimax     => (magenta, Some(magenta), "BEAR CLIMAX ◈".into()),
-        Regime::Contested => {
-            // Near-miss: IWDS is directional but AUC fell just short of the conviction gate.
-            let near_miss = if iwds > 0.15 && !auc.is_nan() {
-                let g = (0.60 - auc) * 100.0;
-                if g > 0.0 && g <= 12.0 { Some(g) } else { None }
-            } else if iwds < -0.15 && !auc.is_nan() {
-                let g = (auc - 0.40) * 100.0;
-                if g > 0.0 && g <= 12.0 { Some(g) } else { None }
-            } else {
-                None
-            };
-            let label = match near_miss {
-                Some(g) => format!("CONTESTED — AUC {g:.0}pt below gate"),
-                None    => "CONTESTED".into(),
-            };
-            (dim, None, label)
-        }
+    let amber = iced::Color {
+        r: 0.85,
+        g: 0.65,
+        b: 0.15,
+        a: 1.00,
     };
+    let amber_dim = iced::Color {
+        r: 0.85,
+        g: 0.65,
+        b: 0.15,
+        a: 0.55,
+    };
+    let orange = iced::Color {
+        r: 0.95,
+        g: 0.55,
+        b: 0.10,
+        a: 1.00,
+    };
+    let magenta = iced::Color {
+        r: 0.90,
+        g: 0.25,
+        b: 0.80,
+        a: 1.00,
+    };
+    let dim = iced::Color {
+        r: 0.50,
+        g: 0.50,
+        b: 0.50,
+        a: 0.65,
+    };
+    let dim_white = iced::Color {
+        r: 0.75,
+        g: 0.75,
+        b: 0.75,
+        a: 0.65,
+    };
+    let neutral = palette.background.strong.text;
+    let success = palette.success.base.color;
+    let danger = palette.danger.base.color;
+
+    let (regime_color, border_col, regime_label): (iced::Color, Option<iced::Color>, String) =
+        match regime {
+            Regime::BullConviction => (success, Some(success), "BULL CONVICTION".into()),
+            Regime::BearConviction => (danger, Some(danger), "BEAR CONVICTION".into()),
+            Regime::BullAbsorption => (
+                orange,
+                Some(orange),
+                "BULL ABSORPTION ← flow/AUC split".into(),
+            ),
+            Regime::BearAbsorption => (
+                orange,
+                Some(orange),
+                "BEAR ABSORPTION ← flow/AUC split".into(),
+            ),
+            Regime::BullClimax => (magenta, Some(magenta), "BULL CLIMAX ◈".into()),
+            Regime::BearClimax => (magenta, Some(magenta), "BEAR CLIMAX ◈".into()),
+            Regime::Contested => {
+                // Near-miss: IWDS is directional but AUC fell just short of the conviction gate.
+                let near_miss = if iwds > 0.15 && !auc.is_nan() {
+                    let g = (0.60 - auc) * 100.0;
+                    if g > 0.0 && g <= 12.0 { Some(g) } else { None }
+                } else if iwds < -0.15 && !auc.is_nan() {
+                    let g = (auc - 0.40) * 100.0;
+                    if g > 0.0 && g <= 12.0 { Some(g) } else { None }
+                } else {
+                    None
+                };
+                let label = match near_miss {
+                    Some(g) => format!("CONTESTED — AUC {g:.0}pt below gate"),
+                    None => "CONTESTED".into(),
+                };
+                (dim, None, label)
+            }
+        };
 
     // ── Plain-English caption ──────────────────────────────────────────────
-    let caption = if !mean_raw_up.is_nan() && !mean_raw_dn.is_nan()
-        && mean_raw_dn > 0.0 && mean_raw_up > 0.0
-    {
-        let (dom, min_raw) = if mean_raw_up >= mean_raw_dn {
-            (mean_raw_up, mean_raw_dn)
+    let caption =
+        if !mean_raw_up.is_nan() && !mean_raw_dn.is_nan() && mean_raw_dn > 0.0 && mean_raw_up > 0.0
+        {
+            let (dom, min_raw) = if mean_raw_up >= mean_raw_dn {
+                (mean_raw_up, mean_raw_dn)
+            } else {
+                (mean_raw_dn, mean_raw_up)
+            };
+            let side = if mean_raw_up >= mean_raw_dn {
+                "buyers"
+            } else {
+                "sellers"
+            };
+            format!("{side} {:.1}× more urgent", dom / min_raw)
+        } else if n_dn == 0 {
+            "all bars bullish — no dn comparison".to_string()
         } else {
-            (mean_raw_dn, mean_raw_up)
+            "all bars bearish — no up comparison".to_string()
         };
-        let side = if mean_raw_up >= mean_raw_dn { "buyers" } else { "sellers" };
-        format!("{side} {:.1}× more urgent", dom / min_raw)
-    } else if n_dn == 0 {
-        "all bars bullish — no dn comparison".to_string()
-    } else {
-        "all bars bearish — no up comparison".to_string()
-    };
 
     // ── Climax line ────────────────────────────────────────────────────────
     let climax_line = if climax_up_frac.is_nan() {
@@ -338,10 +444,14 @@ pub(super) fn draw_bar_selection_stats(
         format!("◈ climax: {:.0}% {dir}  (of top-25% bars)", frac * 100.0)
     };
     // climax_diverging: skew sign opposes count direction (continuous skew drives the test).
-    let climax_diverging = !climax_skew.is_nan()
-        && climax_skew * (n_up as f32 / n as f32 - 0.5) < 0.0;
+    let climax_diverging =
+        !climax_skew.is_nan() && climax_skew * (n_up as f32 / n as f32 - 0.5) < 0.0;
     // Orange when diverging or when regime label carries a border signal.
-    let climax_color = if climax_diverging || border_col.is_some() { orange } else { amber_dim };
+    let climax_color = if climax_diverging || border_col.is_some() {
+        orange
+    } else {
+        amber_dim
+    };
     let skew_str = if climax_skew.is_nan() {
         "—".to_string()
     } else {
@@ -351,45 +461,149 @@ pub(super) fn draw_bar_selection_stats(
     // ── Inline interpretation suffixes ────────────────────────────────────
     let flow_suffix = {
         let abs_i = iwds.abs();
-        if abs_i < 0.10 { "← neutral" }
-        else if abs_i < 0.30 { "← lean" }
-        else if abs_i < 0.60 { if iwds > 0.0 { "← bullish" } else { "← bearish" } }
-        else if iwds > 0.0 { "← strong bull" } else { "← strong bear" }
+        if abs_i < 0.10 {
+            "← neutral"
+        } else if abs_i < 0.30 {
+            "← lean"
+        } else if abs_i < 0.60 {
+            if iwds > 0.0 {
+                "← bullish"
+            } else {
+                "← bearish"
+            }
+        } else if iwds > 0.0 {
+            "← strong bull"
+        } else {
+            "← strong bear"
+        }
     };
     let urgency_suffix = if !mean_raw_up.is_nan() && !mean_raw_dn.is_nan() {
-        let ratio = if mean_raw_up >= mean_raw_dn { mean_raw_up / mean_raw_dn } else { mean_raw_dn / mean_raw_up };
-        if ratio < 1.2 { "← marginal" } else if ratio < 1.5 { "← present" } else { "← structural edge" }
-    } else { "" };
+        let ratio = if mean_raw_up >= mean_raw_dn {
+            mean_raw_up / mean_raw_dn
+        } else {
+            mean_raw_dn / mean_raw_up
+        };
+        if ratio < 1.2 {
+            "← marginal"
+        } else if ratio < 1.5 {
+            "← present"
+        } else {
+            "← structural edge"
+        }
+    } else {
+        ""
+    };
     let auc_suffix = if !auc.is_nan() {
         let dist = (auc - 0.5).abs();
-        if dist < 0.05 { "← weak edge" } else if dist < 0.15 { "← moderate" } else { "← strong edge" }
-    } else { "" };
+        if dist < 0.05 {
+            "← weak edge"
+        } else if dist < 0.15 {
+            "← moderate"
+        } else {
+            "← strong edge"
+        }
+    } else {
+        ""
+    };
     let edge_suffix = if !edge.is_nan() {
         let ae = edge.abs();
-        if ae < 0.05 { "" }
-        else if ae < 0.15 { if edge > 0.0 { "← ↑ leads" } else { "← ↓ leads" } }
-        else if ae < 0.30 { if edge > 0.0 { "← ↑ edges" } else { "← ↓ edges" } }
-        else if edge > 0.0 { "← ↑ dominant" } else { "← ↓ dominant" }
-    } else { "" };
+        if ae < 0.05 {
+            ""
+        } else if ae < 0.15 {
+            if edge > 0.0 {
+                "← ↑ leads"
+            } else {
+                "← ↓ leads"
+            }
+        } else if ae < 0.30 {
+            if edge > 0.0 {
+                "← ↑ edges"
+            } else {
+                "← ↓ edges"
+            }
+        } else if edge > 0.0 {
+            "← ↑ dominant"
+        } else {
+            "← ↓ dominant"
+        }
+    } else {
+        ""
+    };
 
     // ── Format helpers ─────────────────────────────────────────────────────
-    let t_s   = |v: f32| -> String { if v.is_nan() { "—".to_string() } else { format!("{v:.2}") } };
-    let raw_s = |v: f32| -> String { if v.is_nan() { "—".to_string() } else { format!("{v:.0}") } };
-    let pct_s = |v: f32| -> String { if v.is_nan() { "—".to_string() } else { format!("{:.0}%", v * 100.0) } };
-    let lg2_s = |v: f32| -> String { if v.is_nan() { "—".to_string() } else { format!("{v:+.2}") } };
-    let con_s = |v: f32| -> String { if v.is_nan() { "—".to_string() } else { format!("{v:.2}×") } };
-    let edg_s = |v: f32| -> String { if v.is_nan() { "—".to_string() } else { format!("{v:+.2}") } };
+    let t_s = |v: f32| -> String {
+        if v.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{v:.2}")
+        }
+    };
+    let raw_s = |v: f32| -> String {
+        if v.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{v:.0}")
+        }
+    };
+    let pct_s = |v: f32| -> String {
+        if v.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{:.0}%", v * 100.0)
+        }
+    };
+    let lg2_s = |v: f32| -> String {
+        if v.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{v:+.2}")
+        }
+    };
+    let con_s = |v: f32| -> String {
+        if v.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{v:.2}×")
+        }
+    };
+    let edg_s = |v: f32| -> String {
+        if v.is_nan() {
+            "—".to_string()
+        } else {
+            format!("{v:+.2}")
+        }
+    };
 
     // ── Lines: (text, color, font_size) — Vec for conditional divergence rows ──
     let ts = 13.0_f32;
     let sm = 11.0_f32;
     let mut lines: Vec<(String, iced::Color, f32)> = vec![
-        (format!("{bar_str}  flow: {:+.2}  {flow_suffix}", iwds),                                        amber,        ts),
-        (regime_label,                                                                                    regime_color, ts),
-        (format!("{}  {urgency_suffix}", caption),                                                       dim_white,    sm),
-        (format!("P(↑>↓): {}   log₂(↑/↓): {}  {auc_suffix}", pct_s(auc), lg2_s(log2_ratio)),           amber_dim,    sm),
-        (format!("conv: {}   edge: {}  {edge_suffix}", con_s(conviction), edg_s(edge)),                  amber_dim,    sm),
-        (format!("{climax_line}  {skew_str}"),                                                            climax_color, sm),
+        (
+            format!("{bar_str}  flow: {:+.2}  {flow_suffix}", iwds),
+            amber,
+            ts,
+        ),
+        (regime_label, regime_color, ts),
+        (format!("{}  {urgency_suffix}", caption), dim_white, sm),
+        (
+            format!(
+                "P(↑>↓): {}   log₂(↑/↓): {}  {auc_suffix}",
+                pct_s(auc),
+                lg2_s(log2_ratio)
+            ),
+            amber_dim,
+            sm,
+        ),
+        (
+            format!(
+                "conv: {}   edge: {}  {edge_suffix}",
+                con_s(conviction),
+                edg_s(edge)
+            ),
+            amber_dim,
+            sm,
+        ),
+        (format!("{climax_line}  {skew_str}"), climax_color, sm),
     ];
 
     // ── Telemetry: continuous scalars only — no threshold flags, fully rankable ──
@@ -413,34 +627,42 @@ pub(super) fn draw_bar_selection_stats(
         } else {
             ("bears", (1.0 - climax_up_frac) * 100.0)
         };
-        let (count_side, count_pct) = if n_up >= n_dn { ("bull", up_pct) } else { ("bear", dn_pct) };
+        let (count_side, count_pct) = if n_up >= n_dn {
+            ("bull", up_pct)
+        } else {
+            ("bear", dn_pct)
+        };
         lines.push((
             format!("⚡ DIVERGES: {peak_side} {peak_pct:.0}% of peak  skew:{climax_skew:+.2}"),
-            orange, sm,
+            orange,
+            sm,
         ));
         lines.push((
             format!("   — vs {count_side} count {count_pct:.0}% overall"),
-            dim, sm,
+            dim,
+            sm,
         ));
     }
     if urgency_split {
-        let urgency_side = if log2_ratio >= 0.0 { "buyers" } else { "sellers" };
-        let count_side   = if n_up >= n_dn { "bulls" } else { "bears" };
+        let urgency_side = if log2_ratio >= 0.0 {
+            "buyers"
+        } else {
+            "sellers"
+        };
+        let count_side = if n_up >= n_dn { "bulls" } else { "bears" };
         lines.push((
             format!("⚡ SPLIT: {urgency_side} faster  log₂:{log2_ratio:+.2}"),
-            orange, sm,
+            orange,
+            sm,
         ));
-        lines.push((
-            format!("   — {count_side} win more bars"),
-            dim, sm,
-        ));
+        lines.push((format!("   — {count_side} win more bars"), dim, sm));
     }
 
     // ── Layout ────────────────────────────────────────────────────────────
     let lh_main = ts + 5.0;
-    let lh_sm   = sm + 4.0;
-    let box_w   = 270.0_f32;
-    let origin  = stats_box_origin(stats_box_pos, frame.width());
+    let lh_sm = sm + 4.0;
+    let box_w = 270.0_f32;
+    let origin = stats_box_origin(stats_box_pos, frame.width());
     let x = origin.x + 8.0;
     let y = origin.y + 4.0;
     // total_h: header row + separator (3px) + intensity row + remaining lines + padding
@@ -456,18 +678,23 @@ pub(super) fn draw_bar_selection_stats(
     frame.fill_rectangle(
         origin,
         Size::new(box_w + 16.0, total_h),
-        iced::Color { r: 0.07, g: 0.07, b: 0.07, a: 0.92 },
+        iced::Color {
+            r: 0.07,
+            g: 0.07,
+            b: 0.07,
+            a: 0.92,
+        },
     );
 
     // Colored border when regime has signal
     if let Some(bc) = border_col {
         frame.stroke(
-            &Path::rectangle(
-                origin,
-                Size::new(box_w + 16.0, total_h),
-            ),
+            &Path::rectangle(origin, Size::new(box_w + 16.0, total_h)),
             Stroke::with_color(
-                Stroke { width: 1.5, ..Default::default() },
+                Stroke {
+                    width: 1.5,
+                    ..Default::default()
+                },
                 iced::Color { a: 0.65, ..bc },
             ),
         );
@@ -481,11 +708,15 @@ pub(super) fn draw_bar_selection_stats(
     let col_w = box_w / 3.0;
     let header = [
         (
-            if n < 30 { format!("{distance} bars  ⚠ noisy") } else { format!("{distance} bars") },
+            if n < 30 {
+                format!("{distance} bars  ⚠ noisy")
+            } else {
+                format!("{distance} bars")
+            },
             if n < 30 { orange } else { neutral },
         ),
-        (format!("↑ {n_up}  ({up_pct:.0}%)"),  success),
-        (format!("↓ {n_dn}  ({dn_pct:.0}%)"),  danger),
+        (format!("↑ {n_up}  ({up_pct:.0}%)"), success),
+        (format!("↓ {n_dn}  ({dn_pct:.0}%)"), danger),
     ];
     for (i, (text, color)) in header.iter().enumerate() {
         frame.fill_text(canvas::Text {
@@ -505,7 +736,10 @@ pub(super) fn draw_bar_selection_stats(
             Point::new(x + box_w + 2.0, cur_y - 2.0),
         ),
         Stroke::with_color(
-            Stroke { width: 0.5, ..Default::default() },
+            Stroke {
+                width: 0.5,
+                ..Default::default()
+            },
             dim,
         ),
     );
@@ -514,9 +748,18 @@ pub(super) fn draw_bar_selection_stats(
     // ── Intensity row: ↑t/↓t side-by-side, green | red ──────────────────
     let half = box_w / 2.0;
     for (i, (text, color)) in [
-        (format!("↑t {}  ↑ {} t/s", t_s(mean_t_up), raw_s(mean_raw_up)), success),
-        (format!("↓t {}  ↓ {} t/s", t_s(mean_t_dn), raw_s(mean_raw_dn)), danger),
-    ].iter().enumerate() {
+        (
+            format!("↑t {}  ↑ {} t/s", t_s(mean_t_up), raw_s(mean_raw_up)),
+            success,
+        ),
+        (
+            format!("↓t {}  ↓ {} t/s", t_s(mean_t_dn), raw_s(mean_raw_dn)),
+            danger,
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
         frame.fill_text(canvas::Text {
             content: text.clone(),
             position: Point::new(x + i as f32 * half, cur_y),
@@ -535,6 +778,10 @@ pub(super) fn draw_bar_selection_stats(
             color: *color,
             ..Default::default()
         });
-        cur_y += if (*sz - ts).abs() < 0.5 { lh_main } else { lh_sm };
+        cur_y += if (*sz - ts).abs() < 0.5 {
+            lh_main
+        } else {
+            lh_sm
+        };
     }
 }
