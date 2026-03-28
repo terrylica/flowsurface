@@ -68,7 +68,11 @@ Plans:
 1. All 5 identified bool flag functions (adapter.rs, conditional_ema.rs, heatmap.rs, odb_core.rs, ladder.rs) use enum parameters instead
 2. Every call site reads as `FetchMode::Initial` or `HeatmapLayer::Foreground` instead of bare `true`/`false`
 3. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 03-01-PLAN.md -- Replace 5 bool flag arguments with descriptive enums (SizeUnit, EmaAction, Side, GapFillProgress)
 
 ### Phase 4: Pane Content Extraction
 
@@ -145,8 +149,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | Phase                             | Plans Complete | Status      | Completed  |
 | --------------------------------- | -------------- | ----------- | ---------- |
 | 1. Config Centralization          | 2/2            | Complete    | 2026-03-27 |
-| 2. Must-Use Safety Net            | 1/1 | Complete   | 2026-03-28 |
-| 3. Bool-to-Enum Cleanup           | 0/TBD          | Not started | -          |
+| 2. Must-Use Safety Net            | 1/1            | Complete    | 2026-03-28 |
+| 3. Bool-to-Enum Cleanup           | 0/1            | Planned     | -          |
 | 4. Pane Content Extraction        | 0/TBD          | Not started | -          |
 | 5. Pane Stream Setup Extraction   | 0/TBD          | Not started | -          |
 | 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -          |
