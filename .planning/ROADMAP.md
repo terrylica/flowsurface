@@ -124,7 +124,7 @@ Plans:
 
 Plans:
 
-- [ ] 06-01-PLAN.md -- Extract 5 data operation methods to kline/data_ops.rs
+- [x] 06-01-PLAN.md -- Extract 5 data operation methods to kline/data_ops.rs
 
 ### Phase 7: Kline ODB Lifecycle Extraction
 
