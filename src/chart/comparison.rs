@@ -90,6 +90,7 @@ impl ComparisonChart {
         }
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::Chart(event) => match event {

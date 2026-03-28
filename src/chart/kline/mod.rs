@@ -87,7 +87,7 @@ impl Chart for KlineChart {
     }
 
     fn invalidate_all(&mut self) {
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     fn view_indicators(&'_ self, enabled: &[Self::IndicatorKind]) -> Vec<Element<'_, Message>> {
@@ -847,7 +847,7 @@ impl KlineChart {
             None => {}
         }
 
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     pub fn chart_layout(&self) -> ViewConfig {
@@ -870,7 +870,7 @@ impl KlineChart {
             *clusters = new_kind;
         }
 
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     pub fn set_cluster_scaling(&mut self, new_scaling: ClusterScaling) {
@@ -881,7 +881,7 @@ impl KlineChart {
             *scaling = new_scaling;
         }
 
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     pub fn basis(&self) -> Basis {
@@ -910,9 +910,10 @@ impl KlineChart {
             .filter_map(Option::as_mut)
             .for_each(|indi| indi.on_ticksize_change(&self.data_source));
 
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn set_basis(&mut self, new_basis: Basis) -> Option<Action> {
         self.chart.last_price = None;
         self.chart.basis = new_basis;
@@ -982,7 +983,7 @@ impl KlineChart {
             *studies = new_studies;
         }
 
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     /// Update the OFI EMA period: rebuild the indicator with the new period.
@@ -1004,7 +1005,7 @@ impl KlineChart {
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::OFICumulativeEma] = Some(new_indi);
         }
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     /// Update intensity heatmap lookback window: rebuild the indicator with new params.
@@ -1018,12 +1019,12 @@ impl KlineChart {
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::TradeIntensityHeatmap] = Some(new_indi);
         }
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     pub fn set_thermal_wicks(&mut self, enabled: bool) {
         self.kline_config.thermal_wicks = enabled;
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     pub fn set_anomaly_fence(&mut self, enabled: bool) {
@@ -1039,12 +1040,12 @@ impl KlineChart {
             new_indi.rebuild_from_source(&self.data_source);
             self.indicators[KlineIndicator::TradeIntensityHeatmap] = Some(new_indi);
         }
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     pub fn set_show_sessions(&mut self, show: bool) {
         self.kline_config.show_sessions = show;
-        self.invalidate(None);
+        let _ = self.invalidate(None);
     }
 
     /// NOTE(fork): Compute a keyboard navigation message using this chart's current state.
@@ -1071,7 +1072,7 @@ impl KlineChart {
                 } else {
                     self.request_handler.mark_completed(req_id);
                 }
-                self.invalidate(None);
+                let _ = self.invalidate(None);
             }
             PlotData::TickBased(_) => {}
         }
@@ -1135,6 +1136,7 @@ impl KlineChart {
         self.last_tick
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn invalidate(&mut self, now: Option<Instant>) -> Option<Action> {
         let chart = &mut self.chart;
 

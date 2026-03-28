@@ -1,3 +1,4 @@
+// FILE-SIZE-OK: ODB core logic is tightly coupled — CH reconciliation, gap-fill, trade insertion, SSE
 use super::*;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -626,7 +627,7 @@ impl KlineChart {
             }
         }
 
-        self.invalidate(None);
+        let _ = self.invalidate(None);
 
         // Sentinel: verify bar continuity after gap-fill completion
         let anomalies = self.audit_bar_continuity();
@@ -1213,7 +1214,7 @@ impl KlineChart {
                     // ~1800 redundant canvas redraws. A single invalidate
                     // fires when the gap-fill completes in insert_raw_trades().
                     if !is_gap_fill {
-                        self.invalidate(None);
+                        let _ = self.invalidate(None);
                     }
                 } else {
                     let old_dp_len = tick_aggr.datapoints.len();
@@ -1233,7 +1234,7 @@ impl KlineChart {
                             indi.on_insert_trades(trades_buffer, old_dp_len, &self.data_source)
                         });
 
-                    self.invalidate(None);
+                    let _ = self.invalidate(None);
                 }
             }
             PlotData::TimeBased(ref mut timeseries) => {
@@ -1317,7 +1318,7 @@ impl KlineChart {
                         .values_mut()
                         .filter_map(Option::as_mut)
                         .for_each(|indi| indi.rebuild_from_source(&self.data_source));
-                    self.invalidate(None);
+                    let _ = self.invalidate(None);
                 }
             }
 
@@ -1357,7 +1358,7 @@ impl KlineChart {
                 self.update_latest_kline(&kline, bar_agg_id_range, micro, open_time_ms);
             }
             // Single canvas redraw now that all gap-fill batches are processed.
-            self.invalidate(None);
+            let _ = self.invalidate(None);
         }
     }
 
@@ -1495,7 +1496,7 @@ impl KlineChart {
                     }
                 }
 
-                self.invalidate(None);
+                let _ = self.invalidate(None);
             }
             PlotData::TimeBased(_) => {
                 log::warn!("[RB-HIST] data_source is TimeBased — ODB klines ignored!");

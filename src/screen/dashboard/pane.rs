@@ -1138,6 +1138,7 @@ impl State {
         }
     }
 
+    #[must_use = "returned Effect must be dispatched to dashboard"]
     pub fn update(&mut self, msg: Event) -> Option<Effect> {
         match msg {
             Event::ShowModal(requested_modal) => {
@@ -1382,7 +1383,7 @@ impl State {
                                                             ticker_info: base_ticker,
                                                         },
                                                     ]);
-                                                    c.set_basis(new_basis);
+                                                    let _ = c.set_basis(new_basis);
                                                     effect = Some(Effect::RefreshStreams);
                                                 }
                                                 Basis::Odb(threshold) => {
@@ -1752,6 +1753,7 @@ impl State {
         self.streams.matches_stream(stream)
     }
 
+    #[must_use = "returned Effect must be dispatched to dashboard"]
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
         let should_toggle_close = match (&self.modal, &requested_modal) {
             (Some(Modal::StreamModifier(open)), Modal::StreamModifier(req)) => {
@@ -1775,6 +1777,7 @@ impl State {
         focus_widget_id.map(Effect::FocusWidget)
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
         match &mut self.content {
             Content::Heatmap { chart, .. } => chart
@@ -1815,6 +1818,7 @@ impl State {
         self.content.last_tick()
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn tick(&mut self, now: Instant, timezone: UserTimezone) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();

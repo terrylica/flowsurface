@@ -51,7 +51,7 @@ pub fn update<T: Panel>(panel: &mut T, message: Message) {
             panel.reset_scroll();
         }
         Message::Invalidate(now) => {
-            panel.invalidate(now);
+            let _ = panel.invalidate(now);
         }
     }
 }
