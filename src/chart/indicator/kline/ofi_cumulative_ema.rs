@@ -24,7 +24,7 @@ use crate::chart::{
 };
 
 use data::chart::{PlotData, kline::KlineDataPoint};
-use data::conditional_ema::ConditionalEma;
+use data::conditional_ema::{ConditionalEma, EmaAction};
 use exchange::{Kline, Trade};
 
 use iced::widget::{center, text};
@@ -83,7 +83,7 @@ impl OFICumulativeEmaIndicator {
     }
 
     fn process_one(&mut self, idx: usize, ofi: f32, bullish: bool) {
-        let ema_val = self.ema.update(ofi, true);
+        let ema_val = self.ema.update(ofi, EmaAction::Update);
         self.ema_window.push_back(ema_val);
         self.rolling_sum += ema_val;
         if self.ema_window.len() > self.ema_period {

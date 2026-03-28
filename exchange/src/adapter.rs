@@ -2,6 +2,7 @@ use super::{Ticker, Timeframe};
 use crate::{
     Kline, OpenInterest, Price, PushFrequency, TickMultiplier, TickerInfo, TickerStats, Trade,
     depth::Depth,
+    unit::qty::SizeUnit,
 };
 
 use enum_map::{Enum, EnumMap};
@@ -234,7 +235,7 @@ impl MarketKind {
         MarketKind::InversePerps,
     ];
 
-    pub fn qty_in_quote_value<T>(&self, qty: T, price: Price, size_in_quote_ccy: bool) -> f32
+    pub fn qty_in_quote_value<T>(&self, qty: T, price: Price, unit: SizeUnit) -> f32
     where
         T: Into<f32>,
     {
@@ -242,13 +243,10 @@ impl MarketKind {
 
         match self {
             MarketKind::InversePerps => qty,
-            _ => {
-                if size_in_quote_ccy {
-                    qty
-                } else {
-                    price.to_f32() * qty
-                }
-            }
+            _ => match unit {
+                SizeUnit::Quote => qty,
+                SizeUnit::Base => price.to_f32() * qty,
+            },
         }
     }
 }

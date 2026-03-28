@@ -105,9 +105,9 @@ impl Ladder {
         if self.config.show_chase_tracker {
             let max_int = CHASE_MIN_INTERVAL;
             self.chase_tracker_mut(Side::Bid)
-                .update(raw_best_bid, true, update_t, max_int);
+                .update(raw_best_bid, Side::Bid, update_t, max_int);
             self.chase_tracker_mut(Side::Ask)
-                .update(raw_best_ask, false, update_t, max_int);
+                .update(raw_best_ask, Side::Ask, update_t, max_int);
         } else {
             self.chase_tracker_mut(Side::Bid).reset();
             self.chase_tracker_mut(Side::Ask).reset();

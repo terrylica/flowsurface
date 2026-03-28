@@ -14,7 +14,7 @@ use crate::chart::{
 };
 
 use data::chart::{PlotData, kline::KlineDataPoint};
-use data::conditional_ema::ConditionalEma;
+use data::conditional_ema::{ConditionalEma, EmaAction};
 use exchange::{Kline, Trade};
 
 use iced::widget::{center, text};
@@ -128,8 +128,13 @@ impl KlineIndicatorImpl for OFIIndicator {
                     .filter_map(|(idx, dp)| {
                         dp.microstructure.map(|m| {
                             let bullish = dp.kline.close >= dp.kline.open;
-                            let g = self.green_ema.update(m.ofi, bullish);
-                            let r = self.red_ema.update(m.ofi, !bullish);
+                            let (green_action, red_action) = if bullish {
+                                (EmaAction::Update, EmaAction::CarryForward)
+                            } else {
+                                (EmaAction::CarryForward, EmaAction::Update)
+                            };
+                            let g = self.green_ema.update(m.ofi, green_action);
+                            let r = self.red_ema.update(m.ofi, red_action);
                             (
                                 idx as u64,
                                 OfiPoint {
@@ -162,8 +167,13 @@ impl KlineIndicatorImpl for OFIIndicator {
                 for (idx, dp) in tickseries.datapoints.iter().enumerate().skip(start_idx) {
                     if let Some(m) = dp.microstructure {
                         let bullish = dp.kline.close >= dp.kline.open;
-                        let g = self.green_ema.update(m.ofi, bullish);
-                        let r = self.red_ema.update(m.ofi, !bullish);
+                        let (green_action, red_action) = if bullish {
+                            (EmaAction::Update, EmaAction::CarryForward)
+                        } else {
+                            (EmaAction::CarryForward, EmaAction::Update)
+                        };
+                        let g = self.green_ema.update(m.ofi, green_action);
+                        let r = self.red_ema.update(m.ofi, red_action);
                         self.data.insert(
                             idx as u64,
                             OfiPoint {

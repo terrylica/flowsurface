@@ -6,7 +6,7 @@ use data::UserTimezone;
 use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, StackedBar, StackedBarRatio, TradeDisplay, TradeEntry};
-use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
+use exchange::{TickerInfo, Trade, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -120,7 +120,7 @@ impl TimeAndSales {
         };
 
         let market_type = self.ticker_info.market_type();
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let unit = volume_size_unit();
 
         for trade in trades_buffer {
             let trade_time_ms = trade.time;
@@ -141,7 +141,7 @@ impl TimeAndSales {
                 let trade_size_value = market_type.qty_in_quote_value(
                     trade_display.qty,
                     trade.price,
-                    size_in_quote_ccy,
+                    unit,
                 );
 
                 if trade_size_value >= size_filter {
@@ -234,7 +234,7 @@ impl TimeAndSales {
 
         if popped_any {
             let market_type = self.ticker_info.market_type();
-            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let unit = volume_size_unit();
 
             self.max_filtered_qty = self
                 .recent_trades
@@ -243,7 +243,7 @@ impl TimeAndSales {
                     let trade_size = market_type.qty_in_quote_value(
                         t.display.qty,
                         t.display.price,
-                        size_in_quote_ccy,
+                        unit,
                     );
                     trade_size >= size_filter
                 })
@@ -459,7 +459,7 @@ impl canvas::Program<Message> for TimeAndSales {
             let start_index = (row_scroll_offset / row_height).floor() as usize;
             let visible_rows = (bounds.height / row_height).ceil() as usize;
 
-            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let unit = volume_size_unit();
 
             let trades_to_draw = self
                 .recent_trades
@@ -468,7 +468,7 @@ impl canvas::Program<Message> for TimeAndSales {
                     let trade_size = market_type.qty_in_quote_value(
                         t.display.qty,
                         t.display.price,
-                        size_in_quote_ccy,
+                        unit,
                     );
                     trade_size >= self.config.trade_size_filter
                 })

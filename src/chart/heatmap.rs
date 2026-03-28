@@ -13,13 +13,14 @@ use data::chart::{
     },
     indicator::HeatmapIndicator,
 };
+use data::panel::ladder::Side;
 use data::util::{abbr_large_numbers, count_decimals};
 use data::{
     aggr::time::{DataPoint, TimeSeries},
     chart::Autoscale,
 };
 use exchange::{
-    SizeUnit, TickerInfo, Trade,
+    TickerInfo, Trade,
     depth::Depth,
     unit::qty::volume_size_unit,
     unit::{Price, PriceStep},
@@ -494,7 +495,7 @@ impl canvas::Program<Message> for HeatmapChart {
             let (max_aggr_volume, max_trade_qty) =
                 (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
 
-            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let unit = volume_size_unit();
 
             let volume_indicator = self.indicators[HeatmapIndicator::Volume].is_some();
 
@@ -530,7 +531,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         frame.fill_rectangle(
                             Point::new(start_x, y_position - (cell_height / 2.0)),
                             Size::new(width, cell_height),
-                            depth_color(palette, visual_run.is_bid, color_alpha),
+                            depth_color(palette, visual_run.side, color_alpha),
                         );
                     }
                 }
@@ -545,7 +546,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 let order_size = market_type.qty_in_quote_value(
                                     run.qty(),
                                     *price,
-                                    size_in_quote_ccy,
+                                    unit,
                                 );
                                 order_size > self.visual_config.order_size_filter
                             })
@@ -561,7 +562,7 @@ impl canvas::Program<Message> for HeatmapChart {
                                 frame.fill_rectangle(
                                     Point::new(start_x, y_position - (cell_height / 2.0)),
                                     Size::new(width, cell_height),
-                                    depth_color(palette, run.is_bid, color_alpha),
+                                    depth_color(palette, run.side, color_alpha),
                                 );
                             });
                     });
@@ -587,7 +588,7 @@ impl canvas::Program<Message> for HeatmapChart {
                             frame.fill_rectangle(
                                 Point::new(0.0, y_position - (cell_height / 2.0)),
                                 Size::new(bar_width, cell_height),
-                                depth_color(palette, run.is_bid, 0.5),
+                                depth_color(palette, run.side, 0.5),
                             );
                         });
 
@@ -620,7 +621,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         let trade_size = market_type.qty_in_quote_value(
                             trade_qty,
                             trade.price,
-                            size_in_quote_ccy,
+                            unit,
                         );
 
                         if trade_size > self.visual_config.trade_size_filter {
@@ -803,7 +804,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         base_data_time.saturating_add_signed(offset * aggr_time as i64)
                     });
 
-                    let display_grid_qtys: FxHashMap<(u64, Price), (f32, bool)> =
+                    let display_grid_qtys: FxHashMap<(u64, Price), (f32, Side)> =
                         self.heatmap.query_grid_qtys(
                             base_data_time,
                             base_data_price,
@@ -855,11 +856,11 @@ impl canvas::Program<Message> for HeatmapChart {
                         for (display_col_idx, &data_time_val) in
                             times_for_display_lookup.iter().enumerate()
                         {
-                            if let Some((qty, is_bid)) =
+                            if let Some((qty, side)) =
                                 display_grid_qtys.get(&(data_time_val, data_price_key))
                             {
                                 let text_content = abbr_large_numbers(*qty);
-                                let color = if *is_bid {
+                                let color = if side.is_bid() {
                                     palette.success.strong.color
                                 } else {
                                     palette.danger.strong.color
@@ -913,8 +914,8 @@ impl canvas::Program<Message> for HeatmapChart {
     }
 }
 
-fn depth_color(palette: &Extended, is_bid: bool, alpha: f32) -> Color {
-    if is_bid {
+fn depth_color(palette: &Extended, side: Side, alpha: f32) -> Color {
+    if side.is_bid() {
         palette.success.strong.color.scale_alpha(alpha)
     } else {
         palette.danger.strong.color.scale_alpha(alpha)

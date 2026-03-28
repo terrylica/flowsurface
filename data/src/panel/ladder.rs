@@ -39,7 +39,7 @@ enum Direction {
     Down,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     Bid,
     Ask,
@@ -218,7 +218,7 @@ impl ChaseTracker {
     pub fn update(
         &mut self,
         current_best: Option<Price>,
-        is_bid: bool,
+        side: Side,
         now_ms: u64,
         max_interval: Duration,
     ) {
@@ -238,10 +238,9 @@ impl ChaseTracker {
         };
 
         if let Some(last) = self.last_best {
-            let direction = if is_bid {
-                Direction::Up
-            } else {
-                Direction::Down
+            let direction = match side {
+                Side::Bid => Direction::Up,
+                Side::Ask => Direction::Down,
             };
 
             let is_continue = match direction {
