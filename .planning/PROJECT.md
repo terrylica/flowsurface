@@ -71,12 +71,12 @@ Every feature change should touch the minimum number of files necessary — no s
 
 ## Key Decisions
 
-| Decision                                | Rationale                                                                     | Outcome   |
-| --------------------------------------- | ----------------------------------------------------------------------------- | --------- |
-| Worst offenders first, not full repo    | Maximize impact per effort; full repo would be months                         | — Pending |
-| Config struct over dependency injection | Rust LazyLock pattern is idiomatic; no need for DI framework                  | — Pending |
-| Module splits over crate splits         | Modules are cheaper to refactor; crate splits add build complexity            | — Pending |
-| No upstream compatibility constraint    | This is a fork with divergent ODB features; upstream merges are manual anyway | — Pending |
+| Decision                                | Rationale                                                                     | Outcome        |
+| --------------------------------------- | ----------------------------------------------------------------------------- | -------------- |
+| Worst offenders first, not full repo    | Maximize impact per effort; full repo would be months                         | v1.0 Validated |
+| Config struct over dependency injection | Rust LazyLock pattern is idiomatic; no need for DI framework                  | v1.0 Validated |
+| Module splits over crate splits         | Modules are cheaper to refactor; crate splits add build complexity            | v1.0 Validated |
+| No upstream compatibility constraint    | This is a fork with divergent ODB features; upstream merges are manual anyway | v1.0 Validated |
 
 ## Evolution
 
@@ -99,4 +99,15 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-_Last updated: 2026-03-28 after Phase 2 completion_
+## Current State
+
+**v1.0 Milestone shipped 2026-03-28.** All 16 requirements satisfied. God modules tamed: pane.rs (2431→1409), kline/mod.rs (2388→1721). Indicator ceremony: 3 files. Config centralized. Bool flags eliminated. Safety net in place.
+
+**Next milestone candidates** (from v2 requirements in archived REQUIREMENTS.md):
+
+- DASH-01: dashboard.rs split (1906 LOC)
+- MAIN-01: main.rs split (1481 LOC)
+- SET-01/SET-02: settings decoupling
+- ADAPT-01/ADAPT-02: exchange adapter consolidation
+
+_Last updated: 2026-03-28 after v1.0 milestone completion_
