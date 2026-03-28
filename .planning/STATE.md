@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-03-28T01:27:07.628Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-03-28T01:52:10.575Z"
 last_activity: 2026-03-28
 progress:
   total_phases: 8
-  completed_phases: 4
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 5
+  total_plans: 6
+  completed_plans: 6
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Core value:** Every feature change should touch the minimum number of files necessary
-**Current focus:** Phase 04 — Pane Content Extraction
+**Current focus:** Phase 05 — Pane Stream Setup Extraction
 
 ## Current Position
 
-Phase: 5
-Plan: Not started
+Phase: 05 (Pane Stream Setup Extraction) — EXECUTING
+Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-03-28
 
@@ -56,6 +56,7 @@ _Updated after each plan completion_
 | Phase 01 P02 | 11min | 2 tasks | 2 files |
 | Phase 02 P01 | 4min | 2 tasks | 8 files |
 | Phase 04 P01 | 5min | 2 tasks | 2 files |
+| Phase 05 P01 | 5min | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,7 @@ Recent decisions affecting current work:
 - [Phase 02]: Only annotate cross-boundary Action/Effect enums, not modal-internal Actions
 - [Phase 02]: Use let _ = for intentional drops rather than narrowing #[must_use] scope
 - [Phase 04]: git mv pane.rs to pane/mod.rs preserves history; pub(super) for cross-submodule factory methods
+- [Phase 05]: Free functions with individual field refs for borrow-checker-safe extraction from pane State
 
 ### Pending Todos
 
@@ -85,6 +87,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-28T01:23:50.133Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-03-28T01:52:10.572Z
+Stopped at: Completed 05-01-PLAN.md
 Resume file: None

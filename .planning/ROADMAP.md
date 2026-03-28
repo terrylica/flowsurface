@@ -107,7 +107,7 @@ Plans:
 
 Plans:
 
-- [ ] 05-01-PLAN.md -- Extract stream wiring + data insertion to pane/stream_setup.rs
+- [x] 05-01-PLAN.md -- Extract stream wiring + data insertion to pane/stream_setup.rs
 
 ### Phase 6: Kline Data Ops Extraction
 
