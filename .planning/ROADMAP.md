@@ -85,7 +85,11 @@ Plans:
 2. `pane/mod.rs` re-exports Content via `pub(crate) use content::Content` -- all external imports unchanged
 3. Opening any pane type (Kline, Heatmap, ODB) works identically to before
 4. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 04-01-PLAN.md -- Convert pane.rs to pane/mod.rs + extract Content enum to pane/content.rs
 
 ### Phase 5: Pane Stream Setup Extraction
 
@@ -151,7 +155,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 1. Config Centralization          | 2/2            | Complete    | 2026-03-27 |
 | 2. Must-Use Safety Net            | 1/1            | Complete    | 2026-03-28 |
 | 3. Bool-to-Enum Cleanup           | 0/1            | Planned     | -          |
-| 4. Pane Content Extraction        | 0/TBD          | Not started | -          |
+| 4. Pane Content Extraction        | 0/1            | Planned     | -          |
 | 5. Pane Stream Setup Extraction   | 0/TBD          | Not started | -          |
 | 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -          |
 | 7. Kline ODB Lifecycle Extraction | 0/TBD          | Not started | -          |
