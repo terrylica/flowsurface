@@ -19,10 +19,12 @@ Every feature change should touch the minimum number of files necessary — no s
 - ✓ Chart rendering with 4-layer canvas (main, watermark, legend, crosshair) — existing
 - ✓ Indicator system with 6 KlineIndicator types — existing
 - ✓ SSH tunnel reliability with autossh + retry backoff — existing
+- ✓ Centralized AppConfig struct replaces scattered env var reads — Phase 1
+- ✓ `#[must_use]` on all Action/Effect return types — safety net for code moves — Phase 2
 
 ### Active
 
-- [ ] Centralize all env var reads into a single config struct
+- [x] Centralize all env var reads into a single config struct
 - [ ] Split pane.rs (2425 LOC) into event dispatch + chart factory + interaction modules
 - [ ] Split kline/mod.rs (2388 LOC) into canvas rendering + data operations modules
 - [ ] Reduce indicator addition ceremony from 36 files to fewer touch points
@@ -97,4 +99,4 @@ This document evolves at phase transitions and milestone boundaries.
 
 ---
 
-_Last updated: 2026-03-27 after initialization_
+_Last updated: 2026-03-28 after Phase 2 completion_
