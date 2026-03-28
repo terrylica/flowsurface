@@ -16,7 +16,7 @@ Requirements for this refactoring milestone. Each maps to roadmap phases.
 
 ### God Module Splits -- pane.rs
 
-- [ ] **PANE-01**: Content type and its factory methods extracted to `pane/content.rs` (~500 LOC reduction)
+- [x] **PANE-01**: Content type and its factory methods extracted to `pane/content.rs` (~500 LOC reduction)
 - [ ] **PANE-02**: Stream setup logic (OdbKline + Trades + Depth wiring) extracted to `pane/stream_setup.rs` (~700 LOC reduction)
 - [ ] **PANE-03**: pane.rs reduced below 1500 LOC after extractions while preserving all existing behavior
 
@@ -84,7 +84,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CFG-02      | Phase 1                    | Complete |
 | CFG-03      | Phase 1                    | Complete |
 | CFG-04      | Phase 1                    | Complete |
-| PANE-01     | Phase 4                    | Pending  |
+| PANE-01     | Phase 4                    | Complete |
 | PANE-02     | Phase 5                    | Pending  |
 | PANE-03     | Phase 5                    | Pending  |
 | KLINE-01    | Phase 6                    | Pending  |

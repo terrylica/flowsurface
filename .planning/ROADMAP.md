@@ -89,7 +89,7 @@ Plans:
 
 Plans:
 
-- [ ] 04-01-PLAN.md -- Convert pane.rs to pane/mod.rs + extract Content enum to pane/content.rs
+- [x] 04-01-PLAN.md -- Convert pane.rs to pane/mod.rs + extract Content enum to pane/content.rs
 
 ### Phase 5: Pane Stream Setup Extraction
 
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | --------------------------------- | -------------- | ----------- | ---------- |
 | 1. Config Centralization          | 2/2            | Complete    | 2026-03-27 |
 | 2. Must-Use Safety Net            | 1/1            | Complete    | 2026-03-28 |
-| 3. Bool-to-Enum Cleanup           | 0/1            | Planned     | -          |
+| 3. Bool-to-Enum Cleanup           | 1/1            | Complete    | 2026-03-28 |
 | 4. Pane Content Extraction        | 0/1            | Planned     | -          |
 | 5. Pane Stream Setup Extraction   | 0/TBD          | Not started | -          |
 | 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -          |
