@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Config Centralization** - Single AppConfig struct replaces scattered env var reads across 6 files
 - [x] **Phase 2: Must-Use Safety Net** - #[must_use] annotations on Task/Effect return types before any code moves (completed 2026-03-28)
-- [ ] **Phase 3: Bool-to-Enum Cleanup** - Replace 5 bool flag arguments with descriptive enums
+- [x] **Phase 3: Bool-to-Enum Cleanup** - Replace 5 bool flag arguments with descriptive enums (completed 2026-03-28)
 - [ ] **Phase 4: Pane Content Extraction** - Extract Content enum and factory methods from pane.rs to pane/content.rs
 - [ ] **Phase 5: Pane Stream Setup Extraction** - Extract stream wiring logic from pane.rs to pane/stream_setup.rs
 - [ ] **Phase 6: Kline Data Ops Extraction** - Extract data operation methods from kline/mod.rs to kline/data_ops.rs
