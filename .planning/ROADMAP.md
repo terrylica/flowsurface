@@ -72,7 +72,7 @@ Plans:
 
 Plans:
 
-- [ ] 03-01-PLAN.md -- Replace 5 bool flag arguments with descriptive enums (SizeUnit, EmaAction, Side, GapFillProgress)
+- [x] 03-01-PLAN.md -- Replace 5 bool flag arguments with descriptive enums (SizeUnit, EmaAction, Side, GapFillProgress)
 
 ### Phase 4: Pane Content Extraction
 
