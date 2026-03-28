@@ -29,7 +29,7 @@ Requirements for this refactoring milestone. Each maps to roadmap phases.
 ### Code Quality
 
 - [ ] **QUAL-01**: 5 bool flag arguments replaced with enums or split into separate functions (adapter.rs, conditional_ema.rs, heatmap.rs, odb_core.rs, ladder.rs)
-- [ ] **QUAL-02**: `#[must_use]` added to Task/Effect return types in pane.rs and dashboard.rs before any code is moved
+- [x] **QUAL-02**: `#[must_use]` added to Task/Effect return types in pane.rs and dashboard.rs before any code is moved
 - [ ] **QUAL-03**: Indicator addition ceremony reduced from 36 file touch points to 6 or fewer
 
 ### Verification
@@ -91,7 +91,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | KLINE-02    | Phase 7                    | Pending |
 | KLINE-03    | Phase 7                    | Pending |
 | QUAL-01     | Phase 3                    | Pending |
-| QUAL-02     | Phase 2                    | Pending |
+| QUAL-02     | Phase 2                    | Complete |
 | QUAL-03     | Phase 8                    | Pending |
 | VER-01      | Phases 1-8 (cross-cutting) | Complete |
 | VER-02      | Phases 1-8 (cross-cutting) | Complete |
