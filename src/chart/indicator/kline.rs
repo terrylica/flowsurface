@@ -108,7 +108,14 @@ pub struct FetchCtx<'a> {
     pub prefetch_earliest: u64,
 }
 
-pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
+/// Create an indicator with configuration-aware params.
+///
+/// OFI-family indicators use `ofi_ema_period`; `TradeIntensityHeatmap` uses
+/// `intensity_lookback` + `anomaly_fence`. All others use default construction.
+pub fn make_indicator(
+    which: KlineIndicator,
+    cfg: &data::chart::kline::Config,
+) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
         KlineIndicator::OpenInterest => {
@@ -118,18 +125,25 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::TradeCount => {
             Box::new(super::kline::trade_count::TradeCountIndicator::new())
         }
-        KlineIndicator::OFI => Box::new(super::kline::ofi::OFIIndicator::new()),
+        KlineIndicator::OFI => Box::new(
+            super::kline::ofi::OFIIndicator::with_ema_period(cfg.ofi_ema_period),
+        ),
         // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
-        KlineIndicator::OFICumulativeEma => {
-            Box::new(super::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::new())
-        }
+        KlineIndicator::OFICumulativeEma => Box::new(
+            super::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
+                cfg.ofi_ema_period,
+            ),
+        ),
         KlineIndicator::TradeIntensity => {
             Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
         }
         // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
-        KlineIndicator::TradeIntensityHeatmap => {
-            Box::new(super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::new())
-        }
+        KlineIndicator::TradeIntensityHeatmap => Box::new(
+            super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_config(
+                cfg.intensity_lookback,
+                cfg.anomaly_fence,
+            ),
+        ),
         // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         KlineIndicator::ZigZag => Box::new(super::kline::zigzag::ZigZagOverlayIndicator::new()),
         KlineIndicator::RSI => Box::new(super::kline::rsi::RsiIndicator::new()),

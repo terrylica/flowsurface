@@ -214,34 +214,6 @@ impl PlotConstants for KlineChart {
     }
 }
 
-/// Create an indicator with configuration-aware params.
-///
-/// OFI-family indicators use `ofi_ema_period`; `TradeIntensityHeatmap` uses
-/// `intensity_lookback`. All others use default construction.
-// GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
-fn make_indicator_with_config(
-    which: KlineIndicator,
-    cfg: &data::chart::kline::Config,
-) -> Box<dyn KlineIndicatorImpl> {
-    match which {
-        KlineIndicator::OFI => Box::new(indicator::kline::ofi::OFIIndicator::with_ema_period(
-            cfg.ofi_ema_period,
-        )),
-        KlineIndicator::OFICumulativeEma => Box::new(
-            indicator::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
-                cfg.ofi_ema_period,
-            ),
-        ),
-        KlineIndicator::TradeIntensityHeatmap => Box::new(
-            indicator::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_config(
-                cfg.intensity_lookback,
-                cfg.anomaly_fence,
-            ),
-        ),
-        other => indicator::kline::make_empty(other),
-    }
-}
-
 pub struct KlineChart {
     chart: ViewState,
     data_source: PlotData<KlineDataPoint>,
@@ -398,7 +370,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    let mut indi = make_indicator_with_config(i, &kline_config);
+                    let mut indi = indicator::kline::make_indicator(i, &kline_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -484,7 +456,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    let mut indi = make_indicator_with_config(i, &kline_config);
+                    let mut indi = indicator::kline::make_indicator(i, &kline_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }
@@ -578,7 +550,7 @@ impl KlineChart {
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
-                    let mut indi = make_indicator_with_config(i, &kline_config);
+                    let mut indi = indicator::kline::make_indicator(i, &kline_config);
                     indi.rebuild_from_source(&data_source);
                     indicators[i] = Some(indi);
                 }

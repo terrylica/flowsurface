@@ -42,10 +42,6 @@ pub struct OFIIndicator {
 }
 
 impl OFIIndicator {
-    pub fn new() -> Self {
-        Self::with_ema_period(20)
-    }
-
     pub fn with_ema_period(period: usize) -> Self {
         Self {
             cache: Caches::default(),

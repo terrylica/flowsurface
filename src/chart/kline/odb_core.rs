@@ -153,7 +153,7 @@ impl KlineChart {
 
         let mut indicators = EnumMap::default();
         for &i in enabled_indicators {
-            let mut indi = make_indicator_with_config(i, &kline_config);
+            let mut indi = indicator::kline::make_indicator(i, &kline_config);
             indi.rebuild_from_source(&data_source);
             indicators[i] = Some(indi);
         }
@@ -286,8 +286,12 @@ impl KlineChart {
                     // Buffer CH/SSE bars during gap-fill to prevent temporal inversions.
                     // They'll be applied in order after gap-fill completes.
                     if self.fetching_trades.0 {
-                        self.buffered_ch_klines
-                            .push((*kline, bar_agg_id_range, micro, bar_open_time_ms));
+                        self.buffered_ch_klines.push((
+                            *kline,
+                            bar_agg_id_range,
+                            micro,
+                            bar_open_time_ms,
+                        ));
                         log::debug!(
                             "[gap-fill] buffered CH bar ts={} bar_agg_id_range={:?} during gap-fill",
                             kline.time,
@@ -380,9 +384,9 @@ impl KlineChart {
                     // A valid ODB bar must span at least 80% of its threshold.
                     // Catches regressions like #176 (orphan bars) and #284 (Asclepius).
                     if let Basis::Odb(threshold_dbps) = self.chart.basis {
-                        let range_dbps =
-                            ((kline.high.to_f32() - kline.low.to_f32()) / kline.open.to_f32())
-                                * 10_000.0;
+                        let range_dbps = ((kline.high.to_f32() - kline.low.to_f32())
+                            / kline.open.to_f32())
+                            * 10_000.0;
                         let min_expected = (threshold_dbps as f32 / 10.0) * 0.8;
                         if range_dbps < min_expected && range_dbps >= 0.0 {
                             log::warn!(

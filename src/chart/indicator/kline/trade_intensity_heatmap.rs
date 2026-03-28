@@ -39,8 +39,8 @@ use iced::widget::canvas;
 use data::chart::{PlotData, kline::KlineDataPoint, kline::adaptive_k};
 use exchange::{Kline, Trade};
 
-use iced::{Color, Point, Size};
 use iced::widget::center;
+use iced::{Color, Point, Size};
 use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 
@@ -97,8 +97,8 @@ fn thermal_color(t: f32) -> Color {
 
     let i = h as u32;
     let f = h - i as f32;
-    let p = v * (1.0 - s);           // low component (≈0.046 — near-zero for vivid colours)
-    let q = v * (1.0 - s * f);       // falling ramp
+    let p = v * (1.0 - s); // low component (≈0.046 — near-zero for vivid colours)
+    let q = v * (1.0 - s * f); // falling ramp
     let u = v * (1.0 - s * (1.0 - f)); // rising ramp
 
     let (r, g, b) = match i % 6 {
@@ -140,10 +140,6 @@ pub struct TradeIntensityHeatmapIndicator {
 }
 
 impl TradeIntensityHeatmapIndicator {
-    pub fn new() -> Self {
-        Self::with_config(2000, true)
-    }
-
     pub fn with_config(lookback: usize, anomaly_fence: bool) -> Self {
         Self {
             cache: Caches::default(),
@@ -261,13 +257,19 @@ impl TradeIntensityHeatmapIndicator {
         let mut lines: Vec<String> = Vec::new();
         lines.push(format!(
             "=== oracle-spectrum: lookback={} K={} data_len={} ===",
-            self.lookback, k, self.data.len()
+            self.lookback,
+            k,
+            self.data.len()
         ));
 
         // Section 1: colour table — one row per bin with actual hex and hue description
         lines.push("--- Colour table (bin → t → #RRGGBB) ---".into());
         for bin in 1..=(k as u8) {
-            let t = if k <= 1 { 0.0 } else { (bin - 1) as f32 / (k - 1) as f32 };
+            let t = if k <= 1 {
+                0.0
+            } else {
+                (bin - 1) as f32 / (k - 1) as f32
+            };
             let c = thermal_color(t);
             let (r, g, b) = (
                 (c.r * 255.0) as u8,
@@ -282,7 +284,9 @@ impl TradeIntensityHeatmapIndicator {
         if sample_n > 0 {
             let sample = &self.data[self.data.len() - sample_n..];
 
-            lines.push(format!("--- Bin histogram ALL k_actual (last {sample_n} bars) ---"));
+            lines.push(format!(
+                "--- Bin histogram ALL k_actual (last {sample_n} bars) ---"
+            ));
             let mut hist_all = vec![0u32; k + 1];
             let mut zero_count = 0u32;
             for p in sample {
@@ -296,7 +300,10 @@ impl TradeIntensityHeatmapIndicator {
             for bin in 1..=(k as u8) {
                 let count = hist_all[bin as usize];
                 let bar_len = (count as f32 / peak_all as f32 * 30.0) as usize;
-                lines.push(format!("  K{bin:2}  {count:4} bars  {}", "#".repeat(bar_len)));
+                lines.push(format!(
+                    "  K{bin:2}  {count:4} bars  {}",
+                    "#".repeat(bar_len)
+                ));
             }
             if zero_count > 0 {
                 lines.push(format!("  K0 (no-micro sentinel): {zero_count} bars"));
@@ -348,7 +355,10 @@ impl TradeIntensityHeatmapIndicator {
         visible_range: RangeInclusive<u64>,
     ) -> iced::Element<'a, Message> {
         if self.data.is_empty() {
-            return center(iced::widget::text("Intensity Heatmap: no microstructure data")).into();
+            return center(iced::widget::text(
+                "Intensity Heatmap: no microstructure data",
+            ))
+            .into();
         }
 
         let tooltip = |p: &HeatmapPoint, _next: Option<&HeatmapPoint>| {
@@ -358,7 +368,10 @@ impl TradeIntensityHeatmapIndicator {
             );
             if p.is_anomaly {
                 let pct = (1.0 - p.anomaly_pvalue) * 100.0;
-                text.push_str(&format!(" [ANOMALY p={:.3} ({:.1}%ile)]", p.anomaly_pvalue, pct));
+                text.push_str(&format!(
+                    " [ANOMALY p={:.3} ({:.1}%ile)]",
+                    p.anomaly_pvalue, pct
+                ));
             }
             PlotTooltip::new(text)
         };
@@ -375,7 +388,10 @@ impl TradeIntensityHeatmapIndicator {
             .fixed_max(k_max)
             .with_tooltip(tooltip);
 
-        let plot = HeatmapPlot { inner: bar_plot, k_actual };
+        let plot = HeatmapPlot {
+            inner: bar_plot,
+            k_actual,
+        };
 
         indicator_row_slice_with_legend(
             main_chart,

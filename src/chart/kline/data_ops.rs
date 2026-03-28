@@ -53,7 +53,7 @@ impl KlineChart {
         if self.indicators[indicator].is_some() {
             self.indicators[indicator] = None;
         } else {
-            let mut box_indi = make_indicator_with_config(indicator, &self.kline_config);
+            let mut box_indi = indicator::kline::make_indicator(indicator, &self.kline_config);
             box_indi.rebuild_from_source(&self.data_source);
             self.indicators[indicator] = Some(box_indi);
         }
