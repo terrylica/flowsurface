@@ -13,7 +13,7 @@ Systematic refactoring of the flowsurface codebase targeting the top structural 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Config Centralization** - Single AppConfig struct replaces scattered env var reads across 6 files
+- [x] **Phase 1: Config Centralization** - Single AppConfig struct replaces scattered env var reads across 6 files
 - [ ] **Phase 2: Must-Use Safety Net** - #[must_use] annotations on Task/Effect return types before any code moves
 - [ ] **Phase 3: Bool-to-Enum Cleanup** - Replace 5 bool flag arguments with descriptive enums
 - [ ] **Phase 4: Pane Content Extraction** - Extract Content enum and factory methods from pane.rs to pane/content.rs
@@ -52,7 +52,11 @@ Plans:
 1. All `Action`, `Effect`, and `Task`-returning methods in pane.rs and dashboard.rs have `#[must_use]` annotations
 2. `cargo clippy -- -D warnings` passes clean (no new unused-result warnings means existing code already handles returns correctly)
 3. Intentionally dropping a Task return value in test code triggers a compiler warning
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 02-01-PLAN.md -- Annotate 7 Action/Effect enums + 8 Option-returning functions with #[must_use]
 
 ### Phase 3: Bool-to-Enum Cleanup
 
@@ -138,13 +142,13 @@ Plans:
 **Execution Order:**
 Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 
-| Phase                             | Plans Complete | Status      | Completed |
-| --------------------------------- | -------------- | ----------- | --------- |
-| 1. Config Centralization          | 0/2            | Planning    | -         |
-| 2. Must-Use Safety Net            | 0/TBD          | Not started | -         |
-| 3. Bool-to-Enum Cleanup           | 0/TBD          | Not started | -         |
-| 4. Pane Content Extraction        | 0/TBD          | Not started | -         |
-| 5. Pane Stream Setup Extraction   | 0/TBD          | Not started | -         |
-| 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -         |
-| 7. Kline ODB Lifecycle Extraction | 0/TBD          | Not started | -         |
-| 8. Indicator Ceremony Reduction   | 0/TBD          | Not started | -         |
+| Phase                             | Plans Complete | Status      | Completed  |
+| --------------------------------- | -------------- | ----------- | ---------- |
+| 1. Config Centralization          | 2/2            | Complete    | 2026-03-27 |
+| 2. Must-Use Safety Net            | 0/1            | Not started | -          |
+| 3. Bool-to-Enum Cleanup           | 0/TBD          | Not started | -          |
+| 4. Pane Content Extraction        | 0/TBD          | Not started | -          |
+| 5. Pane Stream Setup Extraction   | 0/TBD          | Not started | -          |
+| 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -          |
+| 7. Kline ODB Lifecycle Extraction | 0/TBD          | Not started | -          |
+| 8. Indicator Ceremony Reduction   | 0/TBD          | Not started | -          |
