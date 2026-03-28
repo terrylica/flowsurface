@@ -20,7 +20,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 5: Pane Stream Setup Extraction** - Extract stream wiring logic from pane.rs to pane/stream_setup.rs
 - [ ] **Phase 6: Kline Data Ops Extraction** - Extract data operation methods from kline/mod.rs to kline/data_ops.rs
 - [ ] **Phase 7: Kline ODB Lifecycle Extraction** - Extract ODB orchestration from kline/mod.rs to kline/odb_lifecycle.rs
-- [ ] **Phase 8: Indicator Ceremony Reduction** - Reduce indicator addition touch points from 36 files to 6 or fewer
+- [ ] **Phase 8: Indicator Ceremony Reduction** - Consolidate dual factory functions + document verified 3-file ceremony
 
 ## Phase Details
 
@@ -155,7 +155,11 @@ Plans:
 2. The indicator registration path uses explicit match arms (not trait objects or macros) -- compiler-checked, not magic
 3. `FOR_SPOT` and `FOR_PERPS` arrays remain as explicit lists
 4. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 08-01-PLAN.md -- Consolidate dual factory into single make_indicator + update CLAUDE.md checklist
 
 ## Progress
 
@@ -171,4 +175,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 5. Pane Stream Setup Extraction   | 1/1            | Complete    | 2026-03-28 |
 | 6. Kline Data Ops Extraction      | 0/1            | Planned     | -          |
 | 7. Kline ODB Lifecycle Extraction | 0/1            | Planned     | -          |
-| 8. Indicator Ceremony Reduction   | 0/TBD          | Not started | -          |
+| 8. Indicator Ceremony Reduction   | 0/1            | Not started | -          |
