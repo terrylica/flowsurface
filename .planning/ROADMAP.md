@@ -103,7 +103,11 @@ Plans:
 3. Switching tickers on a live pane refreshes streams correctly
 4. `pane/mod.rs` is below 1500 LOC (measured by `wc -l`)
 5. `cargo clippy -- -D warnings` passes clean
-   **Plans**: TBD
+   **Plans:** 1 plan
+
+Plans:
+
+- [ ] 05-01-PLAN.md -- Extract stream wiring + data insertion to pane/stream_setup.rs
 
 ### Phase 6: Kline Data Ops Extraction
 
@@ -155,8 +159,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 1. Config Centralization          | 2/2            | Complete    | 2026-03-27 |
 | 2. Must-Use Safety Net            | 1/1            | Complete    | 2026-03-28 |
 | 3. Bool-to-Enum Cleanup           | 1/1            | Complete    | 2026-03-28 |
-| 4. Pane Content Extraction        | 0/1            | Planned     | -          |
-| 5. Pane Stream Setup Extraction   | 0/TBD          | Not started | -          |
+| 4. Pane Content Extraction        | 1/1            | Complete    | 2026-03-28 |
+| 5. Pane Stream Setup Extraction   | 0/1            | Planned     | -          |
 | 6. Kline Data Ops Extraction      | 0/TBD          | Not started | -          |
 | 7. Kline ODB Lifecycle Extraction | 0/TBD          | Not started | -          |
 | 8. Indicator Ceremony Reduction   | 0/TBD          | Not started | -          |
