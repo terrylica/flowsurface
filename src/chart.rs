@@ -57,6 +57,7 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
     fn is_empty(&self) -> bool;
 }
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     ErrorOccurred(data::InternalError),
     RequestFetch(Vec<FetchSpec>),

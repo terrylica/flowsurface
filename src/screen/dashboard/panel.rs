@@ -14,6 +14,7 @@ pub enum Message {
     Invalidate(Option<Instant>),
 }
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {}
 
 pub trait Panel: canvas::Program<Message> {
@@ -21,6 +22,7 @@ pub trait Panel: canvas::Program<Message> {
 
     fn reset_scroll(&mut self);
 
+    #[must_use = "returned Action must be handled"]
     fn invalidate(&mut self, now: Option<Instant>) -> Option<Action>;
 
     fn is_empty(&self) -> bool;

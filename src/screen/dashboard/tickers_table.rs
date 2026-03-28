@@ -53,6 +53,7 @@ const EXCHANGE_FILTERS: [(Venue, Exchange, &str); 4] = [
     (Venue::Okex, Exchange::OkexLinear, "OKX"),
 ];
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     TickerSelected(TickerInfo, Option<ContentKind>),
     SyncToAllPanes(TickerInfo),

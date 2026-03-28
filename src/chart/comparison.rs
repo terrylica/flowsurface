@@ -13,6 +13,7 @@ use std::time::Instant;
 const SERIES_MAX_POINTS: usize = 5000;
 const DEFAULT_PAN_POINTS: f32 = 8.0;
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
     SeriesNameChanged(TickerInfo, String),

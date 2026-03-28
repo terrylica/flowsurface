@@ -27,6 +27,7 @@ pub struct Sidebar {
     pub tickers_table: TickersTable,
 }
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     TickerSelected(
         exchange::TickerInfo,

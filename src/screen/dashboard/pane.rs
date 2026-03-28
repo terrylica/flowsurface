@@ -44,6 +44,7 @@ use iced::{
 };
 use std::time::Instant;
 
+#[must_use = "Effect must be handled by the caller"]
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
@@ -60,6 +61,7 @@ pub enum Status {
     Stale(String),
 }
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     Chart(chart::Action),
     Panel(panel::Action),
