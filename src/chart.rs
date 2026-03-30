@@ -286,26 +286,23 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
         }
     }
 
-    // Throttle zoom invalidations to prevent trackpad momentum flooding.
-    // Adaptive interval: 16ms (60fps) at deep zoom, 33ms (30fps) at overview.
+    // Frame-budget adaptive throttle: interval = last measured render time.
+    // Self-tunes to hardware + data: deep zoom (2ms render) → fast updates,
+    // heavy overview (25ms render) → automatic throttle. Zero hardcoded timing.
     let is_zoom_message = matches!(
         message,
         Message::Scaled(..) | Message::XScaling(..) | Message::YScaling(..)
     );
     if is_zoom_message {
         let state = chart.mut_state();
-        let bars_on_screen = state.bounds.width / (state.cell_width * state.scaling).max(1.0);
-        let throttle_ms = if bars_on_screen > 200.0 { 33 } else { 16 };
         let now = std::time::Instant::now();
-        if now.duration_since(state.last_zoom_invalidation)
-            >= std::time::Duration::from_millis(throttle_ms)
-        {
+        let budget = std::time::Duration::from_micros(state.frame_budget_us.get() as u64);
+        if now.duration_since(state.last_zoom_invalidation) >= budget {
             state.last_zoom_invalidation = now;
             state.zoom_pending_redraw = false;
             chart.invalidate_all();
         } else {
             state.zoom_pending_redraw = true;
-            chart.invalidate_crosshair();
         }
     } else {
         chart.invalidate_all();

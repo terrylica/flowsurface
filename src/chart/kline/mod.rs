@@ -1196,6 +1196,7 @@ impl canvas::Program<Message> for KlineChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
+        let draw_start = std::time::Instant::now();
         let chart = self.state();
 
         if chart.bounds.width == 0.0 {
@@ -1523,6 +1524,11 @@ impl canvas::Program<Message> for KlineChart {
                 );
             }
         });
+
+        // Update frame budget: EMA of render time (α=0.3 weights recent frames).
+        let frame_us = draw_start.elapsed().as_micros() as f32;
+        let prev = chart.frame_budget_us.get();
+        chart.frame_budget_us.set(prev * 0.7 + frame_us * 0.3);
 
         vec![klines, watermark, legend, crosshair]
     }

@@ -461,6 +461,7 @@ impl canvas::Program<Message> for HeatmapChart {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
+        let draw_start = std::time::Instant::now();
         let chart = self.state();
 
         if chart.bounds.width == 0.0 {
@@ -883,9 +884,17 @@ impl canvas::Program<Message> for HeatmapChart {
                 }
             });
 
-            vec![heatmap, watermark, crosshair]
+            let result = vec![heatmap, watermark, crosshair];
+            let frame_us = draw_start.elapsed().as_micros() as f32;
+            let prev = chart.frame_budget_us.get();
+            chart.frame_budget_us.set(prev * 0.7 + frame_us * 0.3);
+            result
         } else {
-            vec![heatmap, watermark]
+            let result = vec![heatmap, watermark];
+            let frame_us = draw_start.elapsed().as_micros() as f32;
+            let prev = chart.frame_budget_us.get();
+            chart.frame_budget_us.set(prev * 0.7 + frame_us * 0.3);
+            result
         }
     }
 
