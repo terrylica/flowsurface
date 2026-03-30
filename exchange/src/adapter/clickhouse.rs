@@ -37,6 +37,10 @@ pub struct ChMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
     pub trade_intensity: f32,
+    /// Bar contains one or more agg_trade_id gaps.
+    pub has_gap: bool,
+    /// Total missing trades across all gaps in this bar.
+    pub gap_trade_count: u32,
 }
 
 // === opendeviationbar-core in-process integration ===
@@ -93,6 +97,8 @@ pub fn odb_to_microstructure(bar: &OpenDeviationBar) -> ChMicrostructure {
         trade_count: bar.individual_trade_count,
         ofi: bar.ofi as f32,
         trade_intensity: bar.trade_intensity as f32,
+        has_gap: bar.has_gap,
+        gap_trade_count: bar.gap_trade_count.max(0) as u32,
     }
 }
 
@@ -350,6 +356,15 @@ struct ChKline {
     first_agg_trade_id: Option<u64>,
     #[serde(default)]
     last_agg_trade_id: Option<u64>,
+    // Gap awareness fields (v13.57+)
+    #[serde(default)]
+    has_gap: Option<u8>,
+    #[serde(default)]
+    gap_trade_count: Option<i64>,
+    #[serde(default)]
+    max_gap_duration_us: Option<i64>,
+    #[serde(default)]
+    is_exchange_gap: Option<u8>,
 }
 
 pub async fn fetch_klines(
@@ -400,9 +415,12 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     // Both paths use DESC ordering + reverse to get the N most recent bars
     // within the requested window. ASC ordering would return bars from the
     // beginning of time, creating gaps when loading historical data.
-    let cols = "close_time_us, open_time_us, open, high, low, close, buy_volume, sell_volume, \
+    let cols = "close_time_us, open_time_us, open, high, low, close, \
+                buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity, \
-                first_agg_trade_id, last_agg_trade_id";
+                first_agg_trade_id, last_agg_trade_id, \
+                has_gap, gap_trade_count, max_gap_duration_us, \
+                is_exchange_gap";
     // Filter by ouroboros_mode (default: 'aion'). Aion-mode is the current
     // production mode — continuous bars without UTC-midnight boundaries.
     // Configurable via FLOWSURFACE_OUROBOROS_MODE env var.
@@ -457,6 +475,11 @@ fn parse_microstructure(ck: &ChKline) -> Option<ChMicrostructure> {
             trade_count: tc,
             ofi: ofi as f32,
             trade_intensity: ti as f32,
+            has_gap: ck.has_gap.unwrap_or(0) != 0,
+            gap_trade_count: ck
+                .gap_trade_count
+                .unwrap_or(0)
+                .max(0) as u32,
         }),
         _ => None,
     }
@@ -644,8 +667,11 @@ pub fn connect_kline_stream(
             tokio::time::sleep(Duration::from_secs(5)).await;
 
             let sql = format!(
-                "SELECT close_time_us, open_time_us, open, high, low, close, buy_volume, sell_volume, \
-                        individual_trade_count, ofi, trade_intensity \
+                "SELECT close_time_us, open_time_us, open, high, low, close, \
+                        buy_volume, sell_volume, \
+                        individual_trade_count, ofi, trade_intensity, \
+                        has_gap, gap_trade_count, max_gap_duration_us, \
+                        is_exchange_gap \
                  FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                    AND ouroboros_mode = '{}' \
@@ -691,15 +717,7 @@ pub fn connect_kline_stream(
                                 ),
                                 ticker_info.min_ticksize,
                             );
-                            let micro =
-                                match (ck.individual_trade_count, ck.ofi, ck.trade_intensity) {
-                                    (Some(tc), Some(ofi), Some(ti)) => Some(ChMicrostructure {
-                                        trade_count: tc,
-                                        ofi: ofi as f32,
-                                        trade_intensity: ti as f32,
-                                    }),
-                                    _ => None,
-                                };
+                            let micro = parse_microstructure(&ck);
                             let _ = output
                                 .send(Event::KlineReceived(
                                     stream_kind,
@@ -837,11 +855,26 @@ fn odb_bar_to_kline_tuple(
         min_tick,
     );
     let micro = match (bar.individual_trade_count, bar.ofi, bar.trade_intensity) {
-        (Some(tc), Some(ofi), Some(ti)) => Some(ChMicrostructure {
-            trade_count: tc,
-            ofi: ofi as f32,
-            trade_intensity: ti as f32,
-        }),
+        (Some(tc), Some(ofi), Some(ti)) => {
+            // Gap awareness: OdbBar captures these in `extra` via serde(flatten)
+            let has_gap = bar
+                .extra
+                .get("has_gap")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let gap_trade_count = bar
+                .extra
+                .get("gap_trade_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            Some(ChMicrostructure {
+                trade_count: tc,
+                ofi: ofi as f32,
+                trade_intensity: ti as f32,
+                has_gap,
+                gap_trade_count,
+            })
+        }
         _ => None,
     };
     (kline, raw_f64, micro)
