@@ -286,25 +286,32 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
         }
     }
 
-    // Throttle zoom invalidations to ~30fps. State (scaling, translation, cell_width)
-    // is always updated above, but the expensive cache clear + redraw is skipped when
-    // scroll events arrive faster than 33ms apart (trackpad momentum).
+    // Throttle zoom invalidations when many bars are visible (expensive redraw).
+    // At deep zoom (few bars visible, large cell_width), skip throttling — render is cheap.
     let is_zoom_message = matches!(
         message,
         Message::Scaled(..) | Message::XScaling(..) | Message::YScaling(..)
     );
     if is_zoom_message {
         let state = chart.mut_state();
-        let now = std::time::Instant::now();
-        if now.duration_since(state.last_zoom_invalidation) >= std::time::Duration::from_millis(33)
-        {
-            state.last_zoom_invalidation = now;
+        let bars_on_screen = state.bounds.width / (state.cell_width * state.scaling).max(1.0);
+        // Only throttle when 100+ bars visible (heavy render). Below that, render every frame.
+        if bars_on_screen > 100.0 {
+            let now = std::time::Instant::now();
+            if now.duration_since(state.last_zoom_invalidation)
+                >= std::time::Duration::from_millis(33)
+            {
+                state.last_zoom_invalidation = now;
+                state.zoom_pending_redraw = false;
+                chart.invalidate_all();
+            } else {
+                state.zoom_pending_redraw = true;
+                chart.invalidate_crosshair();
+            }
+        } else {
+            // Few bars visible — render every event for responsive deep-zoom.
             state.zoom_pending_redraw = false;
             chart.invalidate_all();
-        } else {
-            // Skip heavy redraw — just mark pending for trailing edge flush.
-            state.zoom_pending_redraw = true;
-            chart.invalidate_crosshair(); // lightweight: keep crosshair responsive
         }
     } else {
         chart.invalidate_all();

@@ -140,9 +140,9 @@ pub(crate) fn canvas_interaction<T: Chart>(
                     if let Some(Autoscale::FitToVisible) = state.layout.autoscale {
                         return Some(
                             canvas::Action::publish(Message::XScaling(
-                                y / 2.0,
+                                y,
                                 cursor_to_center.x,
-                                false,
+                                true, // use wheel sensitivity, not 3× slower keyboard sensitivity
                             ))
                             .and_capture(),
                         );
