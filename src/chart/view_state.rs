@@ -75,6 +75,12 @@ pub struct ViewState {
     // Cell allows the view() fn to write timezone through &self so canvas::Program::draw
     // can read it without needing &mut access or an extra parameter.
     pub(crate) timezone: std::cell::Cell<data::UserTimezone>,
+    /// Timestamp of last zoom-triggered invalidation. Used to throttle scroll
+    /// events to ~30fps, preventing jaggy rendering during trackpad momentum.
+    pub(crate) last_zoom_invalidation: std::time::Instant,
+    /// True if a zoom state change was applied but invalidation was throttled.
+    /// The next non-throttled event or cursor move will trigger the final redraw.
+    pub(crate) zoom_pending_redraw: bool,
 }
 
 impl ViewState {
@@ -104,6 +110,8 @@ impl ViewState {
             ticker_info,
             layout,
             timezone: std::cell::Cell::new(data::UserTimezone::Utc),
+            last_zoom_invalidation: std::time::Instant::now(),
+            zoom_pending_redraw: false,
         }
     }
 

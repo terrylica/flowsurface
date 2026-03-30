@@ -269,9 +269,41 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
                 *split = (size * 100.0).round() / 100.0;
             }
         }
-        Message::CrosshairMoved => return chart.invalidate_crosshair(),
+        Message::CrosshairMoved => {
+            // Flush any pending zoom redraw on cursor move (trailing edge).
+            let state = chart.mut_state();
+            if state.zoom_pending_redraw {
+                state.zoom_pending_redraw = false;
+                state.last_zoom_invalidation = std::time::Instant::now();
+                chart.invalidate_all();
+            }
+            return chart.invalidate_crosshair();
+        }
     }
-    chart.invalidate_all();
+
+    // Throttle zoom invalidations to ~30fps. State (scaling, translation, cell_width)
+    // is always updated above, but the expensive cache clear + redraw is skipped when
+    // scroll events arrive faster than 33ms apart (trackpad momentum).
+    let is_zoom_message = matches!(
+        message,
+        Message::Scaled(..) | Message::XScaling(..) | Message::YScaling(..)
+    );
+    if is_zoom_message {
+        let state = chart.mut_state();
+        let now = std::time::Instant::now();
+        if now.duration_since(state.last_zoom_invalidation) >= std::time::Duration::from_millis(33)
+        {
+            state.last_zoom_invalidation = now;
+            state.zoom_pending_redraw = false;
+            chart.invalidate_all();
+        } else {
+            // Skip heavy redraw — just mark pending for trailing edge flush.
+            state.zoom_pending_redraw = true;
+            chart.invalidate_crosshair(); // lightweight: keep crosshair responsive
+        }
+    } else {
+        chart.invalidate_all();
+    }
 }
 
 pub fn view<'a, T: Chart>(
