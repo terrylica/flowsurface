@@ -13,7 +13,7 @@ pub(crate) mod view_state;
 // `use crate::chart::{...}` continue to work unchanged.
 pub(crate) use interaction::canvas_interaction;
 pub use interaction::{AxisScaleClicked, Interaction, Message};
-pub(crate) use interaction::{TEXT_SIZE, ZOOM_SENSITIVITY};
+pub(crate) use interaction::{TEXT_SIZE, ZOOM_RATE, ZOOM_SENSITIVITY};
 pub(crate) use legend::draw_volume_bar;
 pub use legend::draw_watermark;
 pub use view_state::{Caches, PlotConstants, ViewState};
@@ -146,15 +146,14 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
             let is_fit_to_visible_zoom =
                 !is_wheel_scroll && matches!(state.layout.autoscale, Some(Autoscale::FitToVisible));
 
-            let zoom_factor = if is_fit_to_visible_zoom {
-                ZOOM_SENSITIVITY / 1.5
-            } else if *is_wheel_scroll {
-                ZOOM_SENSITIVITY
+            // Multiplicative zoom (d3 formula): perceptually uniform at every level.
+            // Keyboard (is_wheel_scroll=false, !FitToVisible) uses 3× rate for larger steps.
+            let rate = if !is_wheel_scroll && !is_fit_to_visible_zoom {
+                ZOOM_RATE * 3.0
             } else {
-                ZOOM_SENSITIVITY * 3.0
+                ZOOM_RATE
             };
-
-            let new_width = (state.cell_width * (1.0 + delta / zoom_factor))
+            let new_width = (state.cell_width * 2.0f32.powf(*delta * rate))
                 .clamp(min_cell_width, max_cell_width);
 
             if is_fit_to_visible_zoom {

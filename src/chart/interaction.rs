@@ -7,6 +7,10 @@ use iced::{Point, Rectangle, Vector, keyboard, mouse};
 use crate::widget::multi_split::DRAG_SIZE;
 
 pub(crate) const ZOOM_SENSITIVITY: f32 = 60.0;
+
+/// Multiplicative zoom rate (d3 convention): each scroll unit multiplies scale by 2^ZOOM_RATE.
+/// 0.003 → ~139 ticks to double/halve. Perceptually uniform at every zoom level.
+pub(crate) const ZOOM_RATE: f32 = 0.003;
 pub(crate) const TEXT_SIZE: f32 = 12.0;
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -191,7 +195,9 @@ pub(crate) fn canvas_interaction<T: Chart>(
                         || (y > 0.0 && state.scaling < max_scaling)
                     {
                         let old_scaling = state.scaling;
-                        let scaling = (state.scaling * (1.0 + y / ZOOM_SENSITIVITY))
+                        // Multiplicative zoom (d3 formula): perceptually uniform at every level.
+                        // Each tick multiplies by 2^(delta * ZOOM_RATE) — same % change always.
+                        let scaling = (state.scaling * 2.0f32.powf(y * ZOOM_RATE))
                             .clamp(min_scaling, max_scaling);
 
                         let denominator = old_scaling * scaling;
