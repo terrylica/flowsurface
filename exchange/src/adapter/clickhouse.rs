@@ -825,7 +825,7 @@ fn odb_bar_to_kline_tuple(
         bar.sell_volume.unwrap_or(0.0),
     ];
     let kline = Kline::new(
-        bar.close_time_ms as u64,
+        (bar.close_time_us / 1000) as u64,
         bar.open as f32,
         bar.high as f32,
         bar.low as f32,
@@ -898,7 +898,7 @@ pub fn connect_sse_stream(
                         }
                         // Skip orphan bars — incomplete bars at UTC midnight boundaries
                         if bar.is_orphan == Some(true) {
-                            log::info!("[SSE] skipping orphan bar: ts={}", bar.close_time_ms);
+                            log::info!("[SSE] skipping orphan bar: ts={}", bar.close_time_us);
                             continue;
                         }
                         let bar_agg_id_range = bar
@@ -922,7 +922,7 @@ pub fn connect_sse_stream(
                                 Some(raw_f64),
                                 bar_agg_id_range,
                                 micro,
-                                Some(bar.open_time_ms as u64),
+                                Some((bar.open_time_us / 1000) as u64),
                             ))
                             .await;
                     }
