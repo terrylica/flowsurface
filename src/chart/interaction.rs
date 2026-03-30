@@ -130,9 +130,11 @@ pub(crate) fn canvas_interaction<T: Chart>(
                     }
 
                     let cursor_to_center = cursor.position_from(bounds.center())?;
-                    let y = match delta {
-                        mouse::ScrollDelta::Lines { y, .. }
-                        | mouse::ScrollDelta::Pixels { y, .. } => y,
+                    // Lines (mouse wheel): ~1-3 per tick. Pixels (trackpad): ~10-50 per gesture.
+                    // Scale pixel deltas down to match line-based sensitivity.
+                    let y = match *delta {
+                        mouse::ScrollDelta::Lines { y, .. } => y,
+                        mouse::ScrollDelta::Pixels { y, .. } => y / 10.0,
                     };
 
                     if let Some(Autoscale::FitToVisible) = state.layout.autoscale {
@@ -182,8 +184,8 @@ pub(crate) fn canvas_interaction<T: Chart>(
                     }
 
                     // normal scaling cases
-                    if (*y < 0.0 && state.scaling > min_scaling)
-                        || (*y > 0.0 && state.scaling < max_scaling)
+                    if (y < 0.0 && state.scaling > min_scaling)
+                        || (y > 0.0 && state.scaling < max_scaling)
                     {
                         let old_scaling = state.scaling;
                         let scaling = (state.scaling * (1.0 + y / ZOOM_SENSITIVITY))
