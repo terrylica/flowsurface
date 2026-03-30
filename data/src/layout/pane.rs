@@ -265,7 +265,7 @@ impl PaneSetup {
             ContentKind::CandlestickChart | ContentKind::ComparisonChart => {
                 Some(current_basis.unwrap_or(Basis::Time(Timeframe::M15)))
             }
-            ContentKind::OdbChart => Some(current_basis.unwrap_or(Basis::Odb(250))),
+            ContentKind::OdbChart => Some(current_basis.unwrap_or(Basis::Odb(100))),
             ContentKind::Starter | ContentKind::TimeAndSales => None,
         };
 

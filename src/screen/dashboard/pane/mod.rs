@@ -642,7 +642,7 @@ impl State {
                         }
                         data::chart::KlineChartKind::Odb => {
                             let selected_basis =
-                                self.settings.selected_basis.unwrap_or(Basis::Odb(250));
+                                self.settings.selected_basis.unwrap_or(Basis::Odb(100));
                             let kind = ModifierKind::OdbChart(selected_basis);
 
                             let modifiers =
