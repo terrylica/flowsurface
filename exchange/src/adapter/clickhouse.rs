@@ -418,9 +418,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     let cols = "close_time_us, open_time_us, open, high, low, close, \
                 buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity, \
-                first_agg_trade_id, last_agg_trade_id, \
-                has_gap, gap_trade_count, max_gap_duration_us, \
-                is_exchange_gap";
+                first_agg_trade_id, last_agg_trade_id";
     // Filter by ouroboros_mode (default: 'aion'). Aion-mode is the current
     // production mode — continuous bars without UTC-midnight boundaries.
     // Configurable via FLOWSURFACE_OUROBOROS_MODE env var.
@@ -669,9 +667,7 @@ pub fn connect_kline_stream(
             let sql = format!(
                 "SELECT close_time_us, open_time_us, open, high, low, close, \
                         buy_volume, sell_volume, \
-                        individual_trade_count, ofi, trade_intensity, \
-                        has_gap, gap_trade_count, max_gap_duration_us, \
-                        is_exchange_gap \
+                        individual_trade_count, ofi, trade_intensity \
                  FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                    AND ouroboros_mode = '{}' \
