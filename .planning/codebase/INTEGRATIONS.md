@@ -80,7 +80,7 @@
     - Full-reload: `FetchRange::Kline(0, u64::MAX)` → no time constraint, adaptive limit (13K-20K bars)
     - Range/pagination: `FetchRange::Kline(start, end)` where `end != u64::MAX` → LIMIT 2000 per batch
   - Polling interval: 5 seconds for streaming bars
-  - Ouroboros mode: SQL filters by `ouroboros_mode` (day/month) via `FLOWSURFACE_OUROBOROS_MODE` env var
+  - Ouroboros mode: SQL filters by `ouroboros_mode` (aion; legacy: day/month) via `FLOWSURFACE_OUROBOROS_MODE` env var
 
 **File Storage:**
 

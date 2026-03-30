@@ -18,7 +18,7 @@ pub struct AppConfig {
     pub ch_host: String,
     /// ClickHouse HTTP port. Default: `8123`.
     pub ch_port: u16,
-    /// ODB session mode (`"day"` or `"month"`). Default: `"day"`.
+    /// ODB session mode. Default: `"aion"` (continuous). Legacy: `"day"`, `"month"`.
     pub ouroboros_mode: String,
     /// Enable SSE live bar stream. Default: `false`.
     pub sse_enabled: bool,
@@ -41,7 +41,7 @@ impl Default for AppConfig {
         Self {
             ch_host: "bigblack".to_string(),
             ch_port: 8123,
-            ouroboros_mode: "day".to_string(),
+            ouroboros_mode: "aion".to_string(),
             sse_enabled: false,
             sse_host: "localhost".to_string(),
             sse_port: 18081,
@@ -59,7 +59,7 @@ impl AppConfig {
         Self {
             ch_host: parse_env_string("FLOWSURFACE_CH_HOST", "bigblack"),
             ch_port: parse_env_u16("FLOWSURFACE_CH_PORT", 8123),
-            ouroboros_mode: parse_env_string("FLOWSURFACE_OUROBOROS_MODE", "day"),
+            ouroboros_mode: parse_env_string("FLOWSURFACE_OUROBOROS_MODE", "aion"),
             sse_enabled: parse_env_bool("FLOWSURFACE_SSE_ENABLED", &["true", "1"], false),
             sse_host: parse_env_string("FLOWSURFACE_SSE_HOST", "localhost"),
             sse_port: parse_env_u16("FLOWSURFACE_SSE_PORT", 18081),

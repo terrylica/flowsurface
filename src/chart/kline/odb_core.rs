@@ -26,8 +26,8 @@ pub enum BarGapKind {
     /// Sequential gap: curr_first > prev_last + 1. Missing trades between bars.
     Gap,
     /// Day-boundary gap: same as Gap but bars span different UTC days.
-    /// These are structural in ouroboros_mode=day (orphaned midnight bars)
-    /// and cannot be healed by CH re-fetch alone — kintsugi must repair first.
+    /// Historical artifact from ouroboros_mode=day. In aion mode, all gaps
+    /// are healable — this variant is only assigned for legacy day-mode data.
     DayBoundary,
     /// Overlap: curr_first <= prev_last. Bars share agg_trade_ids (CH reconciliation artifact).
     Overlap,
@@ -704,7 +704,6 @@ impl KlineChart {
         };
 
         let mut anomalies = Vec::new();
-        const MS_PER_DAY: u64 = 86_400_000;
 
         for window in tick_aggr.datapoints.windows(2) {
             let (prev, curr) = (&window[0], &window[1]);
@@ -737,16 +736,10 @@ impl KlineChart {
                 continue;
             }
 
-            // Classify: single-day-boundary = structural ouroboros midnight orphan (1 day apart).
-            // Multi-day = kintsugi-repairable outage (pipeline was down) — treat as healable Gap.
-            let prev_day = prev.kline.time / MS_PER_DAY;
-            let curr_day = curr.kline.time / MS_PER_DAY;
-            let days_spanned = curr_day.saturating_sub(prev_day);
-            let kind = if days_spanned == 1 {
-                BarGapKind::DayBoundary
-            } else {
-                BarGapKind::Gap
-            };
+            // In aion mode (default since v13.58), all gaps are healable —
+            // there are no UTC-midnight boundaries to create structural orphans.
+            // DayBoundary classification is retained only for legacy day-mode data.
+            let kind = BarGapKind::Gap;
 
             anomalies.push(BarGap {
                 kind,

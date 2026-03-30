@@ -121,7 +121,7 @@
 - Configured in `.mise.toml` (tool manager)
 - ClickHouse connection: `FLOWSURFACE_CH_HOST` (default: `bigblack`), `FLOWSURFACE_CH_PORT` (default: `8123`)
 - SSE stream: `FLOWSURFACE_SSE_ENABLED`, `FLOWSURFACE_SSE_HOST`, `FLOWSURFACE_SSE_PORT`
-- ODB mode: `FLOWSURFACE_OUROBOROS_MODE` (day/month)
+- ODB mode: `FLOWSURFACE_OUROBOROS_MODE` (aion; legacy: day/month)
 - Window: `FLOWSURFACE_ALWAYS_ON_TOP` (pins window above all others if set)
 - Telegram telemetry: `FLOWSURFACE_TG_BOT_TOKEN`, `FLOWSURFACE_TG_CHAT_ID` (read from secret files)
 

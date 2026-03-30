@@ -94,8 +94,8 @@ impl KlineChart {
             self.sentinel_healable_gap_min_time_ms = None;
 
             if gap_is_live_session {
-                // Gap is in the current ouroboros session — CH has no coverage yet.
-                // OdbCatchup (fired by insert_trades_inner) is the correct repair path.
+                // Recency guard: gaps within the last 24h are likely live-session gaps
+                // that OdbCatchup should handle — valid in both aion and legacy modes.
                 log::warn!(
                     "[sentinel] live-session gap (post-midnight) — skipping CH refetch to \
                      avoid wiping live bars; OdbCatchup handles this"

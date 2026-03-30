@@ -68,9 +68,9 @@ In practice, `FLOWSURFACE_CH_HOST=localhost` and `FLOWSURFACE_CH_PORT=18123` via
 
 ### Ouroboros Mode
 
-SQL queries filter by `ouroboros_mode` — configured via `FLOWSURFACE_OUROBOROS_MODE` env var (default: `day`). Day-mode creates UTC-midnight-bounded sessions. Set to `month` for legacy data.
+SQL queries filter by `ouroboros_mode` — configured via `FLOWSURFACE_OUROBOROS_MODE` env var (default: `aion`). Aion-mode produces continuous bars without UTC-midnight boundaries (upstream removed day-mode entirely). Legacy value `day` still accepted for historical data.
 
-Implemented as `OUROBOROS_MODE: LazyLock<String>` static — read once at first access.
+Stored in `APP_CONFIG.ouroboros_mode` (centralized config, read once at first access).
 
 ### Data Flow (HTTP)
 

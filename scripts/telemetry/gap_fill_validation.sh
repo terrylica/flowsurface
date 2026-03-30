@@ -88,12 +88,12 @@ echo "--- Phase 7: CH Ground Truth ---"
 if ssh -o ConnectTimeout=3 bigblack 'echo ok' >/dev/null 2>&1; then
     echo "  Querying last 5 bars from ClickHouse..."
     ssh bigblack 'curl -s http://localhost:8123/ -d "
-        SELECT close_time_ms, first_agg_trade_id, last_agg_trade_id,
+        SELECT close_time_us, first_agg_trade_id, last_agg_trade_id,
                last_agg_trade_id - first_agg_trade_id + 1 AS trade_span
         FROM opendeviationbar_cache.open_deviation_bars
         WHERE symbol = '\''BTCUSDT'\'' AND threshold_decimal_bps = 250
-          AND ouroboros_mode = '\''day'\''
-        ORDER BY close_time_ms DESC LIMIT 5
+          AND ouroboros_mode = '\''aion'\''
+        ORDER BY close_time_us DESC LIMIT 5
         FORMAT PrettyCompact
     "' 2>/dev/null || echo "  CH query failed"
 else

@@ -403,9 +403,9 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     let cols = "close_time_us, open_time_us, open, high, low, close, buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity, \
                 first_agg_trade_id, last_agg_trade_id";
-    // Filter by ouroboros_mode (default: 'day'). Day-mode is the current production
-    // mode — creates UTC-midnight-bounded sessions. Configurable via
-    // FLOWSURFACE_OUROBOROS_MODE env var for migration flexibility.
+    // Filter by ouroboros_mode (default: 'aion'). Aion-mode is the current
+    // production mode — continuous bars without UTC-midnight boundaries.
+    // Configurable via FLOWSURFACE_OUROBOROS_MODE env var.
     // Scale limit inversely with threshold: BPR25 gets 20,000 bars;
     // all thresholds get a minimum of 13,000 bars to fully populate
     // a 7,000-bar intensity lookback window from the first render.

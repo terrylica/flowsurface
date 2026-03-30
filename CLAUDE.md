@@ -66,17 +66,17 @@ flowsurface/                 Main crate — GUI, chart rendering, event handling
 
 All set in `.mise.toml`. The app reads them at runtime via `std::env::var()`.
 
-| Variable                     | Default     | Purpose                             |
-| ---------------------------- | ----------- | ----------------------------------- |
-| `FLOWSURFACE_CH_HOST`        | `bigblack`  | ClickHouse HTTP host                |
-| `FLOWSURFACE_CH_PORT`        | `8123`      | ClickHouse HTTP port                |
-| `FLOWSURFACE_SSE_ENABLED`    | `false`     | Enable SSE live bar stream          |
-| `FLOWSURFACE_SSE_HOST`       | `localhost` | SSE sidecar host                    |
-| `FLOWSURFACE_SSE_PORT`       | `8081`      | SSE sidecar port                    |
-| `FLOWSURFACE_OUROBOROS_MODE` | `day`       | ODB session mode (`day` or `month`) |
-| `FLOWSURFACE_ALWAYS_ON_TOP`  | _(unset)_   | Pin window above all others if set  |
-| `FLOWSURFACE_TG_BOT_TOKEN`   | _(unset)_   | Telegram bot token for alerts       |
-| `FLOWSURFACE_TG_CHAT_ID`     | _(unset)_   | Telegram chat ID for alerts         |
+| Variable                     | Default     | Purpose                              |
+| ---------------------------- | ----------- | ------------------------------------ |
+| `FLOWSURFACE_CH_HOST`        | `bigblack`  | ClickHouse HTTP host                 |
+| `FLOWSURFACE_CH_PORT`        | `8123`      | ClickHouse HTTP port                 |
+| `FLOWSURFACE_SSE_ENABLED`    | `false`     | Enable SSE live bar stream           |
+| `FLOWSURFACE_SSE_HOST`       | `localhost` | SSE sidecar host                     |
+| `FLOWSURFACE_SSE_PORT`       | `8081`      | SSE sidecar port                     |
+| `FLOWSURFACE_OUROBOROS_MODE` | `aion`      | ODB session mode (aion; legacy: day) |
+| `FLOWSURFACE_ALWAYS_ON_TOP`  | _(unset)_   | Pin window above all others if set   |
+| `FLOWSURFACE_TG_BOT_TOKEN`   | _(unset)_   | Telegram bot token for alerts        |
+| `FLOWSURFACE_TG_CHAT_ID`     | _(unset)_   | Telegram chat ID for alerts          |
 
 ---
 

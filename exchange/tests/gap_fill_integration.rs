@@ -71,8 +71,8 @@ async fn catchup_through_id_gte_last_ch_bar() {
     // Query CH for the last bar's last_agg_trade_id
     let sql = "SELECT last_agg_trade_id FROM opendeviationbar_cache.open_deviation_bars \
                WHERE symbol = 'BTCUSDT' AND threshold_decimal_bps = 250 \
-               AND ouroboros_mode = 'day' \
-               ORDER BY close_time_ms DESC LIMIT 1 FORMAT JSONEachRow";
+               AND ouroboros_mode = 'aion' \
+               ORDER BY close_time_us DESC LIMIT 1 FORMAT JSONEachRow";
 
     let ch_response = clickhouse::query(sql)
         .await
@@ -101,11 +101,11 @@ async fn catchup_through_id_gte_last_ch_bar() {
 #[tokio::test]
 #[ignore]
 async fn ch_bars_have_continuous_agg_trade_ids() {
-    let sql = "SELECT first_agg_trade_id, last_agg_trade_id, close_time_ms \
+    let sql = "SELECT first_agg_trade_id, last_agg_trade_id, close_time_us \
                FROM opendeviationbar_cache.open_deviation_bars \
                WHERE symbol = 'BTCUSDT' AND threshold_decimal_bps = 250 \
-               AND ouroboros_mode = 'day' \
-               ORDER BY close_time_ms DESC LIMIT 50 FORMAT JSONEachRow";
+               AND ouroboros_mode = 'aion' \
+               ORDER BY close_time_us DESC LIMIT 50 FORMAT JSONEachRow";
 
     let ch_response = clickhouse::query(sql)
         .await
@@ -115,7 +115,7 @@ async fn ch_bars_have_continuous_agg_trade_ids() {
     struct Row {
         first_agg_trade_id: u64,
         last_agg_trade_id: u64,
-        close_time_ms: u64,
+        close_time_us: u64,
     }
 
     let mut rows: Vec<Row> = ch_response
@@ -138,9 +138,9 @@ async fn ch_bars_have_continuous_agg_trade_ids() {
         assert!(
             curr_first > prev_last,
             "bars should not overlap: prev.last={prev_last} >= curr.first={curr_first} \
-             (prev_close_ms={}, curr_close_ms={})",
-            window[0].close_time_ms,
-            window[1].close_time_ms
+             (prev_close_us={}, curr_close_us={})",
+            window[0].close_time_us,
+            window[1].close_time_us
         );
 
         // Warn on large gaps (>1000 trades between bars)
@@ -148,8 +148,8 @@ async fn ch_bars_have_continuous_agg_trade_ids() {
         if gap > 1000 {
             large_gaps += 1;
             eprintln!(
-                "WARNING: large gap of {gap} between bars at close_ms={} and {}",
-                window[0].close_time_ms, window[1].close_time_ms
+                "WARNING: large gap of {gap} between bars at close_us={} and {}",
+                window[0].close_time_us, window[1].close_time_us
             );
         }
     }

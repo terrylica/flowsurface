@@ -10,10 +10,10 @@ rust = "1.93.1"
 [env]
 FLOWSURFACE_CH_HOST = "localhost"
 FLOWSURFACE_CH_PORT = "18123"
-FLOWSURFACE_SSE_ENABLED = "false"  # disabled: sidecar v13.55 sends _us fields but client crate expects _ms
+FLOWSURFACE_SSE_ENABLED = "false"  # disabled: awaiting crate release with _us field fix (opendeviationbar-py#336)
 FLOWSURFACE_SSE_HOST = "localhost"
 FLOWSURFACE_SSE_PORT = "18081"
-FLOWSURFACE_OUROBOROS_MODE = "day"
+FLOWSURFACE_OUROBOROS_MODE = "aion"
 FLOWSURFACE_ALWAYS_ON_TOP = "1"
 # Telegram telemetry bot — credentials read from secrets files
 FLOWSURFACE_TG_BOT_TOKEN = "{{read_file(path=env.HOME ~ '/.claude/.secrets/flowsurface-tg-bot-token') | trim}}"
