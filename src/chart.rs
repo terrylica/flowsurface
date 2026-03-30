@@ -80,6 +80,11 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
                     if supports_fit_autoscaling {
                         state.layout.autoscale = Some(Autoscale::FitToVisible);
                         state.scaling = 1.0;
+                        // Reset translation.y so FitToVisible starts from a clean state.
+                        // Without this, deep manual zoom leaves cell_height/translation.y
+                        // at extreme values and the first FitToVisible frame computes a
+                        // tiny visible_region that doesn't cover enough bars.
+                        state.translation.y = 0.0;
                     } else {
                         state.layout.autoscale = Some(Autoscale::CenterLatest);
                     }
