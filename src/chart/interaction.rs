@@ -138,11 +138,14 @@ pub(crate) fn canvas_interaction<T: Chart>(
                     };
 
                     if let Some(Autoscale::FitToVisible) = state.layout.autoscale {
+                        // is_wheel_scroll=false keeps FitToVisible active (Y-axis auto-fit).
+                        // Uses zoom_factor = ZOOM_SENSITIVITY / 1.5 = 40 — responsive enough
+                        // after the pixel delta /10 normalization.
                         return Some(
                             canvas::Action::publish(Message::XScaling(
                                 y,
                                 cursor_to_center.x,
-                                true, // use wheel sensitivity, not 3× slower keyboard sensitivity
+                                false,
                             ))
                             .and_capture(),
                         );
