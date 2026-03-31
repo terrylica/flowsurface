@@ -15,7 +15,7 @@ use data::chart::kline::{
 };
 use data::chart::{Autoscale, KlineChartKind, ViewConfig};
 
-use data::util::{abbr_large_numbers, count_decimals};
+use data::util::abbr_large_numbers;
 use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{
     Kline, OpenInterest as OIData, TickerInfo, Trade,
@@ -341,7 +341,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -429,7 +429,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -518,7 +518,7 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    count_decimals(tick_size),
+                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits,
@@ -728,10 +728,10 @@ impl KlineChart {
 
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
-                tick_aggr.change_tick_size(new_tick_size, &self.raw_trades);
+                tick_aggr.change_tick_size(step, &self.raw_trades);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.change_tick_size(new_tick_size, &self.raw_trades);
+                timeseries.change_tick_size(step, &self.raw_trades);
             }
         }
 

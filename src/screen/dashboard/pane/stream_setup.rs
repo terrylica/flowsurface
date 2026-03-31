@@ -72,7 +72,7 @@ pub(super) fn build_content_and_streams(
                     content,
                     derived_plan.ticker_info,
                     settings,
-                    derived_plan.tick_size,
+                    derived_plan.price_step.to_f32_lossy(),
                 );
 
                 let s = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
@@ -85,7 +85,7 @@ pub(super) fn build_content_and_streams(
                     content,
                     derived_plan.ticker_info,
                     settings,
-                    derived_plan.tick_size,
+                    derived_plan.price_step.to_f32_lossy(),
                 );
 
                 let s = by_basis_default(
@@ -200,7 +200,7 @@ pub(super) fn build_content_and_streams(
                 let c = Content::Ladder(Some(Ladder::new(
                     config,
                     derived_plan.ticker_info,
-                    derived_plan.tick_size,
+                    derived_plan.price_step,
                 )));
 
                 let s = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
@@ -278,14 +278,16 @@ pub(super) fn apply_ticksize_change(
     if let Some(ticker) = ticker {
         match content {
             Content::Kline { chart: Some(c), .. } => {
-                c.change_tick_size(tm.multiply_with_min_tick_size(ticker));
+                c.change_tick_size(
+                    tm.multiply_with_min_tick_step(ticker).to_f32_lossy(),
+                );
                 c.reset_request_handler();
             }
             Content::Heatmap { chart: Some(c), .. } => {
-                c.change_tick_size(tm.multiply_with_min_tick_size(ticker));
+                c.change_tick_size(tm.multiply_with_min_tick_step(ticker));
             }
             Content::Ladder(Some(p)) => {
-                p.set_tick_size(tm.multiply_with_min_tick_size(ticker));
+                p.set_tick_size(tm.multiply_with_min_tick_step(ticker));
             }
             _ => {}
         }

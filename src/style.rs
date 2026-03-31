@@ -1,5 +1,3 @@
-use exchange::adapter::Exchange;
-
 use iced::font::{Family, Stretch, Weight};
 use iced::theme::palette::Extended;
 use iced::widget::Text;
@@ -39,6 +37,7 @@ pub enum Icon {
     BybitLogo = 59400,
     HyperliquidLogo = 59411,
     OkexLogo = 59423,
+    MexcLogo = 59425,
     Search = 59394,
     Sort = 61660,
     SortDesc = 61661,
@@ -72,14 +71,13 @@ pub fn icon_text<'a>(icon: Icon, size: u16) -> Text<'a, Theme, Renderer> {
         .size(iced::Pixels(size.into()))
 }
 
-pub fn exchange_icon(exchange: Exchange) -> Icon {
-    match exchange {
-        Exchange::BybitInverse | Exchange::BybitLinear | Exchange::BybitSpot => Icon::BybitLogo,
-        Exchange::BinanceInverse | Exchange::BinanceLinear | Exchange::BinanceSpot => {
-            Icon::BinanceLogo
-        }
-        Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Icon::HyperliquidLogo,
-        Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Icon::OkexLogo,
+pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {
+    match venue {
+        exchange::adapter::Venue::Bybit => Icon::BybitLogo,
+        exchange::adapter::Venue::Binance => Icon::BinanceLogo,
+        exchange::adapter::Venue::Hyperliquid => Icon::HyperliquidLogo,
+        exchange::adapter::Venue::Okex => Icon::OkexLogo,
+        exchange::adapter::Venue::Mexc => Icon::MexcLogo,
     }
 }
 
@@ -220,7 +218,11 @@ pub mod button {
         let palette = theme.extended_palette();
 
         Style {
-            text_color: palette.background.base.text,
+            text_color: if status == Status::Disabled {
+                palette.background.strongest.color
+            } else {
+                palette.background.base.text
+            },
             border: Border {
                 radius: 3.0.into(),
                 ..Default::default()
@@ -239,7 +241,7 @@ pub mod button {
                     if is_clicked {
                         None
                     } else {
-                        Some(palette.secondary.weak.color.into())
+                        Some(palette.background.weakest.color.into())
                     }
                 }
             },

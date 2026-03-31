@@ -98,9 +98,8 @@ fn git_head_has_release_tag(pkg_version: &str) -> bool {
         return false;
     };
     let prefixed = format!("v{pkg_version}");
-    tags.lines()
-        .any(|tag| {
-            let value = tag.trim();
-            value == pkg_version || value == prefixed
-        })
+    tags.lines().any(|tag| {
+        let value = tag.trim();
+        value == pkg_version || value == prefixed
+    })
 }

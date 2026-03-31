@@ -120,7 +120,8 @@ impl ViewState {
 
     #[inline]
     pub(crate) fn price_unit() -> i64 {
-        10i64.pow(Price::PRICE_SCALE as u32)
+        // Price atomic scale is 10^-8 (8 decimal places)
+        10i64.pow(8)
     }
 
     pub(crate) fn visible_region(&self, size: Size) -> Rectangle {

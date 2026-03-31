@@ -10,7 +10,7 @@
 //!   FLOWSURFACE_CH_PORT (default: 8123)
 
 use super::{
-    super::{Kline, Price, TickerInfo, Trade, Volume, de_string_to_f32},
+    super::{Kline, Price, TickerInfo, Trade, Volume},
     AdapterError, Event, StreamKind,
 };
 use crate::config::APP_CONFIG;
@@ -998,9 +998,9 @@ struct GapFillTrade {
     agg_trade_id: u64,
     #[serde(rename = "T")]
     time: u64,
-    #[serde(rename = "p", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "p", deserialize_with = "crate::serde_util::de_string_to_number")]
     price: f32,
-    #[serde(rename = "q", deserialize_with = "de_string_to_f32")]
+    #[serde(rename = "q", deserialize_with = "crate::serde_util::de_string_to_number")]
     qty: f32,
     #[serde(rename = "m")]
     is_buyer_maker: bool,

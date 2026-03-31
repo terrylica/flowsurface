@@ -77,10 +77,11 @@ impl Content {
             .unwrap_or_else(|| Basis::default_heatmap_time(Some(ticker_info)));
         let config = settings.visual_config.clone().and_then(|cfg| cfg.heatmap());
 
+        let step = exchange::unit::PriceStep::from_f32(tick_size);
         let chart = HeatmapChart::new(
             layout.clone(),
             basis,
-            tick_size,
+            step,
             &enabled_indicators,
             ticker_info,
             config,

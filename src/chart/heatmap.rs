@@ -14,7 +14,7 @@ use data::chart::{
     indicator::HeatmapIndicator,
 };
 use data::panel::ladder::Side;
-use data::util::{abbr_large_numbers, count_decimals};
+use data::util::abbr_large_numbers;
 use data::{
     aggr::time::{DataPoint, TimeSeries},
     chart::Autoscale,
@@ -107,7 +107,7 @@ impl Chart for HeatmapChart {
     }
 
     fn is_empty(&self) -> bool {
-        self.trades.datapoints.is_empty()
+        self.heatmap.is_empty()
     }
 }
 
@@ -163,14 +163,12 @@ impl HeatmapChart {
     pub fn new(
         layout: ViewConfig,
         basis: Basis,
-        tick_size: f32,
+        step: PriceStep,
         enabled_indicators: &[HeatmapIndicator],
         ticker_info: TickerInfo,
         config: Option<Config>,
         studies: Vec<HeatmapStudy>,
     ) -> Self {
-        let step = PriceStep::from_f32(tick_size);
-
         let mut indicators = EnumMap::default();
         for &indicator in enabled_indicators {
             indicators[indicator] = Some(match indicator {
@@ -183,7 +181,7 @@ impl HeatmapChart {
         let view_state = ViewState::new(
             basis,
             step,
-            count_decimals(tick_size),
+            step.decimal_places(),
             ticker_info,
             ViewConfig {
                 splits: layout.splits,
@@ -359,22 +357,21 @@ impl HeatmapChart {
         self.chart.layout()
     }
 
-    pub fn change_tick_size(&mut self, new_tick_size: f32) {
+    pub fn change_tick_size(&mut self, step: PriceStep) {
         let chart_state = self.mut_state();
 
         let basis = chart_state.basis;
-        let step = PriceStep::from_f32(new_tick_size);
 
         chart_state.cell_height = 4.0;
         chart_state.tick_size = step;
-        chart_state.decimals = count_decimals(new_tick_size);
+        chart_state.decimals = step.decimal_places();
 
         self.trades.datapoints.clear();
         self.heatmap = HistoricalDepth::new(self.chart.ticker_info.min_qty, step, basis);
     }
 
-    pub fn tick_size(&self) -> f32 {
-        self.chart.tick_size.to_f32_lossy()
+    pub fn tick_size(&self) -> PriceStep {
+        self.chart.tick_size
     }
 
     pub fn toggle_indicator(&mut self, indicator: HeatmapIndicator) {
@@ -435,7 +432,7 @@ impl HeatmapChart {
         QtyScale {
             max_trade_qty,
             max_aggr_volume,
-            max_depth_qty,
+            max_depth_qty: max_depth_qty.into(),
         }
     }
 }
@@ -492,9 +489,9 @@ impl canvas::Program<Message> for HeatmapChart {
             let cell_height = chart.cell_height;
             let qty_scales = self.calc_qty_scales(earliest, latest, highest, lowest);
 
-            let max_depth_qty = qty_scales.max_depth_qty;
-            let (max_aggr_volume, max_trade_qty) =
-                (qty_scales.max_aggr_volume, qty_scales.max_trade_qty);
+            let max_depth_qty = qty_scales.max_depth_qty.to_f32_lossy();
+            let max_aggr_volume = qty_scales.max_aggr_volume.to_f32_lossy();
+            let max_trade_qty = qty_scales.max_trade_qty.to_f32_lossy();
 
             let unit = volume_size_unit();
 
@@ -545,7 +542,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         runs.iter()
                             .filter(|run| {
                                 let order_size =
-                                    market_type.qty_in_quote_value(run.qty(), *price, unit);
+                                    market_type.qty_in_quote_value(run.qty_raw(), *price, unit);
                                 order_size > self.visual_config.order_size_filter
                             })
                             .for_each(|run| {
@@ -614,10 +611,10 @@ impl canvas::Program<Message> for HeatmapChart {
 
                     dp.grouped_trades.iter().for_each(|trade| {
                         let y_position = chart.price_to_y(trade.price);
-                        let trade_qty = f32::from(trade.qty);
+                        let trade_qty = trade.qty.to_f32_lossy();
 
                         let trade_size =
-                            market_type.qty_in_quote_value(trade_qty, trade.price, unit);
+                            market_type.qty_in_quote_value(trade.qty, trade.price, unit);
 
                         if trade_size > self.visual_config.trade_size_filter {
                             let color = if trade.is_sell {
@@ -779,20 +776,17 @@ impl canvas::Program<Message> for HeatmapChart {
                         Basis::Time(interval) => interval.into(),
                         Basis::Tick(_) | Basis::Odb(_) => return,
                     };
-                    let tick_size = chart.tick_size.to_f32_lossy();
                     let step = chart.tick_size;
 
-                    let base_data_price = Price::from_f32(cursor_at_price)
-                        .round_to_step(step)
-                        .to_f32();
+                    let base_data_price = Price::from_f32(cursor_at_price).round_to_step(step);
                     let base_data_time = (cursor_at_time / aggr_time) * aggr_time;
 
                     let price_tick_offsets = [1i64, 0, -1];
                     let time_interval_offsets = [-1i64, 0, 1, 2];
 
-                    let prices_for_display_lookup: [f32; 3] = std::array::from_fn(|i| {
+                    let prices_for_display_lookup: [Price; 3] = std::array::from_fn(|i| {
                         let offset = price_tick_offsets[i];
-                        base_data_price + (offset as f32 * tick_size)
+                        base_data_price.add_steps(offset, step)
                     });
                     let times_for_display_lookup: [u64; 4] = std::array::from_fn(|i| {
                         let offset = time_interval_offsets[i];
@@ -843,11 +837,9 @@ impl canvas::Program<Message> for HeatmapChart {
                     let cell_height_overlay = TOOLTIP_HEIGHT / 3.0;
 
                     let palette = theme.extended_palette();
-                    for (display_row_idx, &data_price_val) in
+                    for (display_row_idx, &data_price_key) in
                         prices_for_display_lookup.iter().enumerate()
                     {
-                        let data_price_key = Price::from_f32(data_price_val).round_to_step(step);
-
                         for (display_col_idx, &data_time_val) in
                             times_for_display_lookup.iter().enumerate()
                         {

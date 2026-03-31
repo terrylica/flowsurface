@@ -121,7 +121,7 @@ impl KlineChart {
         let mut chart = ViewState::new(
             basis,
             step,
-            count_decimals(tick_size),
+            step.decimal_places(),
             ticker_info,
             ViewConfig {
                 splits: layout.splits,

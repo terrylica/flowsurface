@@ -34,6 +34,7 @@ use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
     adapter::{Exchange, MarketKind, StreamKind},
     health::ConnectionHealth,
+    unit::PriceStep,
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
@@ -181,6 +182,7 @@ impl State {
             tickers,
             kind,
         )
+
     }
 
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
@@ -250,7 +252,7 @@ impl State {
                 StreamPairKind::SingleSource(ti) => (ti, 0),
             };
 
-            let exchange_icon = icon_text(style::exchange_icon(base_ti.ticker.exchange), 14);
+            let exchange_icon = icon_text(style::venue_icon(base_ti.ticker.exchange.venue()), 14);
             let mut label = {
                 let symbol = base_ti.ticker.display_symbol_and_type().0;
                 match base_ti.ticker.market_type() {
@@ -392,10 +394,7 @@ impl State {
             }
             Content::Comparison(chart) => {
                 if let Some(c) = chart {
-                    let selected_basis = self
-                        .settings
-                        .selected_basis
-                        .unwrap_or(Timeframe::M15.into());
+                    let selected_basis = Basis::Time(c.timeframe);
                     let kind = ModifierKind::Comparison(selected_basis);
 
                     let modifiers =
@@ -470,17 +469,24 @@ impl State {
                         .unwrap_or(Basis::default_heatmap_time(self.stream_pair()));
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(1));
 
-                    let kind = ModifierKind::Orderbook(basis, tick_multiply);
+                    let stream_pair = self.stream_pair();
 
-                    let base_ticksize = tick_multiply.base(panel.tick_size());
-                    let exchange = self.stream_pair().map(|ti| ti.ticker.exchange);
+                    let price_step = stream_pair
+                        .map(|ti| {
+                            tick_multiply.unscale_step_or_min_tick(panel.step, ti.min_ticksize)
+                        })
+                        .unwrap_or_else(|| tick_multiply.unscale_step(panel.step));
+
+                    let exchange = stream_pair.map(|ti| ti.ticker.exchange);
+                    let min_ticksize = stream_pair.map(|ti| ti.min_ticksize);
 
                     let modifiers = ticksize_modifier(
                         id,
-                        base_ticksize,
+                        price_step,
+                        min_ticksize,
                         tick_multiply,
                         modifier,
-                        kind,
+                        ModifierKind::Orderbook(basis, tick_multiply),
                         exchange,
                     );
 
@@ -529,13 +535,20 @@ impl State {
                     let tick_multiply = self.settings.tick_multiply.unwrap_or(TickMultiplier(5));
 
                     let kind = ModifierKind::Heatmap(basis, tick_multiply);
-                    let base_ticksize = tick_multiply.base(chart.tick_size());
+                    let price_step = ticker_info
+                        .map(|ti| {
+                            tick_multiply
+                                .unscale_step_or_min_tick(chart.tick_size(), ti.min_ticksize)
+                        })
+                        .unwrap_or_else(|| tick_multiply.unscale_step(chart.tick_size()));
+                    let min_ticksize = ticker_info.map(|ti| ti.min_ticksize);
 
                     let modifiers = row![
                         basis_modifier(id, basis, modifier, kind),
                         ticksize_modifier(
                             id,
-                            base_ticksize,
+                            price_step,
+                            min_ticksize,
                             tick_multiply,
                             modifier,
                             kind,
@@ -601,22 +614,32 @@ impl State {
                 if let Some(chart) = chart {
                     match chart_kind {
                         data::chart::KlineChartKind::Footprint { .. } => {
-                            let basis =
-                                self.settings.selected_basis.unwrap_or(Timeframe::M5.into());
+                            let basis = chart.basis();
                             let tick_multiply =
                                 self.settings.tick_multiply.unwrap_or(TickMultiplier(10));
 
                             let kind = ModifierKind::Footprint(basis, tick_multiply);
-                            let base_ticksize = tick_multiply.base(chart.tick_size());
+                            let stream_pair = self.stream_pair();
+                            let current_step =
+                                exchange::unit::PriceStep::from_f32(chart.tick_size());
+                            let price_step = stream_pair
+                                .map(|ti| {
+                                    tick_multiply.unscale_step_or_min_tick(
+                                        current_step,
+                                        ti.min_ticksize,
+                                    )
+                                })
+                                .unwrap_or_else(|| tick_multiply.unscale_step(current_step));
 
-                            let exchange =
-                                self.stream_pair().as_ref().map(|info| info.ticker.exchange);
+                            let exchange = stream_pair.as_ref().map(|info| info.ticker.exchange);
+                            let min_ticksize = stream_pair.map(|ti| ti.min_ticksize);
 
                             let modifiers = row![
                                 basis_modifier(id, basis, modifier, kind),
                                 ticksize_modifier(
                                     id,
-                                    base_ticksize,
+                                    price_step,
+                                    min_ticksize,
                                     tick_multiply,
                                     modifier,
                                     kind,
@@ -628,10 +651,7 @@ impl State {
                             top_left_buttons = top_left_buttons.push(modifiers);
                         }
                         data::chart::KlineChartKind::Candles => {
-                            let selected_basis = self
-                                .settings
-                                .selected_basis
-                                .unwrap_or(Timeframe::M15.into());
+                            let selected_basis = chart.basis();
                             let kind = ModifierKind::Candlestick(selected_basis);
 
                             let modifiers =
@@ -1114,7 +1134,7 @@ impl State {
             }
             Some(Modal::StreamModifier(modifier)) => stack_modal(
                 base,
-                modifier.view(self.stream_pair()).map(move |message| {
+                modifier.view(self.stream_pair_kind()).map(move |message| {
                     Message::PaneEvent(pane, Event::StreamModifierChanged(message))
                 }),
                 Message::PaneEvent(pane, Event::HideModal),
@@ -1357,15 +1377,20 @@ fn link_group_modal<'a>(
 
 fn ticksize_modifier<'a>(
     id: pane_grid::Pane,
-    base_ticksize: f32,
+    price_step: PriceStep,
+    min_ticksize: Option<exchange::unit::MinTicksize>,
     multiplier: TickMultiplier,
     modifier: Option<modal::stream::Modifier>,
     kind: ModifierKind,
     exchange: Option<exchange::adapter::Exchange>,
 ) -> Element<'a, Message> {
-    let modifier_modal = Modal::StreamModifier(
-        modal::stream::Modifier::new(kind).with_ticksize_view(base_ticksize, multiplier, exchange),
-    );
+    let modifier_modal =
+        Modal::StreamModifier(modal::stream::Modifier::new(kind).with_ticksize_view(
+            price_step,
+            min_ticksize,
+            multiplier,
+            exchange,
+        ));
 
     let is_active = modifier.is_some_and(|m| {
         matches!(

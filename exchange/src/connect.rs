@@ -49,6 +49,7 @@ pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Eve
             adapter::hyperliquid::connect_depth_stream(ticker, config.tick_mltp, push_freq).boxed()
         }
         Venue::Okex => adapter::okex::connect_depth_stream(ticker, push_freq).boxed(),
+        Venue::Mexc => adapter::mexc::connect_depth_stream(ticker, push_freq).boxed(),
     }
 }
 
@@ -63,6 +64,7 @@ pub fn trade_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static
             adapter::hyperliquid::connect_trade_stream(tickers, market_kind).boxed()
         }
         Venue::Okex => adapter::okex::connect_trade_stream(tickers, market_kind).boxed(),
+        Venue::Mexc => adapter::mexc::connect_trade_stream(tickers, market_kind).boxed(),
     }
 }
 
@@ -79,6 +81,7 @@ pub fn kline_stream(
             adapter::hyperliquid::connect_kline_stream(streams, market_kind).boxed()
         }
         Venue::Okex => adapter::okex::connect_kline_stream(streams, market_kind).boxed(),
+        Venue::Mexc => adapter::mexc::connect_kline_stream(streams, market_kind).boxed(),
     }
 }
 
