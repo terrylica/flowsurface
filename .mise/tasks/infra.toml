@@ -169,10 +169,12 @@ echo "=== Flowsurface Preflight ==="
 echo ""
 echo "[0/5] Updating opendeviationbar crates..."
 BEFORE=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
-cargo update -p opendeviationbar-core -p opendeviationbar-client --quiet 2>/dev/null || true
+cargo update -p opendeviationbar-core -p opendeviationbar-client -p opendeviationbar-hurst --quiet 2>/dev/null || true
 AFTER=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
 if [ "$BEFORE" != "$AFTER" ]; then
   echo "  Updated: $BEFORE -> $AFTER"
+  # Auto-commit the lockfile so the bump persists across sessions
+  git add Cargo.lock && git commit -m "chore: auto-bump opendeviationbar crates $BEFORE → $AFTER" --no-verify --quiet 2>/dev/null || true
 else
   echo "  Already at latest: $AFTER"
 fi
