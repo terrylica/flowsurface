@@ -171,7 +171,7 @@ impl KlineChart {
 
                 // priority 4, missing klines & integrity check
                 if let Some(missing_keys) =
-                    timeseries.check_kline_integrity(kline_earliest, kline_latest, timeframe_ms)
+                    timeseries.check_kline_integrity(kline_earliest, kline_latest)
                 {
                     let latest =
                         missing_keys.iter().max().unwrap_or(&visible_latest) + timeframe_ms;
