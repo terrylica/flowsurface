@@ -451,8 +451,10 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     } else {
         let (start, end) = range.unwrap();
         // App passes ms timestamps; CH column is in µs — convert at boundary.
+        // end_us uses +999 to cover the full millisecond (inclusive upper bound).
+        // Without this, bars at close_time_us = end_ms*1000 + 1..999 are missed.
         let start_us = start.saturating_mul(1000);
-        let end_us = end.saturating_mul(1000);
+        let end_us = end.saturating_mul(1000).saturating_add(999);
         format!(
             "SELECT {cols} \
              FROM opendeviationbar_cache.open_deviation_bars \
