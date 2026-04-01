@@ -59,7 +59,17 @@ impl AppConfig {
         Self {
             ch_host: parse_env_string("FLOWSURFACE_CH_HOST", "bigblack"),
             ch_port: parse_env_u16("FLOWSURFACE_CH_PORT", 8123),
-            ouroboros_mode: parse_env_string("FLOWSURFACE_OUROBOROS_MODE", "aion"),
+            ouroboros_mode: {
+                let mode = parse_env_string("FLOWSURFACE_OUROBOROS_MODE", "aion");
+                if mode == "day" {
+                    eprintln!(
+                        "[flowsurface] WARNING: FLOWSURFACE_OUROBOROS_MODE=day — \
+                         day-mode was removed upstream. All production data is 'aion'. \
+                         Queries will return 0 rows. Set to 'aion' or unset the variable."
+                    );
+                }
+                mode
+            },
             sse_enabled: parse_env_bool("FLOWSURFACE_SSE_ENABLED", &["true", "1"], false),
             sse_host: parse_env_string("FLOWSURFACE_SSE_HOST", "localhost"),
             sse_port: parse_env_u16("FLOWSURFACE_SSE_PORT", 18081),
