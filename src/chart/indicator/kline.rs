@@ -66,13 +66,6 @@ pub trait KlineIndicatorImpl {
         None
     }
 
-    /// Return an outline colour for anomalous bars at `storage_idx` (oldest-first index).
-    /// Default: `None` (no outline drawn). Overridden by `TradeIntensityHeatmap` when
-    /// the Adjusted Boxplot (Hubert 2008) fence flags a bar as anomalously low intensity.
-    fn anomaly_outline_color(&self, _storage_idx: u64) -> Option<Color> {
-        None
-    }
-
     /// Return the number of processed datapoints in this indicator's internal storage.
     /// Used for divergence detection between indicator state and data source.
     fn data_len(&self) -> usize {

@@ -46,7 +46,7 @@ mod data_ops;
 
 mod odb_lifecycle;
 
-mod rendering;
+pub(crate) mod rendering;
 pub(crate) use rendering::draw_candle_dp;
 use rendering::{
     ContentGaps, draw_all_npocs, draw_clusters, effective_cluster_qty, render_data_source,
@@ -1380,8 +1380,6 @@ impl canvas::Program<Message> for KlineChart {
                             let storage_idx = total_len.saturating_sub(1 + visual_idx);
                             let thermal_color =
                                 heatmap_indi.and_then(|h| h.thermal_body_color(storage_idx as u64));
-                            let anomaly_color = heatmap_indi
-                                .and_then(|h| h.anomaly_outline_color(storage_idx as u64));
                             // Wick: same thermal colour as body when thermal_wicks=true,
                             // otherwise falls back to direction green/red (None → unwrap_or).
                             let wick_color = if thermal_wicks { thermal_color } else { None };
@@ -1394,7 +1392,6 @@ impl canvas::Program<Message> for KlineChart {
                                 kline,
                                 thermal_color,
                                 wick_color,
-                                anomaly_color,
                             );
                         },
                     );

@@ -54,7 +54,6 @@ pub(crate) fn draw_candle_dp(
     kline: &Kline,
     thermal_body_color: Option<iced::Color>,
     thermal_wick_color: Option<iced::Color>,
-    anomaly_outline_color: Option<iced::Color>,
 ) {
     let y_open = price_to_y(kline.open);
     let y_high = price_to_y(kline.high);
@@ -75,21 +74,6 @@ pub(crate) fn draw_candle_dp(
         body_color,
     );
 
-    // Anomaly outline: bright stroke around the candle body (Adjusted Boxplot fence).
-    if let Some(outline_color) = anomaly_outline_color {
-        let body_rect = iced::Rectangle::new(
-            Point::new(x_position - (candle_width / 2.0), y_open.min(y_close)),
-            Size::new(candle_width, (y_open - y_close).abs().max(1.0)),
-        );
-        frame.stroke_rectangle(
-            body_rect.position(),
-            body_rect.size(),
-            canvas::Stroke::default()
-                .with_color(outline_color)
-                .with_width(1.5),
-        );
-    }
-
     // Wick: thermal colour (merged) or green/red direction, per "Thermal Wicks" setting.
     let wick_color = thermal_wick_color.unwrap_or(direction_color);
     frame.fill_rectangle(
@@ -97,6 +81,24 @@ pub(crate) fn draw_candle_dp(
         Size::new(candle_width / 4.0, (y_high - y_low).abs()),
         wick_color,
     );
+}
+
+/// Draw a filled diamond (rotated square) at `center` with the given `half_size`.
+/// Reusable primitive for overlay markers (anomaly fence, signal flags, etc.).
+pub(crate) fn draw_diamond(
+    frame: &mut canvas::Frame,
+    center: Point,
+    half_size: f32,
+    color: iced::Color,
+) {
+    let path = canvas::Path::new(|b| {
+        b.move_to(Point::new(center.x, center.y - half_size));
+        b.line_to(Point::new(center.x + half_size, center.y));
+        b.line_to(Point::new(center.x, center.y + half_size));
+        b.line_to(Point::new(center.x - half_size, center.y));
+        b.close();
+    });
+    frame.fill(&path, color);
 }
 
 pub(super) fn render_data_source<F>(

@@ -61,6 +61,10 @@ struct HeatmapPoint {
     is_anomaly: bool,
     /// Conformal p-value: empirical rank / (n+1). Lower = more anomalous.
     anomaly_pvalue: f32,
+    /// Bar high price (f32). Stored for anomaly diamond overlay positioning.
+    high: f32,
+    /// Bar low price (f32). Stored for anomaly diamond overlay positioning.
+    low: f32,
 }
 
 impl HeatmapPoint {
@@ -164,7 +168,7 @@ impl TradeIntensityHeatmapIndicator {
     ///
     /// Uses a sorted Vec for rank queries: O(log N) binary search, cache-friendly insert/remove.
     /// This is significantly faster than a BTreeMap range scan on rebuild (avoids pointer chasing).
-    fn process_one(&mut self, idx: usize, intensity: f32, bullish: bool) {
+    fn process_one(&mut self, idx: usize, intensity: f32, bullish: bool, high: f32, low: f32) {
         let log_val = intensity.log10().max(0.0);
 
         // --- Compute bin BEFORE pushing (no look-ahead) ---
@@ -196,6 +200,8 @@ impl TradeIntensityHeatmapIndicator {
                     bullish: false,
                     is_anomaly: false,
                     anomaly_pvalue: 1.0,
+                    high: 0.0,
+                    low: 0.0,
                 },
             );
         }
@@ -230,6 +236,8 @@ impl TradeIntensityHeatmapIndicator {
             bullish,
             is_anomaly,
             anomaly_pvalue,
+            high,
+            low,
         });
 
         // --- Push current bar into sorted window ---
@@ -538,7 +546,9 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                 // to keep the Vec densely packed (idx == data.len() invariant).
                 let intensity = dp.microstructure.map(|m| m.trade_intensity).unwrap_or(0.0);
                 let bullish = dp.kline.close >= dp.kline.open;
-                self.process_one(idx, intensity, bullish);
+                let high = dp.kline.high.to_f32();
+                let low = dp.kline.low.to_f32();
+                self.process_one(idx, intensity, bullish, high, low);
             }
             self.next_idx = tickseries.datapoints.len();
             // Sample the last 3 bars' bins for color-shift detection
@@ -615,7 +625,9 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
                         let dp = &tickseries.datapoints[idx];
                         let intensity = dp.microstructure.map(|m| m.trade_intensity).unwrap_or(0.0);
                         let bullish = dp.kline.close >= dp.kline.open;
-                        self.process_one(idx, intensity, bullish);
+                        let high = dp.kline.high.to_f32();
+                        let low = dp.kline.low.to_f32();
+                        self.process_one(idx, intensity, bullish, high, low);
                     }
                     self.next_idx = new_len;
                     if new_bars > 0 {
@@ -699,17 +711,56 @@ impl KlineIndicatorImpl for TradeIntensityHeatmapIndicator {
             .map(|p| thermal_color(p.t()))
     }
 
-    /// Return severity-graded outline for anomalous bars (conformal rank < α).
-    /// Yellow (p≈α) → red (p→0) based on conformal p-value.
-    fn anomaly_outline_color(&self, storage_idx: u64) -> Option<Color> {
-        self.data.get(storage_idx as usize).and_then(|p| {
-            if !p.is_anomaly {
-                return None;
+    /// Draw direction-aware diamond markers above/below anomalous bars.
+    /// Bullish anomaly → diamond above high; bearish → diamond below low.
+    /// Size scales 2–4px and colour grades yellow→red with p-value severity.
+    fn draw_overlay(
+        &self,
+        frame: &mut iced::widget::canvas::Frame,
+        total_len: usize,
+        earliest_visual: usize,
+        latest_visual: usize,
+        price_to_y: &dyn Fn(exchange::unit::Price) -> f32,
+        interval_to_x: &dyn Fn(u64) -> f32,
+        _palette: &iced::theme::palette::Extended,
+    ) {
+        if !self.anomaly_fence_enabled || self.data.is_empty() {
+            return;
+        }
+
+        use crate::chart::kline::rendering::draw_diamond;
+        use exchange::unit::Price;
+
+        for visual_idx in earliest_visual..=latest_visual {
+            let storage_idx = total_len.saturating_sub(1 + visual_idx);
+            let Some(pt) = self.data.get(storage_idx) else {
+                continue;
+            };
+            if !pt.is_anomaly {
+                continue;
             }
-            let alpha = anomaly::DEFAULT_ANOMALY_ALPHA;
-            let t = (1.0 - p.anomaly_pvalue / alpha).clamp(0.0, 1.0);
-            Some(Color::from_rgb(1.0, 0.95 * (1.0 - t), 0.0))
-        })
+
+            // Severity: 0.0 (barely anomalous, p≈α) → 1.0 (extreme, p→0).
+            let severity =
+                (1.0 - pt.anomaly_pvalue / anomaly::DEFAULT_ANOMALY_ALPHA).clamp(0.0, 1.0);
+
+            // Colour: yellow (mild) → red (extreme).
+            let color = Color::from_rgb(1.0, 0.95 * (1.0 - severity), 0.0);
+
+            // Size: half_size 2.0 → 4.0 px scaling with severity.
+            let half_size = 2.0 + severity * 2.0;
+
+            let x = interval_to_x(visual_idx as u64);
+            // Direction-aware: above high for bullish, below low for bearish.
+            // price_to_y inverts (higher price → lower y), so "above" = subtract.
+            let y = if pt.bullish {
+                price_to_y(Price::from_f32(pt.high)) - half_size - 2.0
+            } else {
+                price_to_y(Price::from_f32(pt.low)) + half_size + 2.0
+            };
+
+            draw_diamond(frame, Point::new(x, y), half_size, color);
+        }
     }
 
     fn data_len(&self) -> usize {
