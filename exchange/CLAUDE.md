@@ -208,7 +208,41 @@ pub struct TickerInfo {
 
 ---
 
+## ClickHouse Infrastructure
+
+All range bar data served from **bigblack** via SSH tunnel. No local ClickHouse.
+
+| Setting    | Value                   | Source       |
+| ---------- | ----------------------- | ------------ |
+| Host       | `localhost`             | `.mise.toml` |
+| Port       | `18123`                 | `.mise.toml` |
+| SSH tunnel | `18123 → bigblack:8123` | `infra.toml` |
+
+**Preflight** (`mise run preflight`): Runs before `mise run run` and `mise run run:app`:
+
+1. Establishes SSH tunnel (idempotent)
+2. Verifies ClickHouse responds (3 retries)
+3. Verifies `opendeviationbar_cache.open_deviation_bars` table exists
+4. Verifies BTCUSDT data present for all thresholds
+
+---
+
+## Common Errors (Exchange-Specific)
+
+| Error                       | Cause                               | Fix                                                                  |
+| --------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| "Waiting for trades..."     | ODB pane missing `Trades` stream    | Add `trades_stream()` to pane's stream vec in `pane.rs`              |
+| "Fetching Klines..." loop   | ClickHouse unreachable              | `mise run preflight`                                                 |
+| "ClickHouse HTTP 404"       | Wrong table/schema                  | Verify `opendeviationbar_cache.open_deviation_bars`                  |
+| "no microstructure data"    | `FetchedData::Klines` missing field | Ensure `microstructure: Some(micro)` in ODB fetch path               |
+| "Fetching trades..." stuck  | ODB sidecar unreachable (Ariadne)   | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250` |
+| Gap-fill silently skipped   | Ariadne returned `None` or error    | Check sidecar logs; gap-fill is best-effort                          |
+| "No chart found for stream" | Widget/pane stream mismatch         | Check `matches_stream()` in `connector/stream.rs`                    |
+
+---
+
 ## Related
 
 - [/CLAUDE.md](/CLAUDE.md) — Project hub
 - [/data/CLAUDE.md](/data/CLAUDE.md) — Data aggregation, indicators
+- [/src/chart/CLAUDE.md](/src/chart/CLAUDE.md) — Chart rendering, canvas architecture

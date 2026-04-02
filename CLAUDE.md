@@ -11,6 +11,7 @@
 | Task                 | Command / Entry Point         | Details                                 |
 | -------------------- | ----------------------------- | --------------------------------------- |
 | Build & run          | `mise run run`                | Preflight + cargo run                   |
+| Fast dev build       | `mise run run:fast`           | Preflight + opt-level=2 (day-to-day)    |
 | Launch .app bundle   | `mise run run:app`            | Preflight + open Flowsurface.app        |
 | ClickHouse preflight | `mise run preflight`          | Tunnel + connectivity + data validation |
 | SSH tunnel           | `mise run tunnel:start`       | localhost:18123 → bigblack:8123         |
@@ -23,12 +24,15 @@
 
 ## CLAUDE.md Network (Hub-and-Spoke)
 
-| Directory       | CLAUDE.md                                      | Scope                                                                   |
-| --------------- | ---------------------------------------------- | ----------------------------------------------------------------------- |
-| `/`             | This file                                      | Hub — architecture, env vars, patterns, errors                          |
-| `/exchange/`    | [exchange/CLAUDE.md](exchange/CLAUDE.md)       | Exchange adapters, ClickHouse, SSE, stream types                        |
-| `/data/`        | [data/CLAUDE.md](data/CLAUDE.md)               | Chart types, indicators, aggregation, layout                            |
-| `/docs/audits/` | [docs/audits/CLAUDE.md](docs/audits/CLAUDE.md) | Statistical audits: bar-selection metrics (v1 threshold, v2 rank-based) |
+Each directory has its own CLAUDE.md with deep detail. This hub has essentials only — follow links for specifics.
+
+| Directory       | CLAUDE.md                                      | Scope                                                         |
+| --------------- | ---------------------------------------------- | ------------------------------------------------------------- |
+| `/`             | This file                                      | Hub — architecture, env vars, ODB overview, errors            |
+| `/exchange/`    | [exchange/CLAUDE.md](exchange/CLAUDE.md)       | Exchange adapters, ClickHouse SQL/SSE, stream types, infra    |
+| `/data/`        | [data/CLAUDE.md](data/CLAUDE.md)               | Chart types, indicators, aggregation, layout, sessions        |
+| `/src/chart/`   | [src/chart/CLAUDE.md](src/chart/CLAUDE.md)     | Canvas rendering, indicator patterns, bar selection, overlays |
+| `/docs/audits/` | [docs/audits/CLAUDE.md](docs/audits/CLAUDE.md) | Statistical audits: bar-selection metrics (v1/v2)             |
 
 ---
 
@@ -42,6 +46,7 @@ flowsurface/                 Main crate — GUI, chart rendering, event handling
 │       ├── binance.rs       Binance Spot + Perpetuals
 │       ├── bybit.rs         Bybit Perpetuals
 │       ├── hyperliquid.rs   Hyperliquid DEX
+│       ├── mexc.rs          MEXC Perpetuals
 │       └── okex.rs          OKX Multi-product
 ├── data/                    Data aggregation, indicators, layout models
 │   ├── chart.rs             Basis enum (Time, Tick, Odb)
@@ -66,226 +71,55 @@ flowsurface/                 Main crate — GUI, chart rendering, event handling
 
 All set in `.mise.toml`. The app reads them at runtime via `std::env::var()`.
 
-| Variable                     | Default     | Purpose                              |
-| ---------------------------- | ----------- | ------------------------------------ |
-| `FLOWSURFACE_CH_HOST`        | `bigblack`  | ClickHouse HTTP host                 |
-| `FLOWSURFACE_CH_PORT`        | `8123`      | ClickHouse HTTP port                 |
-| `FLOWSURFACE_SSE_ENABLED`    | `false`     | Enable SSE live bar stream           |
-| `FLOWSURFACE_SSE_HOST`       | `localhost` | SSE sidecar host                     |
-| `FLOWSURFACE_SSE_PORT`       | `8081`      | SSE sidecar port                     |
-| `FLOWSURFACE_OUROBOROS_MODE` | `aion`      | ODB session mode (aion; legacy: day) |
-| `FLOWSURFACE_ALWAYS_ON_TOP`  | _(unset)_   | Pin window above all others if set   |
-| `FLOWSURFACE_TG_BOT_TOKEN`   | _(unset)_   | Telegram bot token for alerts        |
-| `FLOWSURFACE_TG_CHAT_ID`     | _(unset)_   | Telegram chat ID for alerts          |
+| Variable                     | Default     | Purpose                                           |
+| ---------------------------- | ----------- | ------------------------------------------------- |
+| `FLOWSURFACE_CH_HOST`        | `bigblack`  | ClickHouse HTTP host                              |
+| `FLOWSURFACE_CH_PORT`        | `8123`      | ClickHouse HTTP port                              |
+| `FLOWSURFACE_SSE_ENABLED`    | `false`     | Enable SSE live bar stream                        |
+| `FLOWSURFACE_SSE_HOST`       | `localhost` | SSE sidecar host                                  |
+| `FLOWSURFACE_SSE_PORT`       | `8081`      | SSE sidecar port                                  |
+| `FLOWSURFACE_OUROBOROS_MODE` | `aion`      | ODB session mode (aion; legacy: day — deprecated) |
+| `FLOWSURFACE_ALWAYS_ON_TOP`  | _(unset)_   | Pin window above all others if set                |
+| `FLOWSURFACE_TG_BOT_TOKEN`   | _(unset)_   | Telegram bot token for alerts                     |
+| `FLOWSURFACE_TG_CHAT_ID`     | _(unset)_   | Telegram chat ID for alerts                       |
 
 ---
 
 ## ODB Integration (Fork-Specific)
 
-ODB panes use **triple-stream architecture**:
+ODB panes use **triple-stream architecture** — ClickHouse bars (authoritative) + Binance trades (forming bar) + depth (heatmap). Gap-fill via sidecar `/catchup` endpoint with dedup fence. Full details → [exchange/CLAUDE.md](exchange/CLAUDE.md).
 
-```
-Stream 1: OdbKline — ClickHouse (completed bars, 5s poll)
-  → fetch_klines() → ChKline → Kline → TickAggr
-  → update_latest_kline() → replace_or_append_kline()
+**CRITICAL**: ODB panes must subscribe to ALL THREE streams (`OdbKline`, `Trades`, `Depth`) in `resolve_content()` at `src/screen/dashboard/pane.rs`. Missing `Trades` causes "Waiting for trades..." forever.
 
-Stream 2: Trades — Binance @aggTrade WebSocket (live trades)
-  → TradesReceived → insert_trades_buffer()
-  → TickAggr::insert_trades() → is_full_range_bar(threshold_dbps)
-  → Forming bar oscillates until threshold breach → bar completes
+**Key types**:
 
-Stream 3: Depth — Binance depth WebSocket (orderbook)
-  → DepthReceived → heatmap / footprint data
-
-Reconciliation: ClickHouse bar replaces locally-built bar (authoritative)
-
-Stream 4: Gap-fill — ODB sidecar Ariadne + /trades/gap-fill
-  → After initial CH klines load, query Ariadne for last_agg_trade_id
-  → Fetch missing trades via /trades/gap-fill (Parquet fast path)
-  → Dedup fence: WS trades with id <= fence are skipped
-  → CH bars buffered during gap-fill, flushed after completion
-```
-
-**CRITICAL**: ODB panes must subscribe to ALL THREE streams (`OdbKline`, `Trades`, `Depth`) in `resolve_content()` at `src/screen/dashboard/pane.rs`. Missing `Trades` causes "Waiting for trades..." forever because `matches_stream()` silently drops unmatched events.
-
-**Key types** (see [data/CLAUDE.md](data/CLAUDE.md) and [exchange/CLAUDE.md](exchange/CLAUDE.md) for details):
-
-| Type                     | Location                             | Purpose                                    |
-| ------------------------ | ------------------------------------ | ------------------------------------------ |
-| `Basis::Odb(u32)`        | `data/src/chart.rs`                  | Chart basis (threshold in dbps)            |
-| `KlineChartKind::Odb`    | `data/src/chart/kline.rs`            | Chart type variant                         |
-| `RangeBarMicrostructure` | `data/src/aggr/ticks.rs`             | Sidecar: trade_count, ofi, trade_intensity |
-| `ChKline`                | `exchange/src/adapter/clickhouse.rs` | ClickHouse row deserialization             |
-| `ODB_THRESHOLDS`         | `data/src/chart.rs`                  | `[100, 250, 500, 750]` dbps                |
-| `ContentKind::OdbChart`  | `data/src/layout/pane.rs`            | Pane serialization variant                 |
+| Type                    | Location                             | Purpose                         |
+| ----------------------- | ------------------------------------ | ------------------------------- |
+| `Basis::Odb(u32)`       | `data/src/chart.rs`                  | Chart basis (threshold in dbps) |
+| `KlineChartKind::Odb`   | `data/src/chart/kline.rs`            | Chart type variant              |
+| `ChKline`               | `exchange/src/adapter/clickhouse.rs` | ClickHouse row deserialization  |
+| `ODB_THRESHOLDS`        | `data/src/chart.rs`                  | `[100, 250, 500, 750]` dbps     |
+| `ContentKind::OdbChart` | `data/src/layout/pane.rs`            | Pane serialization variant      |
 
 **Threshold display**: `BPR{dbps/10}` — BPR25 = 250 dbps = 0.25%, BPR50 = 500 dbps, etc.
 
----
-
-## ClickHouse Infrastructure
-
-All range bar data served from **bigblack** via SSH tunnel. No local ClickHouse.
-
-| Setting    | Value                   | Source       |
-| ---------- | ----------------------- | ------------ |
-| Host       | `localhost`             | `.mise.toml` |
-| Port       | `18123`                 | `.mise.toml` |
-| SSH tunnel | `18123 → bigblack:8123` | `infra.toml` |
-
-**Preflight** (`mise run preflight`): Runs before `mise run run` and `mise run run:app`:
-
-1. Establishes SSH tunnel (idempotent)
-2. Verifies ClickHouse responds (3 retries)
-3. Verifies `opendeviationbar_cache.open_deviation_bars` table exists
-4. Verifies BTCUSDT data present for all thresholds
-
----
-
-## Mise Tasks
-
-### Dev (`.mise/tasks/dev.toml`)
-
-| Task            | Description                   | Depends On  |
-| --------------- | ----------------------------- | ----------- |
-| `build`         | Debug binary                  | —           |
-| `build:release` | Optimized release binary      | —           |
-| `run`           | Build + run with ClickHouse   | `preflight` |
-| `run:app`       | Launch Flowsurface.app bundle | `preflight` |
-| `check`         | Type-check (no codegen)       | —           |
-| `clippy`        | Lint with `-D warnings`       | —           |
-| `fmt`           | Format all Rust code          | —           |
-| `lint`          | `fmt:check` + `clippy`        | —           |
-
-### Release (`.mise/tasks/release.toml`)
-
-| Task                  | Description                                  |
-| --------------------- | -------------------------------------------- |
-| `release:macos`       | Universal binary (x86_64 + aarch64 via lipo) |
-| `release:macos-arm64` | aarch64-only release                         |
-| `release:app-bundle`  | Build + update .app + sign + register icon   |
-| `sign:app`            | Ad-hoc codesign the .app bundle              |
-
-### Infrastructure (`.mise/tasks/infra.toml`)
-
-| Task            | Description                                   |
-| --------------- | --------------------------------------------- |
-| `tunnel:start`  | SSH tunnel to bigblack (idempotent)           |
-| `tunnel:stop`   | Kill SSH tunnel                               |
-| `tunnel:status` | Verify tunnel + ClickHouse connectivity       |
-| `preflight`     | Full validation (tunnel + CH + schema + data) |
-
-### Upstream (`.mise/tasks/upstream.toml`)
-
-| Task              | Description               |
-| ----------------- | ------------------------- |
-| `upstream:fetch`  | Fetch upstream changes    |
-| `upstream:diff`   | Show new upstream commits |
-| `upstream:merge`  | Merge upstream/main       |
-| `upstream:rebase` | Rebase onto upstream/main |
-
----
-
-## Release Model
-
-**Native desktop app** — no crates.io, no version tags, no changelog.
-
-| Task                           | What It Does                                     |
-| ------------------------------ | ------------------------------------------------ |
-| `mise run build:release`       | Optimized binary at `target/release/flowsurface` |
-| `mise run release:app-bundle`  | Build + update `.app` + SSH launcher + icon      |
-| `mise run release:macos-arm64` | aarch64-only release binary                      |
-| `mise run release:macos`       | Universal binary (x86_64 + aarch64 via lipo)     |
-
-**Code signing**: Ad-hoc via `codesign --deep --force --sign -` (built into `run:app` and `release:app-bundle`).
+**ClickHouse**: All data from **bigblack** via SSH tunnel (`localhost:18123 → bigblack:8123`). Preflight validates connectivity before every launch. Details → [exchange/CLAUDE.md](exchange/CLAUDE.md#clickhouse-infrastructure).
 
 ---
 
 ## Common Patterns
 
-### Adding a New Indicator
+### Adding a New Indicator → [src/chart/CLAUDE.md](src/chart/CLAUDE.md#adding-a-new-indicator)
 
-**Standard subplot indicator (3 files: 2 modified + 1 new):**
+3 files: enum variant (`data`), factory + module decl (`src/chart/indicator/kline.rs`), impl file (new). Extended ceremony for configurable params, main-canvas overlays, or body recoloring.
 
-1. **`data/src/chart/indicator.rs`** (enum + arrays + Display):
-   - Add variant to `KlineIndicator` enum
-   - Add to `FOR_SPOT` and/or `FOR_PERPS` arrays (increment array length constant)
-   - Add `Display` match arm
+### Extending ODB Support → [src/chart/CLAUDE.md](src/chart/CLAUDE.md#extending-odb-support)
 
-2. **`src/chart/indicator/kline.rs`** (factory + module):
-   - Add `pub mod <name>;` declaration
-   - Add match arm to `make_indicator()` factory
+Check all match arms for `Basis::Odb(_)`, `KlineChartKind::Odb`, `ContentKind::OdbChart` across 7 files.
 
-3. **`src/chart/indicator/kline/<name>.rs`** (NEW FILE -- implementation):
-   - Implement `KlineIndicatorImpl` trait (see `rsi.rs` or `volume.rs` for reference)
+### Canvas Architecture → [src/chart/CLAUDE.md](src/chart/CLAUDE.md#iced-canvas-architecture)
 
-**Extended ceremony (only for configurable or special-rendering indicators):**
-
-- **Configurable params** (e.g., EMA period): also modify `data/src/chart/kline.rs` Config struct + update `make_indicator()` arm to use config
-- **Main-canvas rendering** (e.g., heatmap colors candle bodies): also modify `src/chart/kline/mod.rs` draw code
-
-No other files need touching. `EnumMap` derive auto-expands storage. Serde derive handles serialization.
-
-### Extending ODB Support
-
-When modifying ODB rendering or behavior, check **all** match arms for `Basis::Odb(_)`, `KlineChartKind::Odb`, and `ContentKind::OdbChart` across:
-
-- `src/screen/dashboard/pane.rs` — pane streams (must include `OdbKline` + `Depth` + `Trades`)
-- `src/screen/dashboard.rs` — event dispatch, pane switching
-- `src/chart/kline.rs` — rendering, trade insertion
-- `src/chart/heatmap.rs` — depth heatmap
-- `src/modal/pane/stream.rs` — settings UI
-- `src/modal/pane/settings.rs` — chart config
-- `data/src/layout/pane.rs` — serialization
-
-### iced Canvas Architecture
-
-**Four geometry layers** in `src/chart/kline.rs` (stacked in draw order):
-
-| Layer       | Frame transforms?             | When cleared            |
-| ----------- | ----------------------------- | ----------------------- |
-| `main`      | translate → scale → translate | Panning, zoom, new bars |
-| `watermark` | None (screen-space)           | Rarely                  |
-| `legend`    | None (screen-space)           | Every cursor move       |
-| `crosshair` | None (screen-space)           | Every cursor move       |
-
-**Chart-space → screen-space formula** (canonical, from `keyboard_nav.rs`):
-
-```
-screen_x = (chart_x + translation.x) * scaling + bounds.width / 2
-```
-
-ODB: `chart_x = -(visual_idx * cell_width)`. Lower `visual_idx` = newer bar = higher screen_x.
-
-**Hit detection — anti-pattern vs correct pattern:**
-
-| ❌ Anti-pattern                                                            | ✅ Correct pattern                                                                              |
-| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Compute `screen_x` from formula; check `(cursor.x − screen_x).abs() < HIT` | `snap_x_to_index(cursor_pos.x, bounds_size, region)` → bar index; check `abs_diff(target) <= 1` |
-
-Reason: `cursor.position_in(bounds)` and manual screen math can have subtle discrepancies. `snap_x_to_index` is canonical (same function used for crosshair + Shift+Click) and is guaranteed grid-consistent.
-
-**Visual handle width should match hit zone**: if hit zone is ±1 bar, draw the handle `cell_width * scaling` px wide (one full bar on screen). Mismatched visual ↔ hit zones confuse users.
-
-**Interior mutability**: `canvas::Program::update()` takes `&self`. Wrap mutable canvas state in `RefCell<T>`. Borrow immutably to extract values → drop borrow → `borrow_mut()` to update. Never hold an immutable borrow across a `borrow_mut()` call.
-
----
-
-### ODB Bar Range Selection
-
-**File**: `src/chart/kline.rs` — `BarSelectionState` (in `RefCell`) + `BrimSide` enum.
-
-**UX**:
-
-- Shift+Left Click: anchor → end → restart (3rd click resets to new anchor)
-- Left Click on outermost bar of selection: drag that brim to relocate boundary
-- `u64::MAX` sentinel from `snap_x_to_index` = forming-bar zone; ignore there
-
-**Cache strategy**: selection highlight drawn in `crosshair` layer; stats in `legend` layer. Neither invalidates the heavy `main` (candles) cache during drag. Only `clear_crosshair()` + `legend.clear()` on `CursorMoved`.
-
-**Stats overlay** (top-center, `legend` layer): `N bars` / `↑ up (%)` / `↓ down (%)`. Distance = `|end − anchor|` (0 = same bar, 1 = adjacent).
-
----
+Four geometry layers (main, watermark, legend, crosshair). Hit detection via `snap_x_to_index()`, never manual screen-space math.
 
 ### Upstream Merge Checklist
 
@@ -305,41 +139,36 @@ After merging upstream, check for:
 
 ## Common Errors
 
-| Error                                               | Cause                                                                                | Fix                                                                                                                                       |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| "Waiting for trades..."                             | ODB pane missing `Trades` stream                                                     | Add `trades_stream()` to pane's stream vec in `pane.rs`                                                                                   |
-| "Fetching Klines..." loop                           | ClickHouse unreachable                                                               | `mise run preflight`                                                                                                                      |
-| "No chart found for stream"                         | Widget/pane stream mismatch                                                          | Check `matches_stream()` in `connector/stream.rs`                                                                                         |
-| Tiny dot candlesticks                               | Wrong cell_width/limit                                                               | Check adaptive scaling in `kline.rs`                                                                                                      |
-| Crosshair panic                                     | NaN in indicator data                                                                | Add NaN guard before rendering                                                                                                            |
-| "ClickHouse HTTP 404"                               | Wrong table/schema                                                                   | Verify `opendeviationbar_cache.open_deviation_bars`                                                                                       |
-| "no microstructure data"                            | `FetchedData::Klines` missing field                                                  | Ensure `microstructure: Some(micro)` in ODB fetch path                                                                                    |
-| "Fetching trades..." stuck                          | ODB sidecar unreachable (Ariadne)                                                    | Verify sidecar at `http://{SSE_HOST}:{SSE_PORT}/ariadne/BTCUSDT/250`                                                                      |
-| Gap-fill silently skipped                           | Ariadne returned `None` or error                                                     | Check sidecar logs; gap-fill is best-effort                                                                                               |
-| Legend shows wrong day at day boundary              | `prev_bar.close_time` used as open time                                              | ODB: `close_time_ms[N] ≠ open_time_ms[N+1]` — trigger trade ≠ first trade. Use `TickAccumulation.open_time_ms`                            |
-| Legend open time reverted to wrong day              | Upstream merge clobbered threading                                                   | Restore `open_time_ms` field in `TickAccumulation`, 6th field in `KlineReceived`, and `draw_crosshair_tooltip` fix                        |
-| Intensity heatmap colors stop at K≈13               | `FetchRange::Kline(0,now)` hit `LIMIT 2000` range path instead of adaptive limit     | `build_odb_sql`: full-reload sentinel is `end == u64::MAX`; `kline.rs` initial/sentinel fetches must use `FetchRange::Kline(0, u64::MAX)` |
-| Brim drag / interactive canvas hit detection misses | Screen-space formula (`brim_screen_xs`) used for hit testing — subtle coord mismatch | Use `snap_x_to_index()` ± 1 bar; never compute screen positions manually for hit testing                                                  |
+Top errors here. Module-specific errors → [exchange/CLAUDE.md](exchange/CLAUDE.md#common-errors-exchange-specific) | [src/chart/CLAUDE.md](src/chart/CLAUDE.md#common-errors-chart-specific).
+
+| Error                                  | Cause                                      | Fix                                                                        |
+| -------------------------------------- | ------------------------------------------ | -------------------------------------------------------------------------- |
+| "Waiting for trades..."                | ODB pane missing `Trades` stream           | Add `trades_stream()` to pane's stream vec in `pane.rs`                    |
+| "Fetching Klines..." loop              | ClickHouse unreachable                     | `mise run preflight`                                                       |
+| "No chart found for stream"            | Widget/pane stream mismatch                | Check `matches_stream()` in `connector/stream.rs`                          |
+| Legend shows wrong day at day boundary | `prev_bar.close_time` as open time         | Use `TickAccumulation.open_time_ms` — see [data/CLAUDE.md](data/CLAUDE.md) |
+| Heatmap colors stop at K≈13            | Full-reload used real `now` not `u64::MAX` | Initial fetches must use `FetchRange::Kline(0, u64::MAX)`                  |
 
 ---
 
 ## Terminology
 
-| Term                  | Definition                                                                                                                                                                          |
-| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **dbps**              | Decimal basis points. 1 dbps = 0.001%. 250 dbps = 0.25%.                                                                                                                            |
-| **BPR**               | Basis Points Range. Display label: BPR25 = 250 dbps threshold.                                                                                                                      |
-| **ODB**               | Open Deviation Bar. Range bar that closes on % deviation from open.                                                                                                                 |
-| **OFI**               | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1].                                                                                                            |
-| **TickAggr**          | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.                                                                                                                  |
-| **TimeSeries**        | Time-based aggregation. Used for Time basis (1m, 5m, 1h, etc.).                                                                                                                     |
-| **SSE**               | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.                                                                                                               |
-| **Sentinel**          | Bar-level agg_trade_id continuity auditor. Periodic 60s scan of all displayed ODB bars.                                                                                             |
-| **trigger trade**     | The trade whose arrival causes an ODB bar to close (deviation ≥ threshold). This trade's timestamp = `close_time_ms` of bar N and is **not** part of bar N+1.                       |
-| **open_time_ms**      | Timestamp of the first trade in a bar. For ODB: `open_time_ms[N+1] ≠ close_time_ms[N]` — there is always a gap. Stored in `TickAccumulation.open_time_ms`, sourced from ClickHouse. |
-| **Kline.time**        | Always `close_time_ms`. Never the open time. Display code must use `TickAccumulation.open_time_ms` for accurate open time (especially at UTC day boundaries).                       |
-| **adaptive_k**        | `round(cbrt(n)).max(5)` — K bins for intensity heatmap. Requires n ≥ 6332 bars in rolling window to reach K=19. See [data/CLAUDE.md](data/CLAUDE.md).                               |
-| **u64::MAX sentinel** | `FetchRange::Kline(0, u64::MAX)` means "full reload — no time constraint, use adaptive limit". Distinct from scroll-left pagination `(0, oldest_ts)` which uses `LIMIT 2000`.       |
+| Term                  | Definition                                                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **dbps**              | 1 dbps = 0.001%. 250 dbps = 0.25%. Unit for ODB threshold precision.                                                                                    |
+| **BPR**               | Basis Points Range. Display label: BPR25 = 250 dbps threshold.                                                                                          |
+| **ODB**               | Open Deviation Bar. Range bar that closes on % deviation from open.                                                                                     |
+| **OFI**               | Order Flow Imbalance. `(buy_vol - sell_vol) / total_vol`. Range: [-1,1].                                                                                |
+| **TickAggr**          | Vec-based aggregation (oldest-first). Used for Tick and ODB basis.                                                                                      |
+| **SSE**               | Server-Sent Events. Live bar stream from opendeviationbar-py sidecar.                                                                                   |
+| **Sentinel**          | Bar-level agg_trade_id continuity auditor. Periodic 60s scan of all displayed ODB bars.                                                                 |
+| **trigger trade**     | The trade whose arrival causes an ODB bar to close (deviation ≥ threshold). Its timestamp = `close_time_ms` of bar N, **not** part of bar N+1.          |
+| **open_time_ms**      | Timestamp of first trade in a bar. For ODB: `open_time_ms[N+1] ≠ close_time_ms[N]`. Stored in `TickAccumulation.open_time_ms`, sourced from ClickHouse. |
+| **Kline.time**        | Always `close_time_ms`. Never the open time. Use `TickAccumulation.open_time_ms` for accurate open time display.                                        |
+| **adaptive_k**        | `round(cbrt(n)).max(5)` — K bins for intensity heatmap. See [data/CLAUDE.md](data/CLAUDE.md).                                                           |
+| **u64::MAX sentinel** | `FetchRange::Kline(0, u64::MAX)` = full reload (adaptive limit). Distinct from scroll-left pagination `(0, oldest_ts)` which uses `LIMIT 2000`.         |
+
+**Release model**: Native desktop app — no crates.io, no version tags. Use `mise run build:release` or `mise run release:app-bundle`. Ad-hoc code signing built into launch tasks.
 
 <!-- GSD:project-start source:PROJECT.md -->
 
