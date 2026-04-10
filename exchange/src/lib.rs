@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod config;
 pub mod connect;
 pub mod depth;
+mod error;
 pub mod health;
 mod limiter;
 pub mod proxy;

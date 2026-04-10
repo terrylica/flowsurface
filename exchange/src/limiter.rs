@@ -1,4 +1,4 @@
-use crate::adapter::AdapterError;
+use super::error::AdapterError;
 use crate::tg_alert;
 
 use reqwest::{Client, Method, Response, header};
