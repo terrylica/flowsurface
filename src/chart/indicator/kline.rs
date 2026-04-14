@@ -19,6 +19,12 @@ pub mod volume;
 // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
 pub mod rsi;
 pub mod zigzag;
+// NOTE(fork): Tier 5 microstructure indicators
+pub mod duration;
+pub mod liquidation_cascade;
+pub mod turnover_imbalance;
+pub mod vwap;
+pub mod vwap_close_deviation;
 
 pub trait KlineIndicatorImpl {
     /// Clear all caches for a full redraw
@@ -118,9 +124,9 @@ pub fn make_indicator(
         KlineIndicator::TradeCount => {
             Box::new(super::kline::trade_count::TradeCountIndicator::new())
         }
-        KlineIndicator::OFI => Box::new(
-            super::kline::ofi::OFIIndicator::with_ema_period(cfg.ofi_ema_period),
-        ),
+        KlineIndicator::OFI => Box::new(super::kline::ofi::OFIIndicator::with_ema_period(
+            cfg.ofi_ema_period,
+        )),
         // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         KlineIndicator::OFICumulativeEma => Box::new(
             super::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
@@ -140,5 +146,17 @@ pub fn make_indicator(
         // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
         KlineIndicator::ZigZag => Box::new(super::kline::zigzag::ZigZagOverlayIndicator::new()),
         KlineIndicator::RSI => Box::new(super::kline::rsi::RsiIndicator::new()),
+        // NOTE(fork): Tier 5 microstructure indicators
+        KlineIndicator::Vwap => Box::new(super::kline::vwap::VwapOverlayIndicator::new()),
+        KlineIndicator::Duration => Box::new(super::kline::duration::DurationIndicator::new()),
+        KlineIndicator::LiquidationCascade => {
+            Box::new(super::kline::liquidation_cascade::LiquidationCascadeIndicator::new())
+        }
+        KlineIndicator::VwapCloseDeviation => {
+            Box::new(super::kline::vwap_close_deviation::VwapCloseDeviationIndicator::new())
+        }
+        KlineIndicator::TurnoverImbalance => {
+            Box::new(super::kline::turnover_imbalance::TurnoverImbalanceIndicator::new())
+        }
     }
 }

@@ -98,6 +98,11 @@ impl KlineChart {
                     trade_count: cm.trade_count,
                     ofi: cm.ofi,
                     trade_intensity: cm.trade_intensity,
+                    vwap: cm.vwap,
+                    duration_us: cm.duration_us,
+                    is_liquidation_cascade: cm.is_liquidation_cascade,
+                    vwap_close_deviation: cm.vwap_close_deviation,
+                    turnover_imbalance: cm.turnover_imbalance,
                 })
             })
             .collect();
@@ -355,6 +360,11 @@ impl KlineChart {
                         trade_count: m.trade_count,
                         ofi: m.ofi,
                         trade_intensity: m.trade_intensity,
+                        vwap: m.vwap,
+                        duration_us: m.duration_us,
+                        is_liquidation_cascade: m.is_liquidation_cascade,
+                        vwap_close_deviation: m.vwap_close_deviation,
+                        turnover_imbalance: m.turnover_imbalance,
                     });
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
 
@@ -1112,6 +1122,11 @@ impl KlineChart {
                                             trade_count: micro.trade_count,
                                             ofi: micro.ofi,
                                             trade_intensity: micro.trade_intensity,
+                                            vwap: micro.vwap,
+                                            duration_us: micro.duration_us,
+                                            is_liquidation_cascade: micro.is_liquidation_cascade,
+                                            vwap_close_deviation: micro.vwap_close_deviation,
+                                            turnover_imbalance: micro.turnover_imbalance,
                                         });
                                         // Guard: skip synthetic anchor IDs (0 from startup anchor).
                                         // Without this, the first bar's tooltip would show
@@ -1397,6 +1412,11 @@ impl KlineChart {
                                     trade_count: cm.trade_count,
                                     ofi: cm.ofi,
                                     trade_intensity: cm.trade_intensity,
+                                    vwap: cm.vwap,
+                                    duration_us: cm.duration_us,
+                                    is_liquidation_cascade: cm.is_liquidation_cascade,
+                                    vwap_close_deviation: cm.vwap_close_deviation,
+                                    turnover_imbalance: cm.turnover_imbalance,
                                 })
                             })
                             .collect()

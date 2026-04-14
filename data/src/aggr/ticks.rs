@@ -15,6 +15,12 @@ pub struct OdbMicrostructure {
     pub trade_count: u32,
     pub ofi: f32,
     pub trade_intensity: f32,
+    // Tier 5 microstructure (v13.70+)
+    pub vwap: Option<f32>,
+    pub duration_us: Option<i64>,
+    pub is_liquidation_cascade: bool,
+    pub vwap_close_deviation: Option<f32>,
+    pub turnover_imbalance: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +348,70 @@ impl TickAggr {
             .iter()
             .enumerate()
             .filter_map(|(idx, dp)| dp.microstructure.map(|m| (idx as u64, m.trade_intensity)))
+            .collect()
+    }
+
+    /// VWAP per bar from microstructure sidecar.
+    pub fn vwap_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.vwap)
+                    .map(|v| (idx as u64, v))
+            })
+            .collect()
+    }
+
+    /// Bar duration in seconds from microstructure sidecar.
+    pub fn duration_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.duration_us)
+                    .map(|v| (idx as u64, v as f32 / 1_000_000.0))
+            })
+            .collect()
+    }
+
+    /// Liquidation cascade flag per bar from microstructure sidecar.
+    pub fn liquidation_cascade_data(&self) -> BTreeMap<u64, bool> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .map(|m| (idx as u64, m.is_liquidation_cascade))
+            })
+            .collect()
+    }
+
+    /// VWAP close deviation [-1, 1] per bar from microstructure sidecar.
+    pub fn vwap_close_deviation_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.vwap_close_deviation)
+                    .map(|v| (idx as u64, v))
+            })
+            .collect()
+    }
+
+    /// Turnover imbalance [-1, 1] per bar from microstructure sidecar.
+    pub fn turnover_imbalance_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.turnover_imbalance)
+                    .map(|v| (idx as u64, v))
+            })
             .collect()
     }
 

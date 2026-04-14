@@ -27,6 +27,17 @@ pub enum KlineIndicator {
     ZigZag,
     /// RSI (Relative Strength Index) powered by kand — momentum oscillator [0,100].
     RSI,
+    // NOTE(fork): Tier 5 microstructure indicators (ODB only, v13.70+)
+    /// VWAP overlay line on main candle chart.
+    Vwap,
+    /// Bar duration histogram (µs → seconds).
+    Duration,
+    /// Liquidation cascade diamond markers on flagged bars.
+    LiquidationCascade,
+    /// VWAP close deviation signed histogram [-1, 1].
+    VwapCloseDeviation,
+    /// Turnover imbalance signed histogram [-1, 1].
+    TurnoverImbalance,
 }
 
 impl Indicator for KlineIndicator {
@@ -42,13 +53,16 @@ impl KlineIndicator {
     /// Whether this indicator renders as its own subplot panel.
     /// Returns `false` for overlays that draw on the main candle pane.
     pub fn has_subplot(&self) -> bool {
-        !matches!(self, Self::TradeIntensityHeatmap | Self::ZigZag)
+        !matches!(
+            self,
+            Self::TradeIntensityHeatmap | Self::ZigZag | Self::Vwap | Self::LiquidationCascade
+        )
     }
 
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 9] = [
+    const FOR_SPOT: [KlineIndicator; 14] = [
         KlineIndicator::Volume,
         KlineIndicator::Delta,
         KlineIndicator::TradeCount,
@@ -58,9 +72,14 @@ impl KlineIndicator {
         KlineIndicator::TradeIntensityHeatmap,
         KlineIndicator::ZigZag,
         KlineIndicator::RSI,
+        KlineIndicator::Vwap,
+        KlineIndicator::Duration,
+        KlineIndicator::LiquidationCascade,
+        KlineIndicator::VwapCloseDeviation,
+        KlineIndicator::TurnoverImbalance,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 10] = [
+    const FOR_PERPS: [KlineIndicator; 15] = [
         KlineIndicator::Volume,
         KlineIndicator::OpenInterest,
         KlineIndicator::Delta,
@@ -71,6 +90,11 @@ impl KlineIndicator {
         KlineIndicator::TradeIntensityHeatmap,
         KlineIndicator::ZigZag,
         KlineIndicator::RSI,
+        KlineIndicator::Vwap,
+        KlineIndicator::Duration,
+        KlineIndicator::LiquidationCascade,
+        KlineIndicator::VwapCloseDeviation,
+        KlineIndicator::TurnoverImbalance,
     ];
 }
 
@@ -87,6 +111,17 @@ impl Display for KlineIndicator {
             KlineIndicator::TradeIntensityHeatmap => write!(f, "Intensity Heatmap"),
             KlineIndicator::ZigZag => write!(f, "ZigZag"),
             KlineIndicator::RSI => write!(f, "RSI"),
+            KlineIndicator::Vwap => write!(f, "VWAP"),
+            KlineIndicator::Duration => write!(f, "Duration"),
+            KlineIndicator::LiquidationCascade => {
+                write!(f, "Liq. Cascade")
+            }
+            KlineIndicator::VwapCloseDeviation => {
+                write!(f, "VWAP Deviation")
+            }
+            KlineIndicator::TurnoverImbalance => {
+                write!(f, "Turnover Imbalance")
+            }
         }
     }
 }

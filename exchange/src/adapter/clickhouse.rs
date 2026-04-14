@@ -41,6 +41,12 @@ pub struct ChMicrostructure {
     pub has_gap: bool,
     /// Total missing trades across all gaps in this bar.
     pub gap_trade_count: u32,
+    // Tier 5 microstructure (v13.70+)
+    pub vwap: Option<f32>,
+    pub duration_us: Option<i64>,
+    pub is_liquidation_cascade: bool,
+    pub vwap_close_deviation: Option<f32>,
+    pub turnover_imbalance: Option<f32>,
 }
 
 // === opendeviationbar-core in-process integration ===
@@ -63,14 +69,16 @@ pub fn trade_to_agg_trade(trade: &Trade, seq_id: i64) -> opendeviationbar_core::
     let base_us = (trade.time as i64) * 1000;
     let sub_ms_offset = seq_id % 1000; // 0-999 µs within the millisecond
     opendeviationbar_core::AggTrade {
-        agg_trade_id: real_id,
+        ref_id: real_id,
         price: FixedPoint(trade.price.units),
         volume: FixedPoint(trade.qty.units),
-        first_trade_id: real_id,
-        last_trade_id: real_id,
+        first_sub_id: real_id,
+        last_sub_id: real_id,
         timestamp: base_us + sub_ms_offset,
         is_buyer_maker: trade.is_sell,
         is_best_match: None,
+        best_bid: None,
+        best_ask: None,
     }
 }
 
@@ -99,6 +107,12 @@ pub fn odb_to_microstructure(bar: &OpenDeviationBar) -> ChMicrostructure {
         trade_intensity: bar.trade_intensity as f32,
         has_gap: bar.has_gap,
         gap_trade_count: bar.gap_trade_count.max(0) as u32,
+        // Tier 5: not available on in-process bars (computed by CH pipeline)
+        vwap: None,
+        duration_us: None,
+        is_liquidation_cascade: false,
+        vwap_close_deviation: None,
+        turnover_imbalance: None,
     }
 }
 
@@ -152,6 +166,11 @@ async fn validate_schema() {
         "trade_intensity",
         "first_agg_trade_id",
         "last_agg_trade_id",
+        "vwap",
+        "duration_us",
+        "is_liquidation_cascade",
+        "vwap_close_deviation",
+        "turnover_imbalance",
     ];
     let col_sql = "SELECT name FROM system.columns \
                    WHERE database = 'opendeviationbar_cache' AND table = 'open_deviation_bars' \
@@ -365,6 +384,17 @@ struct ChKline {
     max_gap_duration_us: Option<i64>,
     #[serde(default)]
     is_exchange_gap: Option<u8>,
+    // Tier 5 microstructure (v13.70+)
+    #[serde(default)]
+    vwap: Option<f64>,
+    #[serde(default)]
+    duration_us: Option<i64>,
+    #[serde(default)]
+    is_liquidation_cascade: Option<u8>,
+    #[serde(default)]
+    vwap_close_deviation: Option<f64>,
+    #[serde(default)]
+    turnover_imbalance: Option<f64>,
 }
 
 pub async fn fetch_klines(
@@ -418,7 +448,9 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     let cols = "close_time_us, open_time_us, open, high, low, close, \
                 buy_volume, sell_volume, \
                 individual_trade_count, ofi, trade_intensity, \
-                first_agg_trade_id, last_agg_trade_id";
+                first_agg_trade_id, last_agg_trade_id, \
+                vwap, duration_us, is_liquidation_cascade, \
+                vwap_close_deviation, turnover_imbalance";
     // Filter by ouroboros_mode (default: 'aion'). Aion-mode is the current
     // production mode — continuous bars without UTC-midnight boundaries.
     // Configurable via FLOWSURFACE_OUROBOROS_MODE env var.
@@ -476,10 +508,12 @@ fn parse_microstructure(ck: &ChKline) -> Option<ChMicrostructure> {
             ofi: ofi as f32,
             trade_intensity: ti as f32,
             has_gap: ck.has_gap.unwrap_or(0) != 0,
-            gap_trade_count: ck
-                .gap_trade_count
-                .unwrap_or(0)
-                .max(0) as u32,
+            gap_trade_count: ck.gap_trade_count.unwrap_or(0).max(0) as u32,
+            vwap: ck.vwap.map(|v| v as f32),
+            duration_us: ck.duration_us,
+            is_liquidation_cascade: ck.is_liquidation_cascade.unwrap_or(0) != 0,
+            vwap_close_deviation: ck.vwap_close_deviation.map(|v| v as f32),
+            turnover_imbalance: ck.turnover_imbalance.map(|v| v as f32),
         }),
         _ => None,
     }
@@ -669,7 +703,9 @@ pub fn connect_kline_stream(
             let sql = format!(
                 "SELECT close_time_us, open_time_us, open, high, low, close, \
                         buy_volume, sell_volume, \
-                        individual_trade_count, ofi, trade_intensity \
+                        individual_trade_count, ofi, trade_intensity, \
+                        vwap, duration_us, is_liquidation_cascade, \
+                        vwap_close_deviation, turnover_imbalance \
                  FROM opendeviationbar_cache.open_deviation_bars \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                    AND ouroboros_mode = '{}' \
@@ -871,6 +907,27 @@ fn odb_bar_to_kline_tuple(
                 trade_intensity: ti as f32,
                 has_gap,
                 gap_trade_count,
+                vwap: bar
+                    .extra
+                    .get("vwap")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32),
+                duration_us: bar.extra.get("duration_us").and_then(|v| v.as_i64()),
+                is_liquidation_cascade: bar
+                    .extra
+                    .get("is_liquidation_cascade")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                vwap_close_deviation: bar
+                    .extra
+                    .get("vwap_close_deviation")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32),
+                turnover_imbalance: bar
+                    .extra
+                    .get("turnover_imbalance")
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32),
             })
         }
         _ => None,
@@ -933,9 +990,9 @@ pub fn connect_sse_stream(
                             continue;
                         }
                         let bar_agg_id_range = bar
-                            .first_agg_trade_id
+                            .first_ref_id
                             .filter(|&id| id > 0)
-                            .zip(bar.last_agg_trade_id.filter(|&id| id > 0))
+                            .zip(bar.last_ref_id.filter(|&id| id > 0))
                             .map(|(first, last)| (first as u64, last as u64));
                         let (kline, raw_f64, micro) =
                             odb_bar_to_kline_tuple(&bar, ticker_info.min_ticksize);
@@ -998,9 +1055,15 @@ struct GapFillTrade {
     agg_trade_id: u64,
     #[serde(rename = "T")]
     time: u64,
-    #[serde(rename = "p", deserialize_with = "crate::serde_util::de_string_to_number")]
+    #[serde(
+        rename = "p",
+        deserialize_with = "crate::serde_util::de_string_to_number"
+    )]
     price: f32,
-    #[serde(rename = "q", deserialize_with = "crate::serde_util::de_string_to_number")]
+    #[serde(
+        rename = "q",
+        deserialize_with = "crate::serde_util::de_string_to_number"
+    )]
     qty: f32,
     #[serde(rename = "m")]
     is_buyer_maker: bool,
