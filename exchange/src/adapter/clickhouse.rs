@@ -1,7 +1,13 @@
 // FILE-SIZE-OK: monolithic adapter — CH HTTP, SSE, catchup, SQL builder are tightly coupled
 //! ClickHouse adapter for precomputed open deviation bars from opendeviationbar-py cache.
 //!
-//! Reads from `opendeviationbar_cache.open_deviation_bars` table via ClickHouse HTTP interface.
+//! Reads from two ClickHouse tables (dispatch on symbol):
+//!   - **Crypto**: `opendeviationbar_cache.open_deviation_bars` (trade-centric,
+//!     from opendeviationbar-py via Binance WebSocket).
+//!   - **Forex**: `fxview_cache.forex_bars` (quote-native: bid/ask OHLC, spread
+//!     stats, no trade volume or agg IDs — from MT5/FXView via `tools/fxview-sidecar`).
+//!     Migrated 2026-04-14; see `.planning/HANDOFF-FXVIEW-FOREX-PIPELINE.md`.
+//!
 //! Tickers come from real exchanges (e.g. Binance) — the symbol in ClickHouse
 //! is just the base symbol name like "BTCUSDT".
 //!
@@ -123,7 +129,15 @@ static ODB_SYMBOLS: OnceLock<Vec<String>> = OnceLock::new();
 /// Fetch available ODB symbols from ClickHouse and cache them.
 /// Called once at startup; gracefully returns empty vec on failure.
 pub async fn init_odb_symbols() -> Vec<String> {
-    let sql = "SELECT DISTINCT symbol FROM opendeviationbar_cache.open_deviation_bars ORDER BY symbol FORMAT TabSeparated";
+    // UNION crypto (opendeviationbar_cache.open_deviation_bars) with forex
+    // (fxview_cache.forex_bars). Both tables live on the same ClickHouse
+    // instance. Forex migration landed 2026-04-14 — pre-migration forex rows
+    // in the crypto table were purged; the UNION is forward-only.
+    let sql = "SELECT DISTINCT symbol FROM ( \
+                   SELECT symbol FROM opendeviationbar_cache.open_deviation_bars \
+                   UNION DISTINCT \
+                   SELECT symbol FROM fxview_cache.forex_bars \
+               ) ORDER BY symbol FORMAT TabSeparated";
     match query(sql).await {
         Ok(body) => {
             let symbols: Vec<String> = body
@@ -133,10 +147,15 @@ pub async fn init_odb_symbols() -> Vec<String> {
                 .map(|l| l.to_string())
                 .collect();
             let count = symbols.len();
+            let forex_count = symbols.iter().filter(|s| is_forex_symbol(s)).count();
             if ODB_SYMBOLS.set(symbols).is_err() {
                 log::warn!("ODB symbol cache already initialized");
             } else {
-                log::info!("cached {count} ODB symbols from ClickHouse");
+                log::info!(
+                    "cached {count} ODB symbols from ClickHouse ({} crypto + {} forex)",
+                    count - forex_count,
+                    forex_count
+                );
             }
             // Non-blocking schema coherence check after successful connection
             validate_schema().await;
@@ -148,10 +167,20 @@ pub async fn init_odb_symbols() -> Vec<String> {
     ODB_SYMBOLS.get().cloned().unwrap_or_default()
 }
 
+/// Detect if a symbol is forex (XAUUSD, EURUSD, ...) vs crypto (BTCUSDT, ...).
+///
+/// Forex symbols live in `fxview_cache.forex_bars` (quote-native schema, from
+/// MT5/FXView via `tools/fxview-sidecar`). Crypto lives in the legacy
+/// `opendeviationbar_cache.open_deviation_bars` (trade-centric, from Binance
+/// WebSocket via opendeviationbar-py). See `.planning/HANDOFF-FXVIEW-FOREX-PIPELINE.md`.
+pub(crate) fn is_forex_symbol(symbol: &str) -> bool {
+    !symbol.ends_with("USDT") && !symbol.ends_with("BUSD")
+}
+
 /// Ouroboros mode per symbol: forex uses "week", crypto uses global config.
 fn ouroboros_mode_for(symbol: &str) -> &str {
-    if !symbol.ends_with("USDT") && !symbol.ends_with("BUSD") {
-        "week" // Forex symbols use week mode
+    if is_forex_symbol(symbol) {
+        "week" // Forex bars reset at the weekend boundary (Sunday 21:00 UTC approx)
     } else {
         &APP_CONFIG.ouroboros_mode // Crypto uses global config (aion)
     }
@@ -168,12 +197,12 @@ pub async fn fetch_ch_ticker_metadata(
     use crate::{Ticker, unit::MinQtySize};
     use super::Exchange;
 
-    // Query CH for forex symbols with their price precision
+    // Query forex metadata from the quote-native fxview_cache.forex_bars table.
+    // Forex migrated here 2026-04-14 — no forex rows remain in the crypto table.
     let sql = "SELECT symbol, \
                toDecimal64(min(low), 6) as min_price, \
                count() as bars \
-               FROM opendeviationbar_cache.open_deviation_bars \
-               WHERE symbol NOT LIKE '%USDT' AND symbol NOT LIKE '%BUSD' \
+               FROM fxview_cache.forex_bars \
                GROUP BY symbol \
                FORMAT TabSeparated";
 
@@ -447,7 +476,10 @@ struct ChKline {
     high: f64,
     low: f64,
     close: f64,
+    // Forex rows have no trade volume (quote-native schema in fxview_cache); default to 0.
+    #[serde(default)]
     buy_volume: f64,
+    #[serde(default)]
     sell_volume: f64,
     #[serde(default)]
     individual_trade_count: Option<u32>,
@@ -526,15 +558,29 @@ pub async fn fetch_klines(
 /// show a similar time window. BPR25 (250 dbps) is the reference at 500 bars;
 /// BPR50 gets ~250, BPR75 gets ~167. BPR10 gets 13K (floor).
 fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -> String {
-    // Both paths use DESC ordering + reverse to get the N most recent bars
-    // within the requested window. ASC ordering would return bars from the
-    // beginning of time, creating gaps when loading historical data.
-    let cols = "close_time_us, open_time_us, open, high, low, close, \
-                buy_volume, sell_volume, \
-                individual_trade_count, ofi, trade_intensity, \
-                first_agg_trade_id, last_agg_trade_id, \
-                vwap, duration_us, is_liquidation_cascade, \
-                vwap_close_deviation, turnover_imbalance";
+    // Forex symbols live in `fxview_cache.forex_bars` (quote-native: bid/ask
+    // OHLC, no trade volume / agg ID). Alias quote_count → individual_trade_count
+    // so the shared ChKline deserializer works without schema forks.
+    // Crypto symbols live in `opendeviationbar_cache.open_deviation_bars`.
+    let forex = is_forex_symbol(symbol);
+    let (table, cols): (&str, &str) = if forex {
+        (
+            "fxview_cache.forex_bars",
+            "close_time_us, open_time_us, open, high, low, close, \
+             quote_count AS individual_trade_count, \
+             duration_us",
+        )
+    } else {
+        (
+            "opendeviationbar_cache.open_deviation_bars",
+            "close_time_us, open_time_us, open, high, low, close, \
+             buy_volume, sell_volume, \
+             individual_trade_count, ofi, trade_intensity, \
+             first_agg_trade_id, last_agg_trade_id, \
+             vwap, duration_us, is_liquidation_cascade, \
+             vwap_close_deviation, turnover_imbalance",
+        )
+    };
     // Filter by ouroboros_mode (default: 'aion'). Aion-mode is the current
     // production mode — continuous bars without UTC-midnight boundaries.
     // Configurable via FLOWSURFACE_OUROBOROS_MODE env var.
@@ -556,7 +602,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
     if is_full_reload {
         format!(
             "SELECT {cols} \
-             FROM opendeviationbar_cache.open_deviation_bars \
+             FROM {table} \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
                AND ouroboros_mode = '{}' \
              ORDER BY close_time_us DESC \
@@ -573,7 +619,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
         let end_us = end.saturating_mul(1000).saturating_add(999);
         format!(
             "SELECT {cols} \
-             FROM opendeviationbar_cache.open_deviation_bars \
+             FROM {table} \
              WHERE symbol = '{symbol}' AND threshold_decimal_bps = {threshold_dbps} \
                AND ouroboros_mode = '{}' \
                AND close_time_us BETWEEN {start_us} AND {end_us} \
@@ -694,6 +740,12 @@ pub async fn fetch_klines_with_microstructure(
 /// Returns Ok(true) if the request was inserted, Ok(false) if a recent
 /// pending/running request already exists (dedup within 5 minutes).
 pub async fn request_backfill(symbol: &str, threshold_dbps: u32) -> Result<bool, AdapterError> {
+    // Forex has no backfill path — bars stream live from MT5 via fxview-sidecar;
+    // there is no opendeviationbar-py equivalent watching `backfill_requests`.
+    if is_forex_symbol(symbol) {
+        log::debug!("[CH backfill] skipped for forex symbol {symbol}");
+        return Ok(false);
+    }
     // Check for recent pending/running request to avoid spam
     let check_sql = format!(
         "SELECT count() as cnt \
@@ -758,8 +810,14 @@ pub fn connect_kline_stream(
         // Retry up to 3 times with 2s backoff — a single transient failure
         // (e.g. SSH tunnel not yet up) would otherwise set last_ts=0, causing
         // the poll loop to crawl from epoch through all historical data.
+        // Route watermark query to the correct table (forex → fxview_cache).
+        let table = if is_forex_symbol(&symbol) {
+            "fxview_cache.forex_bars"
+        } else {
+            "opendeviationbar_cache.open_deviation_bars"
+        };
         let max_ts_sql = format!(
-            "SELECT max(close_time_us) AS ts FROM opendeviationbar_cache.open_deviation_bars \
+            "SELECT max(close_time_us) AS ts FROM {table} \
              WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                AND ouroboros_mode = '{}' FORMAT JSONEachRow",
             symbol, threshold_dbps, ouroboros_mode_for(&symbol)
@@ -813,13 +871,22 @@ pub fn connect_kline_stream(
             // 5s polling for near-real-time ODB bar updates (from 60s)
             tokio::time::sleep(Duration::from_secs(5)).await;
 
+            // Forex: quote-native columns aliased to ChKline's trade-centric names.
+            // Crypto: full trade-centric column set from opendeviationbar_cache.
+            let cols = if is_forex_symbol(&symbol) {
+                "close_time_us, open_time_us, open, high, low, close, \
+                 quote_count AS individual_trade_count, \
+                 duration_us"
+            } else {
+                "close_time_us, open_time_us, open, high, low, close, \
+                 buy_volume, sell_volume, \
+                 individual_trade_count, ofi, trade_intensity, \
+                 vwap, duration_us, is_liquidation_cascade, \
+                 vwap_close_deviation, turnover_imbalance"
+            };
             let sql = format!(
-                "SELECT close_time_us, open_time_us, open, high, low, close, \
-                        buy_volume, sell_volume, \
-                        individual_trade_count, ofi, trade_intensity, \
-                        vwap, duration_us, is_liquidation_cascade, \
-                        vwap_close_deviation, turnover_imbalance \
-                 FROM opendeviationbar_cache.open_deviation_bars \
+                "SELECT {cols} \
+                 FROM {table} \
                  WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                    AND ouroboros_mode = '{}' \
                    AND close_time_us > {} \
@@ -923,8 +990,10 @@ pub fn connect_kline_stream(
                             }
                         }
 
-                        // One-time warning if first polled bar lacks microstructure
-                        if !logged_micro_warning {
+                        // One-time warning if first polled bar lacks microstructure.
+                        // Skip for forex: the fxview schema has no OFI / trade_intensity
+                        // (they're trade-centric concepts that don't apply to quote streams).
+                        if !logged_micro_warning && !is_forex_symbol(&symbol) {
                             logged_micro_warning = true;
                             if let Some(first_line) = body.lines().find(|l| !l.trim().is_empty())
                                 && let Ok(ck) = serde_json::from_str::<ChKline>(first_line.trim())

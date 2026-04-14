@@ -1,160 +1,74 @@
 # Infrastructure tasks for flowsurface
-# SSH tunnel to bigblack ClickHouse for range bar data
+# ClickHouse connectivity checks + preflight validation
+#
+# TUNNEL LIFECYCLE IS NOT MANAGED HERE.
+# The SSH tunnel to bigblack is managed by ssh-tunnel-companion (system-wide):
+#   Repo:      ~/eon/cc-skills/plugins/ssh-tunnel-companion/
+#   Control:   make {start,stop,restart,status} (from that repo)
+#   SwiftBar:  menu bar indicator with start/stop actions
+#   Details:   ~/eon/cc-skills/plugins/ssh-tunnel-companion/CLAUDE.md
+#
+# These mise tasks only CHECK connectivity — they don't own the tunnel.
 
 ["tunnel:start"]
-description = "Start SSH tunnel to bigblack with ZeroTier self-healing"
+description = "Check tunnel (managed by ssh-tunnel-companion, not flowsurface)"
 run = """
-set -e
-
-# bigblack ZeroTier Node ID (immutable) and IPs
-BIGBLACK_ZT_NODE="8f53f201b7"
-BIGBLACK_ZT_IP="172.25.253.142"
-BIGBLACK_LAN_IP="192.168.0.111"
-
 if lsof -ti:18123 >/dev/null 2>&1; then
-  echo "Tunnel already running on port 18123"
-  exit 0
-fi
-
-# --- ZeroTier health probe ---
-zt_peer_status() {
-  sudo zerotier-cli peers 2>/dev/null | awk -v node="$BIGBLACK_ZT_NODE" '$1 == node { print $5 }'
-}
-
-zt_local_status() {
-  sudo zerotier-cli info 2>/dev/null | awk '{ print $5 }'
-}
-
-SSH_KEEPALIVE_OPTS="-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o ConnectTimeout=8"
-SSH_FORWARD_OPTS="-NL 18123:localhost:8123 -L 18081:localhost:8081"
-
-try_ssh_tunnel() {
-  local host="$1"
-  local label="$2"
-  echo "  Trying SSH tunnel via ${label} (${host})..."
-  if command -v autossh >/dev/null 2>&1; then
-    # autossh restarts SSH on exit; -M 0 disables monitor port (relies on SSH keepalive)
-    AUTOSSH_PIDFILE="/tmp/flowsurface-tunnel.pid"
-    export AUTOSSH_PIDFILE
-    if autossh -M 0 -f $SSH_KEEPALIVE_OPTS $SSH_FORWARD_OPTS "$host" 2>/dev/null; then
-      echo "SSH tunnel started via autossh (${label}): localhost:18123→${host}:8123 + localhost:18081→${host}:8081"
-      echo "  autossh will auto-reconnect on tunnel death"
-      return 0
-    fi
-  else
-    if ssh $SSH_KEEPALIVE_OPTS -f $SSH_FORWARD_OPTS "$host" 2>/dev/null; then
-      echo "SSH tunnel started via ${label}: localhost:18123→${host}:8123 + localhost:18081→${host}:8081"
-      echo "  TIP: brew install autossh — enables auto-reconnect on tunnel death"
-      return 0
-    fi
-  fi
-  return 1
-}
-
-echo "=== ZeroTier Health Probe ==="
-
-# Step 1: Check local ZeroTier service
-LOCAL_STATUS=$(zt_local_status)
-if [ "$LOCAL_STATUS" != "ONLINE" ]; then
-  echo "  Local ZeroTier status: ${LOCAL_STATUS:-UNKNOWN} — restarting service..."
-  sudo launchctl unload /Library/LaunchDaemons/com.zerotier.one.plist 2>/dev/null || true
-  sleep 1
-  sudo launchctl load /Library/LaunchDaemons/com.zerotier.one.plist
-  sleep 3
-  LOCAL_STATUS=$(zt_local_status)
-  echo "  Local ZeroTier status after restart: ${LOCAL_STATUS:-UNKNOWN}"
-fi
-
-# Step 2: Check bigblack peer status
-PEER_LINK=$(zt_peer_status)
-echo "  bigblack peer ($BIGBLACK_ZT_NODE): link=${PEER_LINK:-NOT_FOUND}"
-
-if [ "$PEER_LINK" != "DIRECT" ]; then
-  echo "  Peer not DIRECT — restarting local ZeroTier to force NAT re-punch..."
-  sudo launchctl unload /Library/LaunchDaemons/com.zerotier.one.plist 2>/dev/null || true
-  sleep 1
-  sudo launchctl load /Library/LaunchDaemons/com.zerotier.one.plist
-  # Wait for peer discovery (ZT needs time to re-negotiate paths)
-  echo "  Waiting for peer re-negotiation (up to 15s)..."
-  for i in $(seq 1 5); do
-    sleep 3
-    PEER_LINK=$(zt_peer_status)
-    echo "    attempt $i/5: link=${PEER_LINK:-NOT_FOUND}"
-    if [ "$PEER_LINK" = "DIRECT" ]; then
-      break
-    fi
-  done
-fi
-
-echo ""
-echo "=== SSH Tunnel ==="
-
-# Step 3: Try ZeroTier IP first, then LAN fallback
-if try_ssh_tunnel bigblack "ZeroTier ($BIGBLACK_ZT_IP)"; then
-  exit 0
-fi
-
-echo "  ZeroTier SSH failed — trying LAN fallback ($BIGBLACK_LAN_IP)..."
-if try_ssh_tunnel "$BIGBLACK_LAN_IP" "LAN"; then
-  exit 0
-fi
-
-echo "" >&2
-echo "TUNNEL FAILED: bigblack unreachable via ZeroTier + LAN" >&2
-echo "" >&2
-echo "  ZeroTier: $BIGBLACK_ZT_IP (peer: ${PEER_LINK:-NOT_FOUND})" >&2
-echo "  LAN:      $BIGBLACK_LAN_IP" >&2
-echo "" >&2
-echo "  Check:" >&2
-echo "    - Is bigblack powered on?" >&2
-echo "    - ping $BIGBLACK_ZT_IP" >&2
-echo "    - sudo zerotier-cli peers | grep $BIGBLACK_ZT_NODE" >&2
-exit 1
-"""
-
-["tunnel:stop"]
-description = "Stop SSH tunnel to bigblack ClickHouse"
-run = """
-# Kill autossh parent first (if present) so it doesn't respawn
-AUTOSSH_PID=""
-if [ -f /tmp/flowsurface-tunnel.pid ]; then
-  AUTOSSH_PID=$(cat /tmp/flowsurface-tunnel.pid 2>/dev/null)
-  if [ -n "$AUTOSSH_PID" ] && kill -0 "$AUTOSSH_PID" 2>/dev/null; then
-    kill "$AUTOSSH_PID"
-    echo "autossh stopped (pid $AUTOSSH_PID)"
-  fi
-  rm -f /tmp/flowsurface-tunnel.pid
-fi
-
-PID=$(lsof -ti:18123 2>/dev/null)
-if [ -n "$PID" ]; then
-  kill $PID
-  echo "Tunnel stopped (pid $PID)"
-elif [ -z "$AUTOSSH_PID" ]; then
-  echo "No tunnel running on port 18123"
-fi
-"""
-
-["tunnel:status"]
-description = "Check SSH tunnel status and verify ClickHouse connectivity"
-run = """
-PID=$(lsof -ti:18123 2>/dev/null)
-if [ -n "$PID" ]; then
-  echo "Tunnel UP (pid $PID, port 18123)"
+  echo "Tunnel UP on port 18123"
   RESULT=$(curl -sf --connect-timeout 2 "http://localhost:18123" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1)
   if [ "$RESULT" = "ok" ]; then
-    echo "ClickHouse reachable via tunnel"
-    curl -s "http://localhost:18123" --data "SELECT threshold_decimal_bps, count(*) as bars FROM opendeviationbar_cache.open_deviation_bars WHERE symbol = 'BTCUSDT' GROUP BY threshold_decimal_bps ORDER BY threshold_decimal_bps FORMAT TabSeparated"
+    echo "ClickHouse: responding"
   else
     echo "WARNING: Tunnel exists but ClickHouse not responding"
   fi
 else
-  echo "Tunnel DOWN (port 18123 not open)"
+  echo "Tunnel DOWN on port 18123"
+  echo ""
+  echo "The tunnel is managed by ssh-tunnel-companion (system-wide):"
+  echo "  cd ~/eon/cc-skills/plugins/ssh-tunnel-companion && make start"
+  echo "  Or use the SwiftBar menu bar icon"
+  exit 1
 fi
 """
 
+["tunnel:stop"]
+description = "Hint: tunnel is managed by ssh-tunnel-companion"
+run = """
+echo "The tunnel is managed by ssh-tunnel-companion (system-wide)."
+echo "  cd ~/eon/cc-skills/plugins/ssh-tunnel-companion && make stop"
+echo "  Or use the SwiftBar menu bar icon"
+"""
+
+["tunnel:status"]
+description = "Check tunnel connectivity + ClickHouse data"
+run = """
+echo "=== Tunnel Status (managed by ssh-tunnel-companion) ==="
+echo ""
+
+PID=$(lsof -ti:18123 2>/dev/null)
+if [ -n "$PID" ]; then
+  echo "Port 18123: OPEN (pid $PID)"
+  RESULT=$(curl -sf --connect-timeout 2 "http://localhost:18123" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1)
+  if [ "$RESULT" = "ok" ]; then
+    echo "ClickHouse: responding"
+    echo ""
+    echo "BTCUSDT thresholds:"
+    curl -s "http://localhost:18123" --data "SELECT threshold_decimal_bps, count(*) as bars FROM opendeviationbar_cache.open_deviation_bars WHERE symbol = 'BTCUSDT' GROUP BY threshold_decimal_bps ORDER BY threshold_decimal_bps FORMAT TabSeparated"
+  else
+    echo "ClickHouse: NOT responding (tunnel up but CH unreachable)"
+  fi
+else
+  echo "Port 18123: CLOSED (tunnel down)"
+  echo ""
+  echo "Start tunnel: cd ~/eon/cc-skills/plugins/ssh-tunnel-companion && make start"
+fi
+
+echo ""
+echo "Full status: cd ~/eon/cc-skills/plugins/ssh-tunnel-companion && make status"
+"""
+
 [preflight]
-description = "Establish tunnel + validate ClickHouse connectivity and data before app launch"
+description = "Validate ClickHouse connectivity and data before app launch"
 depends = ["tunnel:start"]
 run = """
 set -e
@@ -245,6 +159,31 @@ echo "  BTCUSDT thresholds available:"
 echo "$DATA" | while IFS=$'\t' read -r threshold bars; do
   printf "    BPR%-4s  %s bars\n" "$((threshold / 10))" "$bars"
 done
+
+# 4b. Non-fatal forex check — fxview_cache.forex_bars is the new home for
+# XAUUSD/EURUSD (migrated 2026-04-14 from opendeviationbar-py). Forex is
+# optional: app still works for crypto if fxview_cache is absent.
+echo ""
+FOREX_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='fxview_cache' AND name='forex_bars' FORMAT TabSeparated" 2>&1 || echo "0")
+if [ "$FOREX_EXISTS" = "1" ]; then
+  FOREX_DATA=$(curl -sf "$CH" --data "
+    SELECT symbol, count(*) as bars
+    FROM fxview_cache.forex_bars
+    GROUP BY symbol
+    ORDER BY symbol
+    FORMAT TabSeparated
+  " 2>&1)
+  if [ -n "$FOREX_DATA" ]; then
+    echo "  fxview_cache.forex_bars (forex) symbols:"
+    echo "$FOREX_DATA" | while IFS=$'\t' read -r sym bars; do
+      printf "    %-8s  %s bars\n" "$sym" "$bars"
+    done
+  else
+    echo "  fxview_cache.forex_bars exists (empty — MT5 sidecar may be starting)"
+  fi
+else
+  echo "  fxview_cache.forex_bars not found (forex pipeline offline — crypto still OK)"
+fi
 
 # 5. SSE sidecar health (only when enabled)
 echo ""
