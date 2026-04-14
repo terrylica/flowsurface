@@ -66,6 +66,7 @@ fn available_markets(venue: Venue) -> &'static [MarketKind] {
         // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
         // TODO: include after protobuf implementation and Mexc spot markets ready to stream
         Venue::Mexc => &[MarketKind::LinearPerps, MarketKind::InversePerps],
+        Venue::ClickHouse => &[MarketKind::Spot],
     }
 }
 
@@ -160,7 +161,13 @@ impl TickersTable {
                 is_shown: false,
                 tickers_info: FxHashMap::default(),
                 unavailable_exchanges: FxHashSet::default(),
-                selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
+                selected_exchanges: {
+                    let mut exch: FxHashSet<Venue> =
+                        settings.selected_exchanges.iter().cloned().collect();
+                    // Ensure new venues are enabled for existing saved states
+                    exch.insert(Venue::ClickHouse);
+                    exch
+                },
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),
@@ -312,6 +319,44 @@ impl TickersTable {
 
                 for (ticker, ticker_info) in info.into_iter() {
                     self.tickers_info.insert(ticker, ticker_info);
+
+                    // NOTE(fork): ClickHouse-only tickers have no live
+                    // stats feed — create rows directly from metadata.
+                    if venue == Venue::ClickHouse
+                        && !self.row_index.contains_key(&ticker)
+                    {
+                        let precision = ticker_info
+                            .as_ref()
+                            .map(|ti| ti.min_ticksize);
+                        let stats = exchange::TickerStats {
+                            mark_price: exchange::unit::Price::from_f32(
+                                0.0,
+                            ),
+                            daily_price_chg: 0.0,
+                            daily_volume: exchange::unit::Qty::from(0.0),
+                        };
+                        let row = TickerRowData {
+                            exchange: ticker.exchange,
+                            ticker,
+                            stats,
+                            previous_stats: None,
+                            is_favorited: self
+                                .favorited_tickers
+                                .contains(&ticker),
+                        };
+                        self.ticker_rows.push(row);
+                        let idx = self.ticker_rows.len() - 1;
+                        self.row_index.insert(ticker, idx);
+                        self.display_cache.insert(
+                            ticker,
+                            compute_display_data(
+                                &ticker,
+                                &self.ticker_rows[idx].stats,
+                                None,
+                                precision,
+                            ),
+                        );
+                    }
                 }
 
                 if self.selected_exchanges.contains(&venue) {
@@ -1306,7 +1351,9 @@ impl TickersTable {
                         && matches_exchange(row)
                         && matches_allowlist(row)
                 })
-                .filter_map(|row| calc_search_rank(&row.ticker, search_upper).map(|rank| (row, rank)))
+                .filter_map(|row| {
+                    calc_search_rank(&row.ticker, search_upper).map(|rank| (row, rank))
+                })
                 .collect()
         } else {
             Vec::new()
@@ -1317,12 +1364,16 @@ impl TickersTable {
             (ra.bucket, ra.pos)
                 .cmp(&(rb.bucket, rb.pos))
                 .then_with(|| match self.selected_sort_option {
-                    SortOptions::VolumeDesc => {
-                        b.stats.daily_volume.partial_cmp(&a.stats.daily_volume)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    SortOptions::VolumeAsc => a.stats.daily_volume.partial_cmp(&b.stats.daily_volume)
-                            .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::VolumeDesc => b
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&a.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::VolumeAsc => a
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&b.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
                     SortOptions::ChangeDesc => {
                         b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
                     }
@@ -1353,12 +1404,16 @@ impl TickersTable {
             (ra.bucket, ra.pos)
                 .cmp(&(rb.bucket, rb.pos))
                 .then_with(|| match self.selected_sort_option {
-                    SortOptions::VolumeDesc => {
-                        b.stats.daily_volume.partial_cmp(&a.stats.daily_volume)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }
-                    SortOptions::VolumeAsc => a.stats.daily_volume.partial_cmp(&b.stats.daily_volume)
-                            .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::VolumeDesc => b
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&a.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::VolumeAsc => a
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&b.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
                     SortOptions::ChangeDesc => {
                         b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
                     }

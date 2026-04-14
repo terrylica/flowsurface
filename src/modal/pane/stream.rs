@@ -551,7 +551,21 @@ impl Modifier {
                             _ => None,
                         };
 
-                        let options = data::chart::Basis::odb_options();
+                        let venue = stream_pair.as_ref().map(|sp| match sp {
+                            exchange::StreamPairKind::SingleSource(ti) => {
+                                ti.ticker.exchange.venue()
+                            }
+                            exchange::StreamPairKind::MultiSource(tis) => tis
+                                .first()
+                                .map(|ti| ti.ticker.exchange.venue())
+                                .unwrap_or(exchange::adapter::Venue::Binance),
+                        });
+                        let options =
+                            data::chart::Basis::odb_options_for_venue(
+                                venue.unwrap_or(
+                                    exchange::adapter::Venue::Binance,
+                                ),
+                            );
                         let odb_grid = modifiers_grid(
                             &options,
                             selected_threshold.map(Basis::Odb),

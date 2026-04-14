@@ -162,18 +162,52 @@ pub(super) fn build_content_and_streams(
                     settings,
                     base_ticker.min_ticksize.into(),
                 );
-                let threshold = match derived_plan.basis {
-                    Some(Basis::Odb(t)) => t,
-                    _ => 250,
+                let default_threshold = if derived_plan
+                    .ticker_info
+                    .ticker
+                    .exchange
+                    .venue()
+                    == exchange::adapter::Venue::ClickHouse
+                {
+                    // 25 dbps: lowest overshoot for forex (5 dbps has 5-10x overshoot)
+                    *data::chart::ODB_THRESHOLDS_FOREX.last().unwrap()
+                } else {
+                    250
                 };
-                let s = vec![
-                    StreamKind::OdbKline {
-                        ticker_info: derived_plan.ticker_info,
-                        threshold_dbps: threshold,
-                    },
-                    depth_stream(&derived_plan),
-                    trades_stream(&derived_plan),
-                ];
+                let is_ch = derived_plan
+                    .ticker_info
+                    .ticker
+                    .exchange
+                    .venue()
+                    == exchange::adapter::Venue::ClickHouse;
+                let threshold = match derived_plan.basis {
+                    Some(Basis::Odb(t)) if !is_ch => t,
+                    Some(Basis::Odb(t))
+                        if data::chart::ODB_THRESHOLDS_FOREX
+                            .contains(&t) =>
+                    {
+                        t
+                    }
+                    _ => default_threshold,
+                };
+                // Sync selected_basis with the validated threshold
+                settings.selected_basis = Some(Basis::Odb(threshold));
+                let mut s = vec![StreamKind::OdbKline {
+                    ticker_info: derived_plan.ticker_info,
+                    threshold_dbps: threshold,
+                }];
+                // NOTE(fork): ClickHouse-only symbols (forex) have no
+                // WebSocket streams — skip Trades/Depth.
+                if derived_plan
+                    .ticker_info
+                    .ticker
+                    .exchange
+                    .venue()
+                    != exchange::adapter::Venue::ClickHouse
+                {
+                    s.push(depth_stream(&derived_plan));
+                    s.push(trades_stream(&derived_plan));
+                }
                 (c, s)
             }
             ContentKind::TimeAndSales => {
@@ -278,9 +312,7 @@ pub(super) fn apply_ticksize_change(
     if let Some(ticker) = ticker {
         match content {
             Content::Kline { chart: Some(c), .. } => {
-                c.change_tick_size(
-                    tm.multiply_with_min_tick_step(ticker).to_f32_lossy(),
-                );
+                c.change_tick_size(tm.multiply_with_min_tick_step(ticker).to_f32_lossy());
                 c.reset_request_handler();
             }
             Content::Heatmap { chart: Some(c), .. } => {

@@ -150,6 +150,8 @@ enum Message {
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
     Widget(widget_window::WidgetMessage),
+    /// Auto-open a forex ODB pane after ClickHouse symbols are discovered.
+    AutoOpenForexPane(String),
     ToggleWidget,
 }
 
@@ -209,10 +211,15 @@ impl Flowsurface {
         );
         let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
-        // Fetch available ODB symbols from ClickHouse (non-blocking)
+        // Fetch available ODB symbols from ClickHouse (non-blocking).
+        // After symbols are cached, auto-open a EURUSD pane if available.
         let init_odb_symbols =
-            Task::perform(exchange::adapter::clickhouse::init_odb_symbols(), |_| {
-                Message::Tick(std::time::Instant::now())
+            Task::perform(exchange::adapter::clickhouse::init_odb_symbols(), |symbols| {
+                if symbols.contains(&"EURUSD".to_string()) {
+                    Message::AutoOpenForexPane("EURUSD".to_string())
+                } else {
+                    Message::Tick(std::time::Instant::now())
+                }
             });
 
         let set_on_top: Task<Message> = if APP_CONFIG.always_on_top {
@@ -355,6 +362,50 @@ impl Flowsurface {
                             });
                     }
                 }
+            }
+            Message::AutoOpenForexPane(symbol) => {
+                // Create a forex ODB pane after CH metadata is available.
+                // Uses the same path as user ticker selection.
+                let ticker = exchange::Ticker::new(
+                    &symbol,
+                    exchange::adapter::Exchange::ClickhouseSpot,
+                );
+                if let Some(ti) = self
+                    .sidebar
+                    .tickers_info()
+                    .get(&ticker)
+                    .and_then(|opt| *opt)
+                {
+                    let main_window_id = self.main_window.id;
+                    log::info!(
+                        "[forex] auto-opening {symbol} pane"
+                    );
+                    return self
+                        .active_dashboard_mut()
+                        .init_focused_pane(
+                            main_window_id,
+                            ti,
+                            data::layout::pane::ContentKind::OdbChart,
+                        )
+                        .map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        });
+                }
+                // Ticker metadata may not be loaded yet — retry after delay
+                log::info!(
+                    "[forex] {symbol} ticker info not ready, \
+                     retrying in 2s"
+                );
+                return Task::perform(
+                    async {
+                        tokio::time::sleep(
+                            std::time::Duration::from_secs(2),
+                        )
+                        .await;
+                    },
+                    move |_| Message::AutoOpenForexPane(symbol),
+                );
             }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
@@ -502,7 +553,21 @@ impl Flowsurface {
                             let resolved_streams =
                                 streams.into_iter().try_fold(vec![], |mut acc, persist| {
                                     let resolver = |t: &exchange::Ticker| {
-                                        tickers_info.get(t).and_then(|opt| *opt)
+                                        let result = tickers_info.get(t).and_then(|opt| *opt);
+                                        if result.is_none() {
+                                            log::warn!(
+                                                "[RESOLVE] TickerInfo NOT found for {:?} (exchange={:?}, venue={:?}). Available CH tickers: {}",
+                                                t,
+                                                t.exchange,
+                                                t.exchange.venue(),
+                                                tickers_info.keys()
+                                                    .filter(|k| k.exchange.venue() == exchange::adapter::Venue::ClickHouse)
+                                                    .map(|k| k.to_string())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            );
+                                        }
+                                        result
                                     };
 
                                     match persist.into_stream_kinds(resolver) {
@@ -510,9 +575,14 @@ impl Flowsurface {
                                             acc.append(&mut resolved);
                                             Ok(acc)
                                         }
-                                        Err(err) => Err(format!(
-                                            "Persisted stream still not resolvable: {err}"
-                                        )),
+                                        Err(err) => {
+                                            log::error!(
+                                                "[RESOLVE] Stream resolution FAILED: {err}"
+                                            );
+                                            Err(format!(
+                                                "Persisted stream still not resolvable: {err}"
+                                            ))
+                                        }
                                     }
                                 });
 

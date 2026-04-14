@@ -226,10 +226,20 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
             // Ensure ODB charts have a DepthAndTrades stream for live price line.
             // Older persisted layouts may only have OdbKline without DepthAndTrades.
             if kind == data::chart::KlineChartKind::Odb {
+                // NOTE(fork): ClickHouse-only symbols (forex) have no
+                // WebSocket streams — skip DepthAndTrades injection.
+                let is_ch_only = stream_type.iter().any(|s| match s {
+                    PersistStreamKind::RangeBarKline { ticker, .. } => {
+                        ticker.exchange
+                            == exchange::adapter::Exchange::ClickhouseSpot
+                    }
+                    _ => false,
+                });
                 let has_depth = stream_type
                     .iter()
                     .any(|s| matches!(s, PersistStreamKind::DepthAndTrades(_)));
                 if !has_depth
+                    && !is_ch_only
                     && let Some(ticker) = stream_type.iter().find_map(|s| match s {
                         PersistStreamKind::Kline { ticker, .. }
                         | PersistStreamKind::RangeBarKline { ticker, .. } => Some(*ticker),

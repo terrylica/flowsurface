@@ -1,9 +1,7 @@
 use super::{Ticker, Timeframe};
 use crate::{
     Kline, OpenInterest, Price, PushFrequency, TickMultiplier, TickerInfo, TickerStats, Trade,
-    depth::Depth,
-    unit::Qty,
-    unit::qty::SizeUnit,
+    depth::Depth, unit::Qty, unit::qty::SizeUnit,
 };
 
 use enum_map::{Enum, EnumMap};
@@ -478,15 +476,19 @@ pub enum Venue {
     Hyperliquid,
     Okex,
     Mexc,
+    /// Virtual venue for symbols that exist only in ClickHouse ODB cache
+    /// (forex: XAUUSD, EURUSD). No WebSocket streams — CH polling only.
+    ClickHouse,
 }
 
 impl Venue {
-    pub const ALL: [Venue; 5] = [
+    pub const ALL: [Venue; 6] = [
         Venue::Bybit,
         Venue::Binance,
         Venue::Hyperliquid,
         Venue::Okex,
         Venue::Mexc,
+        Venue::ClickHouse,
     ];
 }
 
@@ -501,6 +503,7 @@ impl std::fmt::Display for Venue {
                 Venue::Hyperliquid => "Hyperliquid",
                 Venue::Okex => "OKX",
                 Venue::Mexc => "MEXC",
+                Venue::ClickHouse => "ClickHouse",
             }
         )
     }
@@ -520,6 +523,8 @@ impl FromStr for Venue {
             Ok(Self::Okex)
         } else if s.eq_ignore_ascii_case("mexc") {
             Ok(Self::Mexc)
+        } else if s.eq_ignore_ascii_case("clickhouse") {
+            Ok(Self::ClickHouse)
         } else {
             Err(format!("Invalid venue: {}", s))
         }
@@ -542,6 +547,8 @@ pub enum Exchange {
     MexcLinear,
     MexcInverse,
     MexcSpot,
+    /// NOTE(fork): ClickHouse-only ODB symbols (forex: XAUUSD, EURUSD).
+    ClickhouseSpot,
 }
 
 impl std::fmt::Display for Exchange {
@@ -575,7 +582,7 @@ impl FromStr for Exchange {
 }
 
 impl Exchange {
-    pub const ALL: [Exchange; 14] = [
+    pub const ALL: [Exchange; 15] = [
         Exchange::BinanceLinear,
         Exchange::BinanceInverse,
         Exchange::BinanceSpot,
@@ -590,6 +597,7 @@ impl Exchange {
         Exchange::MexcLinear,
         Exchange::MexcInverse,
         Exchange::MexcSpot,
+        Exchange::ClickhouseSpot,
     ];
 
     pub fn from_venue_and_market(venue: Venue, market: MarketKind) -> Option<Self> {
@@ -613,7 +621,8 @@ impl Exchange {
             | Exchange::BybitSpot
             | Exchange::HyperliquidSpot
             | Exchange::OkexSpot
-            | Exchange::MexcSpot => MarketKind::Spot,
+            | Exchange::MexcSpot
+            | Exchange::ClickhouseSpot => MarketKind::Spot,
         }
     }
 
@@ -626,13 +635,16 @@ impl Exchange {
             Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Venue::Hyperliquid,
             Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Venue::Okex,
             Exchange::MexcLinear | Exchange::MexcInverse | Exchange::MexcSpot => Venue::Mexc,
+            Exchange::ClickhouseSpot => Venue::ClickHouse,
         }
     }
 
     pub fn is_depth_client_aggr(&self) -> bool {
         !matches!(
             self,
-            Exchange::HyperliquidLinear | Exchange::HyperliquidSpot
+            Exchange::HyperliquidLinear
+                | Exchange::HyperliquidSpot
+                | Exchange::ClickhouseSpot
         )
     }
 
@@ -645,6 +657,7 @@ impl Exchange {
 
     pub fn supports_heatmap_timeframe(&self, tf: Timeframe) -> bool {
         match self {
+            Exchange::ClickhouseSpot => false,
             Exchange::BybitSpot
             | Exchange::MexcSpot
             | Exchange::MexcInverse
@@ -668,6 +681,7 @@ impl Exchange {
                 Timeframe::KLINE.contains(&tf)
                     && !matches!(tf, Timeframe::M3 | Timeframe::H2 | Timeframe::H12)
             }
+            Venue::ClickHouse => false, // ODB only — no time-based klines
         }
     }
 
@@ -791,6 +805,7 @@ pub async fn fetch_ticker_metadata(
         }
         Venue::Okex => okex::fetch_ticker_metadata(markets).await,
         Venue::Mexc => mexc::fetch_ticker_metadata(markets).await,
+        Venue::ClickHouse => clickhouse::fetch_ch_ticker_metadata().await,
     }
 }
 
@@ -827,6 +842,7 @@ pub async fn fetch_ticker_stats(
         }
         Venue::Okex => okex::fetch_ticker_stats(markets).await,
         Venue::Mexc => mexc::fetch_ticker_stats(markets, contract_sizes.as_ref()).await,
+        Venue::ClickHouse => Ok(HashMap::new()), // No live stats for CH-only symbols
     }
 }
 
@@ -841,6 +857,7 @@ pub async fn fetch_klines(
         Venue::Hyperliquid => hyperliquid::fetch_klines(ticker_info, timeframe, range).await,
         Venue::Okex => okex::fetch_klines(ticker_info, timeframe, range).await,
         Venue::Mexc => mexc::fetch_klines(ticker_info, timeframe, range).await,
+        Venue::ClickHouse => Ok(vec![]), // ODB only — no time-based klines
     }
 }
 

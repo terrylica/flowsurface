@@ -148,6 +148,90 @@ pub async fn init_odb_symbols() -> Vec<String> {
     ODB_SYMBOLS.get().cloned().unwrap_or_default()
 }
 
+/// Ouroboros mode per symbol: forex uses "week", crypto uses global config.
+fn ouroboros_mode_for(symbol: &str) -> &str {
+    if !symbol.ends_with("USDT") && !symbol.ends_with("BUSD") {
+        "week" // Forex symbols use week mode
+    } else {
+        &APP_CONFIG.ouroboros_mode // Crypto uses global config (aion)
+    }
+}
+
+/// Ticker metadata for ClickHouse-only symbols (forex).
+/// Derives tick precision from actual ClickHouse price data.
+/// Returns tickers for symbols NOT available on any crypto exchange.
+pub async fn fetch_ch_ticker_metadata(
+) -> Result<
+    std::collections::HashMap<crate::Ticker, Option<TickerInfo>>,
+    super::AdapterError,
+> {
+    use crate::{Ticker, unit::MinQtySize};
+    use super::Exchange;
+
+    // Query CH for forex symbols with their price precision
+    let sql = "SELECT symbol, \
+               toDecimal64(min(low), 6) as min_price, \
+               count() as bars \
+               FROM opendeviationbar_cache.open_deviation_bars \
+               WHERE symbol NOT LIKE '%USDT' AND symbol NOT LIKE '%BUSD' \
+               GROUP BY symbol \
+               FORMAT TabSeparated";
+
+    let mut out = std::collections::HashMap::new();
+
+    match query(sql).await {
+        Ok(body) => {
+            for line in body.lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                let sym = parts[0].trim();
+                if sym.is_empty() {
+                    continue;
+                }
+                // Derive ticksize from min_price decimal places
+                let min_price: f64 =
+                    parts[1].trim().parse().unwrap_or(1.0);
+                let tick = tick_from_price(min_price);
+                let ticker =
+                    Ticker::new(sym, Exchange::ClickhouseSpot);
+                let info = TickerInfo {
+                    ticker,
+                    min_ticksize: MinTicksize::from(tick),
+                    min_qty: MinQtySize::from(tick), // min_qty = ticksize as conservative default
+                    contract_size: None,
+                };
+                out.insert(ticker, Some(info));
+                log::info!(
+                    "[CH] forex ticker {sym}: ticksize={tick}, \
+                     bars={}",
+                    parts[2].trim()
+                );
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "failed to fetch CH forex metadata: {e}"
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// Derive tick size from a price value's decimal precision.
+/// Uses min(low) from CH — the smallest observed price determines
+/// whether this is gold-scale (100+), forex-major (0.5+), or sub-unit.
+fn tick_from_price(price: f64) -> f32 {
+    if price >= 100.0 {
+        0.01 // Gold-scale: $1160.245 → 0.01 (3 decimals)
+    } else if price >= 0.1 {
+        0.00001 // Forex majors: 0.95-1.25 → 0.00001 (5 decimals)
+    } else {
+        0.0001 // Sub-dime instruments: conservative
+    }
+}
+
 /// Startup schema coherence check — logs column presence and opendeviationbar-py version.
 /// Non-fatal: logs warnings on mismatch, never blocks startup.
 async fn validate_schema() {
@@ -478,7 +562,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
              ORDER BY close_time_us DESC \
              LIMIT {adaptive_limit} \
              FORMAT JSONEachRow",
-            APP_CONFIG.ouroboros_mode
+            ouroboros_mode_for(symbol)
         )
     } else {
         let (start, end) = range.unwrap();
@@ -496,7 +580,7 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
              ORDER BY close_time_us DESC \
              LIMIT 2000 \
              FORMAT JSONEachRow",
-            APP_CONFIG.ouroboros_mode
+            ouroboros_mode_for(symbol)
         )
     }
 }
@@ -572,6 +656,35 @@ pub async fn fetch_klines_with_microstructure(
         open_time_ms_list.push(ck.open_time_us.map(|us| (us / 1000) as u64));
     }
 
+    // Telemetry: log bar statistics for debugging forex rendering
+    if !klines.is_empty() {
+        let sample = &klines[klines.len().saturating_sub(5)..];
+        let body_pcts: Vec<u32> = sample
+            .iter()
+            .map(|k| {
+                let range = k.high.to_f32() - k.low.to_f32();
+                let body = (k.close.to_f32() - k.open.to_f32()).abs();
+                if range > 0.0 {
+                    (body / range * 100.0) as u32
+                } else {
+                    0
+                }
+            })
+            .collect();
+        log::info!(
+            "[CH fetch] {} @{} dbps: {} bars, \
+             min_tick={:?}, sample body%={:?}, \
+             price=[{:.5}..{:.5}]",
+            symbol,
+            threshold_dbps,
+            klines.len(),
+            min_tick,
+            body_pcts,
+            klines.last().map(|k| k.low.to_f32()).unwrap_or(0.0),
+            klines.last().map(|k| k.high.to_f32()).unwrap_or(0.0),
+        );
+    }
+
     Ok((klines, micro, agg_id_ranges, open_time_ms_list))
 }
 
@@ -609,7 +722,7 @@ pub async fn request_backfill(symbol: &str, threshold_dbps: u32) -> Result<bool,
         "INSERT INTO opendeviationbar_cache.backfill_requests \
          (symbol, threshold_decimal_bps, source, ouroboros_mode) VALUES \
          ('{symbol}', {threshold_dbps}, 'flowsurface', '{}')",
-        APP_CONFIG.ouroboros_mode
+        ouroboros_mode_for(symbol)
     );
 
     query(&insert_sql).await?;
@@ -649,7 +762,7 @@ pub fn connect_kline_stream(
             "SELECT max(close_time_us) AS ts FROM opendeviationbar_cache.open_deviation_bars \
              WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                AND ouroboros_mode = '{}' FORMAT JSONEachRow",
-            symbol, threshold_dbps, APP_CONFIG.ouroboros_mode
+            symbol, threshold_dbps, ouroboros_mode_for(&symbol)
         );
         let mut last_ts: u64 = 0;
         for attempt in 1..=3 {
@@ -713,7 +826,7 @@ pub fn connect_kline_stream(
                  ORDER BY close_time_us ASC \
                  LIMIT 100 \
                  FORMAT JSONEachRow",
-                symbol, threshold_dbps, APP_CONFIG.ouroboros_mode, last_ts
+                symbol, threshold_dbps, ouroboros_mode_for(&symbol), last_ts
             );
 
             match query(&sql).await {

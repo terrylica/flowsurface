@@ -139,6 +139,8 @@ impl Content {
 
         let enabled_indicators = {
             let available = KlineIndicator::for_market(ticker_info.market_type());
+            let is_ch_only = ticker_info.ticker.exchange.venue()
+                == exchange::adapter::Venue::ClickHouse;
             prev_indis.map_or_else(
                 || match determined_chart_kind {
                     data::chart::KlineChartKind::Odb => vec![],
@@ -148,6 +150,12 @@ impl Content {
                     indis
                         .into_iter()
                         .filter(|i| available.contains(i))
+                        // NOTE(fork): heatmap makes full-body forex bars
+                        // unreadable — strip when switching to CH venue
+                        .filter(|i| {
+                            !is_ch_only
+                                || *i != KlineIndicator::TradeIntensityHeatmap
+                        })
                         .collect()
                 },
             )
@@ -257,7 +265,7 @@ impl Content {
             },
             ContentKind::OdbChart => Content::Kline {
                 chart: None,
-                indicators: vec![KlineIndicator::TradeIntensity],
+                indicators: vec![KlineIndicator::Volume],
                 kind: data::chart::KlineChartKind::Odb,
                 layout: ViewConfig {
                     splits: vec![],
