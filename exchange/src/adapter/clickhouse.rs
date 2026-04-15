@@ -452,8 +452,12 @@ pub async fn query(sql: &str) -> Result<String, AdapterError> {
     for attempt in 1..=CH_MAX_RETRIES {
         match HTTP_CLIENT.post(&url).body(sql.to_string()).send().await {
             Ok(resp) => {
-                if !resp.status().is_success() {
-                    let status = resp.status();
+                let status = resp.status();
+                let content_len = resp.content_length();
+                log::debug!(
+                    "[CH] response status={status} content_length={content_len:?} sql={sql_preview}…"
+                );
+                if !status.is_success() {
                     let body = resp.text().await.unwrap_or_default();
                     log::error!("[CH] HTTP {status}: {body} — SQL: {sql_preview}…");
                     let body_preview = &body[..body.len().min(200)];
@@ -731,6 +735,11 @@ pub async fn fetch_klines_with_microstructure(
         .filter(|l| !l.is_empty())
         .collect();
     let n = lines.len();
+    log::info!(
+        "[CH fetch] symbol={symbol} threshold={threshold_dbps} range={range:?} \
+         body_len={} lines={n}",
+        body.len()
+    );
     let mut klines = Vec::with_capacity(n);
     let mut micro = Vec::with_capacity(n);
     let mut agg_id_ranges = Vec::with_capacity(n);
