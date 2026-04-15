@@ -1555,6 +1555,225 @@ pub async fn fetch_catchup(
     })))
 }
 
+// -- Live tick SSE stream (FXView forex) --
+//
+// Consumer for fxview-sidecar's live tick endpoint.
+// Producer contract: `.planning/REPLY-FROM-MQL5-SSE-LIVE-ENDPOINT.md`
+// Schema: `GET {FLOWSURFACE_FXVIEW_SSE_URL%/stream}/schema.json`
+//
+// Invariants enforced here:
+// - `time_us` is venue-authoritative; `ring_consumed_at_us` is observability only (never used for bar assembly).
+// - `quote_seq` is the idempotency key; survives reconnect via `Last-Event-ID` header.
+// - No magic numbers: retry backoff + channel depth are named constants below.
+// - Symbol filtering is client-side (sidecar fans out both symbols on one stream).
+
+/// Initial reconnect backoff after first failure.
+const FXVIEW_SSE_INITIAL_BACKOFF_S: u64 = 1;
+/// Max backoff ceiling (producer's history ring holds ~15 min; 60s keeps us inside).
+const FXVIEW_SSE_MAX_BACKOFF_S: u64 = 60;
+/// Per-request connect + read timeout. Longer than keepalive so idle keepalive
+/// comments don't trip reqwest.
+const FXVIEW_SSE_REQUEST_TIMEOUT_S: u64 = 300;
+/// mpsc buffer depth for the `connect::channel` subscription — matches
+/// `connect_sse_stream` for consistency.
+const FXVIEW_SSE_CHANNEL_DEPTH: usize = 64;
+
+#[derive(Debug, Deserialize)]
+struct LiveTickEvent {
+    symbol: String,
+    quote_seq: u64,
+    /// Venue-authoritative UTC microseconds. Use this for all bar/chart math.
+    time_us: i64,
+    /// Sidecar-local receive time (observability only, never use for assembly).
+    #[serde(default)]
+    #[allow(dead_code)]
+    ring_consumed_at_us: i64,
+    bid: f64,
+    ask: f64,
+}
+
+/// Map a live quote event to the shared `Trade` struct.
+///
+/// Forex quotes are directionless bid/ask updates — we synthesize a Trade from
+/// the mid-price so it plugs into the existing last-price-label path. `qty=0`
+/// marks it as a zero-volume tick (quote update, not executed trade).
+/// `quote_seq` is smuggled through `agg_trade_id` for downstream gap detection.
+fn live_tick_to_trade(tick: &LiveTickEvent) -> Trade {
+    let mid = ((tick.bid + tick.ask) / 2.0) as f32;
+    Trade {
+        // time_us → time_ms (venue-authoritative, per handoff invariant)
+        time: (tick.time_us / 1000) as u64,
+        is_sell: false,
+        price: Price::from_f32_lossy(mid),
+        qty: Qty::from(0.0_f32),
+        agg_trade_id: Some(tick.quote_seq),
+    }
+}
+
+/// Connect to the fxview-sidecar live tick SSE endpoint and dispatch per-tick
+/// `Event::TradesReceived` for each subscribed ticker.
+///
+/// Handles:
+/// - Infinite reconnect with exponential backoff (1s → 60s ceiling).
+/// - `Last-Event-ID` replay on reconnect (server buffers ~15 min of history).
+/// - Fanout filtering: both symbols arrive on the same stream; we dispatch only
+///   for tickers the caller subscribed to.
+/// - Bitemporal discipline: only `time_us` (venue-authoritative) feeds the
+///   downstream Trade time; `ring_consumed_at_us` is deserialized but unused
+///   except for telemetry.
+pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event> {
+    use futures::StreamExt as _;
+
+    let url = APP_CONFIG.fxview_sse_url.clone();
+
+    connect::channel(FXVIEW_SSE_CHANNEL_DEPTH, async move |mut output| {
+        if tickers.is_empty() {
+            log::warn!("[fxview-sse] connect_tick_stream called with empty tickers");
+            return;
+        }
+
+        let exchange = tickers[0].exchange();
+        let _ = output.send(Event::Connected(exchange)).await;
+
+        // Symbol → TickerInfo filter for the server's broadcast fanout.
+        let symbol_map: rustc_hash::FxHashMap<String, TickerInfo> = tickers
+            .iter()
+            .map(|ti| (bare_symbol(ti), *ti))
+            .collect();
+        log::info!(
+            "[fxview-sse] subscribing for symbols: {:?}",
+            symbol_map.keys().collect::<Vec<_>>()
+        );
+
+        let mut last_quote_seq: u64 = 0;
+        let mut attempt: u32 = 0;
+
+        loop {
+            attempt = attempt.saturating_add(1);
+            log::info!(
+                "[fxview-sse] connecting (attempt #{attempt}) url={url} last_seq={last_quote_seq}"
+            );
+
+            let client = match reqwest::Client::builder()
+                .timeout(Duration::from_secs(FXVIEW_SSE_REQUEST_TIMEOUT_S))
+                .build()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("[fxview-sse] client build failed: {e}");
+                    backoff_sleep(attempt).await;
+                    continue;
+                }
+            };
+
+            let mut req = client
+                .get(&url)
+                .header(reqwest::header::ACCEPT, "text/event-stream");
+            if last_quote_seq > 0 {
+                req = req.header("Last-Event-ID", last_quote_seq.to_string());
+            }
+
+            let resp = match req.send().await {
+                Ok(r) if r.status().is_success() => {
+                    log::info!("[fxview-sse] connected, status={}", r.status());
+                    attempt = 0;
+                    r
+                }
+                Ok(r) => {
+                    log::error!("[fxview-sse] HTTP {}: reconnecting", r.status());
+                    tg_alert!(
+                        crate::telegram::Severity::Warning,
+                        "fxview-sse",
+                        "fxview-sse HTTP {status}",
+                        status = r.status()
+                    );
+                    backoff_sleep(attempt).await;
+                    continue;
+                }
+                Err(e) => {
+                    log::warn!("[fxview-sse] connect failed: {e}");
+                    backoff_sleep(attempt).await;
+                    continue;
+                }
+            };
+
+            // Stream the response body and hand-parse SSE frames.
+            // Format: `id: <seq>\n` / `event: tick\n` / `data: <json>\n` / `\n`
+            let mut body = resp.bytes_stream();
+            let mut buf: Vec<u8> = Vec::with_capacity(4096);
+            let mut cur_data: Option<String> = None;
+
+            'read: while let Some(chunk) = body.next().await {
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::warn!("[fxview-sse] read error: {e}");
+                        break 'read;
+                    }
+                };
+                buf.extend_from_slice(&chunk);
+
+                while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
+                    // Extract line WITHOUT the trailing \n
+                    let line_bytes: Vec<u8> = buf.drain(..=nl).collect();
+                    let line = std::str::from_utf8(&line_bytes[..line_bytes.len() - 1])
+                        .unwrap_or("")
+                        .trim_end_matches('\r');
+
+                    if line.is_empty() {
+                        // Frame boundary — dispatch accumulated `data` (if any).
+                        if let Some(data_json) = cur_data.take() {
+                            match serde_json::from_str::<LiveTickEvent>(&data_json) {
+                                Ok(tick) => {
+                                    last_quote_seq = tick.quote_seq.max(last_quote_seq);
+                                    if let Some(&ticker_info) = symbol_map.get(&tick.symbol) {
+                                        let trade = live_tick_to_trade(&tick);
+                                        let _ = output
+                                            .send(Event::TradesReceived(
+                                                StreamKind::Trades { ticker_info },
+                                                trade.time,
+                                                Box::new([trade]),
+                                            ))
+                                            .await;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "[fxview-sse] parse error: {e} data={data_json}"
+                                    );
+                                }
+                            }
+                        }
+                    } else if let Some(val) = line.strip_prefix("data: ") {
+                        cur_data = Some(val.to_string());
+                    } else if line.starts_with("id: ")
+                        || line.starts_with("event: ")
+                        || line.starts_with(':')
+                    {
+                        // id: and event: fields are handled on frame dispatch;
+                        // `:` prefix is an SSE keepalive comment — ignore all.
+                    }
+                }
+            }
+
+            log::warn!("[fxview-sse] stream closed, reconnecting");
+            tg_alert!(
+                crate::telegram::Severity::Info,
+                "fxview-sse",
+                "fxview-sse stream closed last_seq={last_quote_seq}"
+            );
+            backoff_sleep(attempt.saturating_add(1)).await;
+        }
+    })
+}
+
+/// Exponential backoff sleep: 1s, 2s, 4s, …, capped at `FXVIEW_SSE_MAX_BACKOFF_S`.
+async fn backoff_sleep(attempt: u32) {
+    let shift = attempt.saturating_sub(1).min(6);
+    let s = (FXVIEW_SSE_INITIAL_BACKOFF_S << shift).min(FXVIEW_SSE_MAX_BACKOFF_S);
+    tokio::time::sleep(Duration::from_secs(s)).await;
+}
+
 #[cfg(test)]
 mod proptest_tests {
     use super::*;

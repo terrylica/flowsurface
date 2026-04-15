@@ -66,7 +66,10 @@ pub fn trade_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static
         }
         Venue::Okex => adapter::okex::connect_trade_stream(tickers, market_kind).boxed(),
         Venue::Mexc => adapter::mexc::connect_trade_stream(tickers, market_kind).boxed(),
-        Venue::ClickHouse => futures::stream::empty().boxed(),
+        // FXView: live tick SSE stream from fxview-sidecar (per-tick push,
+        // no WebSocket/orderbook). Feeds the last-price label so the chart
+        // jitters between bar closes. Contract: REPLY-FROM-MQL5-SSE-LIVE-ENDPOINT.md
+        Venue::ClickHouse => adapter::clickhouse::connect_tick_stream(tickers).boxed(),
     }
 }
 

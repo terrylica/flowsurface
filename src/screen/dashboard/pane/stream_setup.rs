@@ -198,17 +198,19 @@ pub(super) fn build_content_and_streams(
                     threshold_dbps: threshold,
                 }];
                 // NOTE(fork): ClickHouse-only symbols (forex) have no
-                // WebSocket streams — skip Trades/Depth.
-                if derived_plan
+                // Depth (orderbook) stream — skip. Trades is served by
+                // fxview-sidecar's live tick SSE (via connect_tick_stream),
+                // so it's kept so the last-price label jitters between bars.
+                let is_ch_venue = derived_plan
                     .ticker_info
                     .ticker
                     .exchange
                     .venue()
-                    != exchange::adapter::Venue::ClickHouse
-                {
+                    == exchange::adapter::Venue::ClickHouse;
+                if !is_ch_venue {
                     s.push(depth_stream(&derived_plan));
-                    s.push(trades_stream(&derived_plan));
                 }
+                s.push(trades_stream(&derived_plan));
                 (c, s)
             }
             ContentKind::TimeAndSales => {

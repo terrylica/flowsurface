@@ -26,6 +26,13 @@ pub struct AppConfig {
     pub sse_host: String,
     /// SSE sidecar port. Default: `18081`.
     pub sse_port: u16,
+    /// FXView live tick SSE endpoint URL.
+    /// Full URL (not host+port) because the path `/forex/ticks/stream` is fixed by
+    /// the producer contract and the host is reached via Tailscale MagicDNS which
+    /// requires the fully-qualified name.
+    /// Default: `"http://bigblack.tail0f299b.ts.net:8082/forex/ticks/stream"`.
+    /// See `.planning/REPLY-FROM-MQL5-SSE-LIVE-ENDPOINT.md` for the producer contract.
+    pub fxview_sse_url: String,
     /// Telegram Bot API token. Default: `None` (alerting disabled).
     pub tg_bot_token: Option<String>,
     /// Telegram chat ID for alerts. Default: `None`.
@@ -45,6 +52,8 @@ impl Default for AppConfig {
             sse_enabled: false,
             sse_host: "localhost".to_string(),
             sse_port: 18081,
+            fxview_sse_url: "http://bigblack.tail0f299b.ts.net:8082/forex/ticks/stream"
+                .to_string(),
             tg_bot_token: None,
             tg_chat_id: None,
             always_on_top: false,
@@ -73,6 +82,10 @@ impl AppConfig {
             sse_enabled: parse_env_bool("FLOWSURFACE_SSE_ENABLED", &["true", "1"], false),
             sse_host: parse_env_string("FLOWSURFACE_SSE_HOST", "localhost"),
             sse_port: parse_env_u16("FLOWSURFACE_SSE_PORT", 18081),
+            fxview_sse_url: parse_env_string(
+                "FLOWSURFACE_FXVIEW_SSE_URL",
+                "http://bigblack.tail0f299b.ts.net:8082/forex/ticks/stream",
+            ),
             tg_bot_token: parse_env_optional("FLOWSURFACE_TG_BOT_TOKEN"),
             tg_chat_id: parse_env_optional("FLOWSURFACE_TG_CHAT_ID"),
             always_on_top: std::env::var("FLOWSURFACE_ALWAYS_ON_TOP").is_ok(),
