@@ -88,3 +88,51 @@ Any rename, retype, or unit change will go through an explicit handoff like this
 ## Contact
 
 Any schema question → open an issue on `terrylica/mql5` or ping the parallel session. The `.planning/agent-outputs/STATUS-{A..E}-*.md` files in `~/eon/mql5/` have the full 5-team audit raw data.
+
+---
+
+## Addendum (2026-04-15) — news_events companion table now available
+
+New table `fxview_cache.news_events` populated by THREE independent sources for redundancy + cross-validation. Each row carries a `source` column (`mt5` | `forexfactory` | `gdelt`) so consumers can filter or validate by counting matched rows across sources.
+
+### Current row counts
+
+| Source | Rows | Span |
+|---|---:|---|
+| `mt5` | 194,089 | 2010-2026 (scheduled macro releases, second-precision UTC, ~30 countries) |
+| `forexfactory` | 107 rolling + grows via 30-min systemd timer | current week (forex-focused) |
+| `gdelt` | 8,687,458 | 2018-2026 (geopolitics + OFAC + CB surprises, 15-min granularity) |
+
+### Recommended consumption pattern (annotate bars with news)
+
+```sql
+SELECT b.symbol, b.open_time_us, b.close_time_us, b.open, b.high, b.low, b.close,
+       n.event_name, n.source, n.impact_level
+FROM fxview_cache.forex_bars b
+LEFT JOIN fxview_cache.news_events n
+  ON n.event_time_us BETWEEN b.close_time_us - 900000000 AND b.close_time_us + 900000000  -- ±15 min
+  AND (n.country = 'US' OR (b.symbol = 'EURUSD' AND n.country = 'EUR'))
+WHERE b.symbol = 'EURUSD' AND b.threshold_decimal_bps = 5
+  AND b.close_time_us BETWEEN {from_us} AND {to_us}
+```
+
+### Empirical correlation (see `.planning/agent-outputs/NEWS-BAR-CORRELATION.md`)
+
+- 62% of extreme-range bars cluster at 21-22 UTC — forex broker rollover, not news-driven.
+- 100% of non-rollover extreme bars match a GDELT geopolitical event within ±5 min.
+- MT5 scheduled-release matches are sensitive to the join window: ±5min misses, ±15min likely hits. Tune the window empirically.
+
+### Schema contract (frozen)
+
+Columns consumers should use:
+- `event_time_us` Int64 — UTC µs (JOIN key)
+- `country` LowCardinality(String) — ISO-alpha-3 or central-bank issuer
+- `event_name` LowCardinality(String) — human-readable
+- `impact_level` UInt8 — 0 unrated, 1 low, 2 med, 3 high
+- `source` LowCardinality(String) — provenance for filtering/cross-validation
+
+All 12 columns are COMMENTed in CH per project SSoT rule. `SHOW CREATE TABLE fxview_cache.news_events` on bigblack for the authoritative schema.
+
+### Out of scope
+
+flowsurface is NOT expected to consume news_events in the initial integration — it's optional chart annotation when the UI is ready. The table stands up now so the data is ready when you are.
