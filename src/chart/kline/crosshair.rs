@@ -105,13 +105,13 @@ pub(super) fn draw_crosshair_tooltip(
         let close_str = kline.close.to_string(precision);
 
         let segments: &[(&str, iced::Color, bool)] = &[
-            ("O", base_color, false),
+            ("OPEN", base_color, false),
             (&open_str, change_color, true),
-            ("H", base_color, false),
+            ("HIGH", base_color, false),
             (&high_str, change_color, true),
-            ("L", base_color, false),
+            ("LOW", base_color, false),
             (&low_str, change_color, true),
-            ("C", base_color, false),
+            ("CLOSE", base_color, false),
             (&close_str, change_color, true),
             (&pct_str, change_color, true),
         ];
