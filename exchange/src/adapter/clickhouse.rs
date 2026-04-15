@@ -322,6 +322,59 @@ async fn validate_schema() {
         }
     }
 
+    // Parallel check for the forex schema in fxview_cache.forex_bars. Upstream
+    // handoff (.planning/HANDOFF-FXVIEW-FOREX-DEFAULTS.md) asked us to verify
+    // the contract columns flowsurface actually reads so drift is caught early.
+    // Non-fatal: forex is optional; missing the table entirely is fine.
+    let forex_expected = [
+        "symbol",
+        "threshold_decimal_bps",
+        "ouroboros_mode",
+        "open_time_us",
+        "close_time_us",
+        "open",
+        "high",
+        "low",
+        "close",
+        "quote_count",
+        "duration_us",
+    ];
+    let forex_col_sql = "SELECT name FROM system.columns \
+                         WHERE database = 'fxview_cache' AND table = 'forex_bars' \
+                         FORMAT TabSeparated";
+    if let Ok(body) = query(forex_col_sql).await {
+        let actual: Vec<&str> = body
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if actual.is_empty() {
+            log::debug!("[CH schema] fxview_cache.forex_bars not found (forex optional)");
+        } else {
+            let missing: Vec<&str> = forex_expected
+                .iter()
+                .filter(|c| !actual.iter().any(|a| a == *c))
+                .copied()
+                .collect();
+            if missing.is_empty() {
+                log::info!(
+                    "[CH schema] forex contract: all {}/{} columns present",
+                    forex_expected.len(),
+                    forex_expected.len()
+                );
+            } else {
+                log::warn!(
+                    "[CH schema] fxview_cache.forex_bars MISSING contract columns: {missing:?}"
+                );
+                tg_alert!(
+                    crate::telegram::Severity::Warning,
+                    "ch-schema-forex",
+                    "fxview forex_bars missing contract columns: {missing:?}"
+                );
+            }
+        }
+    }
+
     // Query opendeviationbar_version from most recent bar and compare against
     // the compiled crate version to detect sidecar↔app version skew.
     let crate_ver = opendeviationbar_core::Checkpoint::library_version();
@@ -581,14 +634,16 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
              vwap_close_deviation, turnover_imbalance",
         )
     };
-    // Filter by ouroboros_mode (default: 'aion'). Aion-mode is the current
-    // production mode — continuous bars without UTC-midnight boundaries.
-    // Configurable via FLOWSURFACE_OUROBOROS_MODE env var.
-    // Scale limit inversely with threshold: BPR25 gets 20,000 bars;
-    // all thresholds get a minimum of 13,000 bars to fully populate
-    // a 7,000-bar intensity lookback window from the first render.
-    let reference_dbps = 250u32;
-    let reference_limit = 20_000u32;
+    // Scale limit inversely with threshold so the visible window stays similar
+    // across thresholds. Crypto and forex use different reference points because
+    // absolute dbps numbers diverge by 10-50x:
+    //   Crypto: 250 dbps (BPR25) is the mid-range reference — 20K bars.
+    //   Forex:  25 dbps (BPR2.5) is the mid-range reference — 20K bars.
+    // Forex backfill has 2-10M bars per threshold; capping the initial load at
+    // ~100K (BPR0.5) keeps payload reasonable while still covering months of
+    // data. Floor of 13K fully populates the 7K intensity lookback window.
+    let (reference_dbps, reference_limit): (u32, u32) =
+        if forex { (25, 20_000) } else { (250, 20_000) };
     let adaptive_limit = ((reference_limit as f64) * (reference_dbps as f64)
         / (threshold_dbps as f64))
         .round()

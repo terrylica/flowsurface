@@ -96,7 +96,10 @@ pub enum Basis {
 }
 
 pub const ODB_THRESHOLDS: [u32; 4] = [100, 250, 500, 750];
-pub const ODB_THRESHOLDS_FOREX: [u32; 3] = [5, 10, 25];
+/// Forex thresholds (dbps): 5/10/25/50 matches fxview-backfiller partitions in
+/// `fxview_cache.forex_bars`. Finer than crypto because forex intraday ranges
+/// are 1-2 orders of magnitude tighter.
+pub const ODB_THRESHOLDS_FOREX: [u32; 4] = [5, 10, 25, 50];
 
 impl Basis {
     pub fn is_time(&self) -> bool {

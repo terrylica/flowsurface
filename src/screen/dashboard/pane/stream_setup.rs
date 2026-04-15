@@ -169,8 +169,9 @@ pub(super) fn build_content_and_streams(
                     .venue()
                     == exchange::adapter::Venue::ClickHouse
                 {
-                    // 25 dbps: lowest overshoot for forex (5 dbps has 5-10x overshoot)
-                    *data::chart::ODB_THRESHOLDS_FOREX.last().unwrap()
+                    // 5 dbps: finest-grained threshold with densest data coverage
+                    // (EURUSD/XAUUSD populate 5 dbps most heavily; 25 dbps is too sparse).
+                    *data::chart::ODB_THRESHOLDS_FOREX.first().unwrap()
                 } else {
                     250
                 };
