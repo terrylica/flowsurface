@@ -97,11 +97,11 @@ New table `fxview_cache.news_events` populated by THREE independent sources for 
 
 ### Current row counts
 
-| Source | Rows | Span |
-|---|---:|---|
-| `mt5` | 194,089 | 2010-2026 (scheduled macro releases, second-precision UTC, ~30 countries) |
-| `forexfactory` | 107 rolling + grows via 30-min systemd timer | current week (forex-focused) |
-| `gdelt` | 8,687,458 | 2018-2026 (geopolitics + OFAC + CB surprises, 15-min granularity) |
+| Source         |                                         Rows | Span                                                                      |
+| -------------- | -------------------------------------------: | ------------------------------------------------------------------------- |
+| `mt5`          |                                      194,089 | 2010-2026 (scheduled macro releases, second-precision UTC, ~30 countries) |
+| `forexfactory` | 107 rolling + grows via 30-min systemd timer | current week (forex-focused)                                              |
+| `gdelt`        |                                    8,687,458 | 2018-2026 (geopolitics + OFAC + CB surprises, 15-min granularity)         |
 
 ### Recommended consumption pattern (annotate bars with news)
 
@@ -109,7 +109,7 @@ New table `fxview_cache.news_events` populated by THREE independent sources for 
 SELECT b.symbol, b.open_time_us, b.close_time_us, b.open, b.high, b.low, b.close,
        n.event_name, n.source, n.impact_level
 FROM fxview_cache.forex_bars b
-LEFT JOIN fxview_cache.news_events n
+LEFT JOIN (SELECT * FROM fxview_cache.news_events FINAL) n  -- FINAL required: dedup is async
   ON n.event_time_us BETWEEN b.close_time_us - 900000000 AND b.close_time_us + 900000000  -- ±15 min
   AND (n.country = 'US' OR (b.symbol = 'EURUSD' AND n.country = 'EUR'))
 WHERE b.symbol = 'EURUSD' AND b.threshold_decimal_bps = 5
@@ -125,6 +125,7 @@ WHERE b.symbol = 'EURUSD' AND b.threshold_decimal_bps = 5
 ### Schema contract (frozen)
 
 Columns consumers should use:
+
 - `event_time_us` Int64 — UTC µs (JOIN key)
 - `country` LowCardinality(String) — ISO-alpha-3 or central-bank issuer
 - `event_name` LowCardinality(String) — human-readable
