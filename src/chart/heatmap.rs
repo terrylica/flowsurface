@@ -187,6 +187,7 @@ impl HeatmapChart {
                 splits: layout.splits,
                 autoscale: Some(Autoscale::CenterLatest),
                 include_forming: true,
+                frozen: false,
             },
             DEFAULT_CELL_WIDTH,
             4.0,

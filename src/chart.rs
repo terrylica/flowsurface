@@ -108,6 +108,17 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
 
             state.layout.autoscale = None;
         }
+        Message::FreezeToggled => {
+            let state = chart.mut_state();
+            state.layout.frozen = !state.layout.frozen;
+            // Disable autoscale-to-latest when freezing so the two modes don't
+            // fight each other (autoscale would pull us back to the live edge,
+            // defeating the freeze). User can re-enable autoscale via its own
+            // button after unfreezing.
+            if state.layout.frozen {
+                state.layout.autoscale = None;
+            }
+        }
         Message::AutoscaleToggled => {
             let supports_fit_autoscaling = chart.supports_fit_autoscaling();
             let state = chart.mut_state();
@@ -354,8 +365,32 @@ pub fn view<'a, T: Chart>(
         .on_press(Message::AutoscaleToggled)
         .style(move |theme: &Theme, status| style::button::transparent(theme, status, is_active));
 
+        // Freeze-viewport toggle — locks the visible window so new bars do not
+        // push it. Label: "❚❚" when frozen (lock engaged), "▶" when live.
+        let frozen = state.layout.frozen;
+        let freeze_btn_label = if frozen { text("❚❚") } else { text("▶") };
+        let freeze_btn_tooltip = if frozen {
+            Some("Unfreeze viewport (live)")
+        } else {
+            Some("Freeze viewport (pause auto-shift on new bars)")
+        };
+        let freeze_button = button(
+            freeze_btn_label
+                .size(10)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .height(Length::Fill)
+        .on_press(Message::FreezeToggled)
+        .style(move |theme: &Theme, status| style::button::transparent(theme, status, frozen));
+
         row![
             iced::widget::space::horizontal(),
+            tooltip(
+                freeze_button,
+                freeze_btn_tooltip,
+                iced::widget::tooltip::Position::Top
+            ),
             tooltip(
                 autoscale_button,
                 autoscale_btn_tooltip,

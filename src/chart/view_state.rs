@@ -581,6 +581,7 @@ impl ViewState {
             splits: layout.splits.clone(),
             autoscale: layout.autoscale,
             include_forming: layout.include_forming,
+            frozen: false,
         }
     }
 

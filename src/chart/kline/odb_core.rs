@@ -132,6 +132,7 @@ impl KlineChart {
                 splits: layout.splits,
                 autoscale: Some(Autoscale::FitToVisible),
                 include_forming: true,
+                frozen: false,
             },
             cell_width,
             cell_height,
@@ -555,8 +556,25 @@ impl KlineChart {
 
                     let chart = self.mut_state();
 
-                    if kline.time > chart.latest_x {
+                    let had_prev_bar = chart.latest_x > 0;
+                    let is_new_bar = kline.time > chart.latest_x;
+
+                    if is_new_bar {
                         chart.latest_x = kline.time;
+                    }
+
+                    // Freeze compensation: each new ODB bar shifts the index
+                    // space by 1 (datapoints grow, visual_idx of every prior
+                    // bar increments). Advancing translation.x by cell_width
+                    // cancels this shift so user-visible bars stay anchored.
+                    // Only compensate after the first bar (to avoid shifting
+                    // the initial view) and only for ODB basis (index-based).
+                    if is_new_bar
+                        && had_prev_bar
+                        && chart.layout.frozen
+                        && chart.basis.is_odb()
+                    {
+                        chart.translation.x += chart.cell_width;
                     }
 
                     // Set last_price from the CH/SSE bar only when no WS trades

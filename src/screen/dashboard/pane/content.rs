@@ -67,6 +67,7 @@ impl Content {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
                     include_forming: true,
+                    frozen: false,
                 },
                 vec![],
             )
@@ -197,6 +198,7 @@ impl Content {
                 splits,
                 autoscale: Some(data::chart::Autoscale::FitToVisible),
                 include_forming: true,
+                frozen: false,
             });
 
         // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/97
@@ -237,6 +239,7 @@ impl Content {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
                     include_forming: true,
+                    frozen: false,
                 },
             },
             ContentKind::FootprintChart => Content::Kline {
@@ -251,6 +254,7 @@ impl Content {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
                     include_forming: true,
+                    frozen: false,
                 },
             },
             ContentKind::HeatmapChart => Content::Heatmap {
@@ -261,6 +265,7 @@ impl Content {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::CenterLatest),
                     include_forming: true,
+                    frozen: false,
                 },
             },
             ContentKind::OdbChart => Content::Kline {
@@ -271,6 +276,7 @@ impl Content {
                     splits: vec![],
                     autoscale: Some(data::chart::Autoscale::FitToVisible),
                     include_forming: true,
+                    frozen: false,
                 },
             },
             ContentKind::ComparisonChart => Content::Comparison(None),

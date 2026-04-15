@@ -56,6 +56,11 @@ pub struct ViewConfig {
     pub autoscale: Option<Autoscale>,
     #[serde(default = "default_true")]
     pub include_forming: bool,
+    /// When true, freeze the viewport so new bars do not push the visible window.
+    /// The chart translation is auto-compensated by `cell_width` per new bar
+    /// appended, keeping user-visible bars at a stable screen position.
+    #[serde(default)]
+    pub frozen: bool,
 }
 
 impl Default for ViewConfig {
@@ -64,6 +69,7 @@ impl Default for ViewConfig {
             splits: Vec::new(),
             autoscale: None,
             include_forming: true,
+            frozen: false,
         }
     }
 }

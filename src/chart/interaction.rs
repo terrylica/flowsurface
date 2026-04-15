@@ -40,6 +40,10 @@ pub enum Message {
     Translated(Vector),
     Scaled(f32, Vector),
     AutoscaleToggled,
+    /// Toggle "freeze viewport" — when enabled, new bars do not push the
+    /// visible window; translation auto-compensates by cell_width per
+    /// appended bar so user-visible bars remain at stable screen positions.
+    FreezeToggled,
     CrosshairMoved,
     YScaling(f32, f32, bool),
     XScaling(f32, f32, bool),
