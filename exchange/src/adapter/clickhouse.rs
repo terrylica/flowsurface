@@ -1648,6 +1648,13 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
         let mut last_quote_seq: u64 = 0;
         let mut attempt: u32 = 0;
 
+        // Sample logging: per-symbol tick counter so we can periodically log
+        // bid/ask/mid → Trade.price mapping for verification. First tick per
+        // symbol is always logged (provability); thereafter every Nth.
+        const FXVIEW_SSE_SAMPLE_LOG_EVERY: u64 = 250;
+        let mut tick_counts: rustc_hash::FxHashMap<String, u64> =
+            rustc_hash::FxHashMap::default();
+
         loop {
             attempt = attempt.saturating_add(1);
             log::info!(
@@ -1728,6 +1735,26 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                                     last_quote_seq = tick.quote_seq.max(last_quote_seq);
                                     if let Some(&ticker_info) = symbol_map.get(&tick.symbol) {
                                         let trade = live_tick_to_trade(&tick);
+                                        // Provability log: confirm bid/ask/mid → Trade.price
+                                        // mapping. First tick per symbol always logged; every
+                                        // Nth thereafter to keep telemetry low. Lets the user
+                                        // sample-check that the jittering line is the mid.
+                                        let n = tick_counts
+                                            .entry(tick.symbol.clone())
+                                            .and_modify(|c| *c += 1)
+                                            .or_insert(1);
+                                        if *n == 1 || n.is_multiple_of(FXVIEW_SSE_SAMPLE_LOG_EVERY) {
+                                            let mid = (tick.bid + tick.ask) / 2.0;
+                                            log::info!(
+                                                "[fxview-sse] tick #{n} {symbol} \
+                                                 bid={bid} ask={ask} mid={mid:.5} \
+                                                 → Trade.price={trade_price:.5} (line uses mid)",
+                                                symbol = tick.symbol,
+                                                bid = tick.bid,
+                                                ask = tick.ask,
+                                                trade_price = trade.price.to_f32(),
+                                            );
+                                        }
                                         let _ = output
                                             .send(Event::TradesReceived(
                                                 StreamKind::Trades { ticker_info },
