@@ -3525,7 +3525,7 @@ dependencies = [
 
 [[package]]
 name = "qta"
-version = "1.11.0"
+version = "1.21.0"
 dependencies = [
  "thiserror 2.0.18",
  "tracing",
