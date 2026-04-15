@@ -796,6 +796,42 @@ impl KlineChart {
         match self.data_source {
             PlotData::TickBased(ref mut tick_aggr) => {
                 if self.chart.basis.is_odb() {
+                    // NOTE(fork): forex (Venue::ClickHouse) trades come from the
+                    // fxview-sidecar live tick SSE — these are quote-mid ticks,
+                    // NOT real executed trades. They must NOT feed the local
+                    // OdbProcessor (crypto Portcullis) because:
+                    //
+                    //   (a) the producer's Portcullis with bid/ask authority is
+                    //       already the canonical bar builder (server-side);
+                    //   (b) feeding mid-price ticks with qty=0 into the crypto
+                    //       processor never triggers a proper breach close, so
+                    //       the local forming bar accumulates high/low across
+                    //       the entire session — producing a pathologically
+                    //       wide rendered bar when the producer stalls.
+                    //
+                    // Trust the producer per the engineering principles. Only
+                    // update `last_price` (for the jittering reference line) +
+                    // `last_trade_time`, then return. The CH poll owns bar
+                    // assembly via update_latest_kline on CH/SSE events.
+                    if self
+                        .chart
+                        .ticker_info
+                        .ticker
+                        .exchange
+                        .venue()
+                        == exchange::adapter::Venue::ClickHouse
+                    {
+                        if let Some(last_trade) = trades_buffer.last() {
+                            let prev_close = tick_aggr.datapoints.last().map(|dp| dp.kline.close);
+                            let reference = prev_close.unwrap_or(last_trade.price);
+                            self.chart.last_price =
+                                Some(PriceInfoLabel::new(last_trade.price, reference));
+                            self.chart.last_trade_time = Some(last_trade.time);
+                            let _ = self.invalidate(None);
+                        }
+                        return None;
+                    }
+
                     // While gap-fill is active, skip RBP for WebSocket trades
                     // to avoid interleaving current-price trades with historical
                     // gap-fill data.  Gap-fill batches pass is_gap_fill=true to
