@@ -932,8 +932,11 @@ pub fn connect_kline_stream(
 
         loop {
             // GitHub Issue: https://github.com/terrylica/opendeviationbar-py/issues/91
-            // 5s polling for near-real-time ODB bar updates (from 60s)
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            // 1s polling: evolved from 60s → 5s → 1s as CH load proved trivial
+            // and forex (no SSE path) needs the fastest possible push alternative.
+            // Each poll is a single-partition SELECT with close_time_us > last_ts
+            // — typically <20ms at CH. Further reduction would need real SSE.
+            tokio::time::sleep(Duration::from_millis(1000)).await;
 
             // Forex: quote-native columns aliased to ChKline's trade-centric names.
             // Crypto: full trade-centric column set from opendeviationbar_cache.
