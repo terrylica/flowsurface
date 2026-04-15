@@ -117,8 +117,7 @@ impl KlineChart {
             }
 
             // Telegram: only alert for healable gaps or overlaps (not day-boundary)
-            if exchange::telegram::is_configured()
-                && (!healable.is_empty() || !overlaps.is_empty())
+            if exchange::telegram::is_configured() && (!healable.is_empty() || !overlaps.is_empty())
             {
                 let mut detail = String::new();
                 if !healable.is_empty() {
@@ -170,9 +169,8 @@ impl KlineChart {
                         .min()
                         .unwrap_or(0);
                     if min_gap_time >= today_midnight_ms {
-                        detail.push_str(
-                            "\n\nLive-session gap — OdbCatchup handles (no CH refetch)",
-                        );
+                        detail
+                            .push_str("\n\nLive-session gap — OdbCatchup handles (no CH refetch)");
                     } else {
                         detail.push_str("\n\nTriggering CH kline re-fetch...");
                     }

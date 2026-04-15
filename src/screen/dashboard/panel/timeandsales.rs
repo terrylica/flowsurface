@@ -5,9 +5,7 @@ use crate::style;
 use data::UserTimezone;
 use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
-use data::panel::timeandsales::{
-    HistAgg, HistAggValues, StackedBar, TradeDisplay, TradeEntry,
-};
+use data::panel::timeandsales::{HistAgg, HistAggValues, StackedBar, TradeDisplay, TradeEntry};
 use exchange::unit::Qty;
 use exchange::{TickerInfo, Trade, unit::qty::volume_size_unit};
 

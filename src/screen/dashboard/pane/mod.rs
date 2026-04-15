@@ -182,7 +182,6 @@ impl State {
             tickers,
             kind,
         )
-
     }
 
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
@@ -624,10 +623,8 @@ impl State {
                                 exchange::unit::PriceStep::from_f32(chart.tick_size());
                             let price_step = stream_pair
                                 .map(|ti| {
-                                    tick_multiply.unscale_step_or_min_tick(
-                                        current_step,
-                                        ti.min_ticksize,
-                                    )
+                                    tick_multiply
+                                        .unscale_step_or_min_tick(current_step, ti.min_ticksize)
                                 })
                                 .unwrap_or_else(|| tick_multiply.unscale_step(current_step));
 

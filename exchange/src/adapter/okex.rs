@@ -6,8 +6,7 @@ use super::{
         connect::{self, State, channel, connect_ws},
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        resilience,
-        serde_util,
+        resilience, serde_util,
         serde_util::de_string_to_number,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
@@ -605,12 +604,17 @@ pub fn connect_kline_stream(
 
                                     if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
                                         for row in data {
-                                            let time = row.get(0).and_then(serde_util::value_as_u64);
-                                            let open = row.get(1).and_then(serde_util::value_as_f32);
-                                            let high = row.get(2).and_then(serde_util::value_as_f32);
+                                            let time =
+                                                row.get(0).and_then(serde_util::value_as_u64);
+                                            let open =
+                                                row.get(1).and_then(serde_util::value_as_f32);
+                                            let high =
+                                                row.get(2).and_then(serde_util::value_as_f32);
                                             let low = row.get(3).and_then(serde_util::value_as_f32);
-                                            let close = row.get(4).and_then(serde_util::value_as_f32);
-                                            let volume = row.get(5).and_then(serde_util::value_as_f32);
+                                            let close =
+                                                row.get(4).and_then(serde_util::value_as_f32);
+                                            let volume =
+                                                row.get(5).and_then(serde_util::value_as_f32);
 
                                             let (ts, open, high, low, close) =
                                                 match (time, open, high, low, close) {

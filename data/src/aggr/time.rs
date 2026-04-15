@@ -147,8 +147,7 @@ impl<D: DataPoint> TimeSeries<D> {
         }
 
         if missing_count > 0 {
-            let mut missing_keys =
-                Vec::with_capacity(((latest - earliest) / interval) as usize);
+            let mut missing_keys = Vec::with_capacity(((latest - earliest) / interval) as usize);
             let mut time = earliest;
 
             while time < latest {
@@ -170,11 +169,7 @@ impl<D: DataPoint> TimeSeries<D> {
 
     /// Check kline integrity, limited to the visible range for performance.
     /// Upstream: 46624c0 — avoids scanning the full dataset on every frame.
-    pub fn check_kline_integrity(
-        &self,
-        earliest: u64,
-        latest: u64,
-    ) -> Option<Vec<u64>> {
+    pub fn check_kline_integrity(&self, earliest: u64, latest: u64) -> Option<Vec<u64>> {
         if self.datapoints.is_empty() {
             return None;
         }
@@ -188,26 +183,13 @@ impl<D: DataPoint> TimeSeries<D> {
         let phase = series_earliest % interval;
 
         let check_earliest =
-            Self::align_down_to_phase(
-                earliest.max(series_earliest),
-                phase,
-                interval,
-            )
-            .max(series_earliest);
-        let check_latest =
-            Self::align_down_to_phase(
-                latest.min(series_latest),
-                phase,
-                interval,
-            )
+            Self::align_down_to_phase(earliest.max(series_earliest), phase, interval)
+                .max(series_earliest);
+        let check_latest = Self::align_down_to_phase(latest.min(series_latest), phase, interval)
             .min(series_latest);
 
         if check_earliest < check_latest {
-            self.check_kline_integrity_range(
-                check_earliest,
-                check_latest,
-                interval,
-            )
+            self.check_kline_integrity_range(check_earliest, check_latest, interval)
         } else {
             None
         }
