@@ -353,7 +353,13 @@ impl TradeIntensityHeatmapIndicator {
         }
 
         let report = lines.join("\n");
-        log::warn!("[oracle-spectrum]\n{report}");
+        // Oracle-spectrum is a multi-page diagnostic dump (histogram, color
+        // table, K-bin distribution). The persistent home is the file at
+        // /tmp/flowsurface-oracle.log per data/CLAUDE.md docs. Log-level
+        // dump fires on every rebuild_from_source() — at warn it floods
+        // production logs with multi-line reports; at debug it's opt-in
+        // via RUST_LOG=debug for anyone investigating heatmap calibration.
+        log::debug!("[oracle-spectrum]\n{report}");
         let _ = std::fs::write("/tmp/flowsurface-oracle.log", &report);
     }
 
