@@ -752,11 +752,23 @@ impl KlineChart {
                 continue;
             };
 
+            // Skip bars carrying the zero-id sentinel — neither end has a
+            // meaningful agg_trade_id, so adjacency analysis is undefined.
+            // Real Binance aggTrade IDs and FXView quote_seq IDs are both
+            // strictly positive once the producer has live data.
+            if prev_last == 0 || curr_first == 0 {
+                continue;
+            }
+
+            // Continuity invariant: curr_first should equal prev_last + 1.
+            // Anything else is either an overlap (curr_first <= prev_last)
+            // or a gap (curr_first > prev_last + 1).
             if curr_first <= prev_last {
-                // Overlap: bars share agg_trade_ids (or equal boundary)
-                if curr_first == prev_last + 1 {
-                    continue; // Perfect continuity — not an anomaly
-                }
+                // Overlap: bars share agg_trade_ids (or equal boundary).
+                // Note: curr_first == prev_last + 1 would mathematically
+                // place curr_first > prev_last, so the perfect-continuity
+                // case can never enter this branch — the previous version
+                // had a dead-code guard for it. Removed.
                 let overlap_count = prev_last - curr_first + 1;
                 anomalies.push(BarGap {
                     kind: BarGapKind::Overlap,
@@ -771,7 +783,7 @@ impl KlineChart {
 
             let missing = curr_first - prev_last - 1;
             if missing == 0 {
-                continue;
+                continue; // curr_first == prev_last + 1 — perfect continuity.
             }
 
             // In aion mode (default since v13.58), all gaps are healable —
