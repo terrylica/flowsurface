@@ -720,7 +720,13 @@ impl Exchange {
         if valid_symbol {
             return true;
         } else if log {
-            log::warn!("Unsupported ticker: '{}': {:?}", self, symbol,);
+            // Downgrade from warn → debug. Binance routinely lists tickers with
+            // non-ASCII names (CJK memecoins like 币安人生USDT, 我踏马来了USDT,
+            // 龙虾USDT — yes, those are real). Each one tripped the filter
+            // and spammed the log on every startup. Filtering is correct; the
+            // visibility just doesn't need to be at warn level since there's
+            // no remediation a user would take.
+            log::debug!("filtered non-ASCII ticker: '{}': {:?}", self, symbol);
         }
         false
     }
