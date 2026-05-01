@@ -10,3 +10,5 @@ Flowsurface.app/
 .claude/*
 !.claude/skills/
 !.claude/commands/
+.autoloop/
+.loop-state/
