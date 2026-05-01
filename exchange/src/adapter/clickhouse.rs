@@ -199,8 +199,14 @@ pub async fn fetch_ch_ticker_metadata(
 
     // Query forex metadata from the quote-native fxview_cache.forex_bars table.
     // Forex migrated here 2026-04-14 — no forex rows remain in the crypto table.
+    //
+    // Use avg(close) for the price-bucket signal, NOT min(low). Reason:
+    // multi-year datasets straddle bucket boundaries (XAGUSD silver had
+    // historical low $11.64 which falls in the same 1-100 bucket as it
+    // should, but min(low) for a long history is brittle — a single dip
+    // can mis-bucket the symbol). avg(close) is the stable centroid.
     let sql = "SELECT symbol, \
-               toDecimal64(min(low), 6) as min_price, \
+               toDecimal64(avg(close), 6) as avg_price, \
                count() as bars \
                FROM fxview_cache.forex_bars \
                GROUP BY symbol \
@@ -219,10 +225,22 @@ pub async fn fetch_ch_ticker_metadata(
                 if sym.is_empty() {
                     continue;
                 }
-                // Derive ticksize from min_price decimal places
-                let min_price: f64 =
-                    parts[1].trim().parse().unwrap_or(1.0);
-                let tick = tick_from_price(min_price);
+                // Derive ticksize from avg(close) bucketing. On parse failure,
+                // skip this symbol entirely rather than silently falling back
+                // to a hardcoded price — incorrect ticksize at startup
+                // permanently mis-bins a symbol's chart precision.
+                let avg_price: f64 = match parts[1].trim().parse() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!(
+                            "[CH] forex ticker {sym}: skipping — failed to parse \
+                             avg_price from '{}': {e}",
+                            parts[1].trim()
+                        );
+                        continue;
+                    }
+                };
+                let tick = tick_from_price(avg_price);
                 let ticker =
                     Ticker::new(sym, Exchange::ClickhouseSpot);
                 let info = TickerInfo {
@@ -248,16 +266,31 @@ pub async fn fetch_ch_ticker_metadata(
     Ok(out)
 }
 
-/// Derive tick size from a price value's decimal precision.
-/// Uses min(low) from CH — the smallest observed price determines
-/// whether this is gold-scale (100+), forex-major (0.5+), or sub-unit.
+/// Derive tick size from a representative price value (`avg(close)`).
+///
+/// Hierarchical bucketing keyed to the price magnitude — each bucket maps
+/// to the broker's typical decimal-precision convention for that scale:
+///
+/// | Bucket           | Price range  | Ticksize | Examples                  |
+/// |------------------|--------------|----------|---------------------------|
+/// | Gold-scale       | ≥ 1000       | 0.01     | XAUUSD ($1810-$5598)      |
+/// | Decimal-metal    | 10 – 999     | 0.001    | XAGUSD ($11-$121)         |
+/// | Forex-major      | 0.1 – 9.999  | 0.00001  | EURUSD ($0.95-$1.25), GBP |
+/// | Sub-dime fallback| < 0.1        | 0.0001   | (rare; cautious default)  |
+///
+/// Boundaries chosen so that GBPUSD (avg ~$1.28) bucket correctly into
+/// forex-major rather than decimal-metal, and XAGUSD (avg ~$39.55)
+/// bucket correctly into decimal-metal rather than forex-major. Verified
+/// against actual fxview_cache.forex_bars centroids on 2026-04-30.
 fn tick_from_price(price: f64) -> f32 {
-    if price >= 100.0 {
-        0.01 // Gold-scale: $1160.245 → 0.01 (3 decimals)
+    if price >= 1000.0 {
+        0.01 // Gold-scale ($1000+): XAUUSD, BTCUSDT, etc.
+    } else if price >= 10.0 {
+        0.001 // Decimal-metal scale ($10-$999): XAGUSD silver
     } else if price >= 0.1 {
-        0.00001 // Forex majors: 0.95-1.25 → 0.00001 (5 decimals)
+        0.00001 // Forex majors ($0.1-$9.99): EURUSD, GBPUSD, USDJPY-inverse, etc.
     } else {
-        0.0001 // Sub-dime instruments: conservative
+        0.0001 // Sub-dime instruments: conservative fallback
     }
 }
 
