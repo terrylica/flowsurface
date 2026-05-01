@@ -8,7 +8,36 @@ forensic probe confirmed two distinct producer-side incidents.
 
 ---
 
-## TL;DR
+## ⚠️ STATUS: Diagnosis correct, remediation asks superseded by producer intent
+
+After the producer team reviewed this handoff (their session
+`a87c996b-1f0a-4a2b-b07f-b473660ed38c`), they confirmed the data shape
+described below is **intentional clean-slate POC scope**, not a failure
+condition. They explicitly chose **hold — no reply doc, no scope changes**.
+
+Specifically:
+
+- **BTCUSDT/ETHUSDT 33-day window** is the result of `repair_direct_parquet.py
+--recent-days 30` run during today's iter-11 deploy (v13.75.0). Older
+  history was wiped during prior clean-slate POC rebuilds — by design.
+- **14 "frozen" symbols** have `enabled = false` in `symbols.toml`. Only
+  BTCUSDT + ETHUSDT have `enabled = true`. The 14 symbols' "stale" bars are
+  legacy data from before the crypto-narrowing.
+- **86-hour dark spell at 2026-04-12** was incident #363; root regression
+  fixed today in commit `d0d4ffe5` (v13.75.0). Our consumer is now on
+  the same crate version (Round 5 of the autoloop bumped 13.70.3 → 13.75.0).
+- **Producer-side gate**: `OPENDEVIATIONBAR_KINTSUGI_GENESIS_ENABLED=false`
+  is the explicit env that "prevents undoing clean-slate POC rebuilds."
+  Will be flipped to `true` when ready for full-history backfill.
+
+**Net for flowsurface**: my original "remediation asks" below would actively
+undo the producer's deliberate POC state. They should be read as
+"observations of state" rather than "asks." The full diagnosis is left
+intact below as a forensic record; the asks at the end are obsolete.
+
+---
+
+## TL;DR (original — observation only, not action)
 
 `opendeviationbar_cache.open_deviation_bars` is in a degraded state with two
 incidents conflated:
