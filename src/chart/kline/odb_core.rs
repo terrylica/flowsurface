@@ -610,7 +610,17 @@ impl KlineChart {
         }
 
         // Set dedup fence from the last gap-fill trade's agg_trade_id.
-        if let Some(last_id) = self.raw_trades.iter().rev().find_map(|t| t.agg_trade_id) {
+        // Filter out the `agg_trade_id == 0` sentinel that some catchup paths
+        // emit for "no real ID" — a real Binance aggTrade ID is always > 0.
+        // Without this filter, finalize would set last_ws_agg_trade_id=Some(0),
+        // and the very next real WS trade (id ≈ 4 billion) would trip the
+        // continuity guard with a "missing 4 billion trades" false-positive.
+        if let Some(last_id) = self
+            .raw_trades
+            .iter()
+            .rev()
+            .find_map(|t| t.agg_trade_id.filter(|&id| id > 0))
+        {
             self.gap_fill_fence_agg_id = Some(last_id);
             // Advance telemetry tracker so we don't report a false-positive
             // gap when the first WS trade past the fence arrives.
@@ -919,7 +929,16 @@ impl KlineChart {
                         if !is_gap_fill {
                             for trade in trades_buffer {
                                 if let Some(id) = trade.agg_trade_id {
-                                    if let Some(prev_id) = self.last_ws_agg_trade_id {
+                                    // Skip continuity check when the previous ID is the
+                                    // `0` sentinel (uninitialized / catchup-empty marker)
+                                    // or when the current ID is `0`. A real Binance aggTrade
+                                    // ID is strictly positive; treating 0 as a baseline
+                                    // produces a false-positive "missing N billion trades"
+                                    // warning on the first real trade.
+                                    if let Some(prev_id) = self.last_ws_agg_trade_id
+                                        && prev_id > 0
+                                        && id > 0
+                                    {
                                         let gap = id.saturating_sub(prev_id);
                                         if gap > 1 {
                                             log::warn!(
