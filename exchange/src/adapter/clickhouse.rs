@@ -1701,11 +1701,27 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
         let mut tick_counts: rustc_hash::FxHashMap<String, u64> =
             rustc_hash::FxHashMap::default();
 
+        // Progressive disclosure for connect-failure logging.
+        // First failure: log at WARN (something just broke).
+        // Failures 2..N: log at DEBUG (retry storm; opt-in via RUST_LOG=debug).
+        // Sustained failure (every 60th retry): one INFO summary so the log
+        // confirms we're still trying without flooding.
+        const FXVIEW_SSE_SUSTAINED_LOG_EVERY: u32 = 60;
+
         loop {
             attempt = attempt.saturating_add(1);
-            log::info!(
-                "[fxview-sse] connecting (attempt #{attempt}) url={url} last_seq={last_quote_seq}"
-            );
+            // Demote per-attempt connecting-line to debug for retries to match
+            // the failure progression — first attempt logs at info, retries
+            // are quiet unless RUST_LOG=debug.
+            if attempt == 1 {
+                log::info!(
+                    "[fxview-sse] connecting url={url} last_seq={last_quote_seq}"
+                );
+            } else {
+                log::debug!(
+                    "[fxview-sse] connecting (attempt #{attempt}) url={url} last_seq={last_quote_seq}"
+                );
+            }
 
             let client = match reqwest::Client::builder()
                 .timeout(Duration::from_secs(FXVIEW_SSE_REQUEST_TIMEOUT_S))
@@ -1733,18 +1749,35 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                     r
                 }
                 Ok(r) => {
-                    log::error!("[fxview-sse] HTTP {}: reconnecting", r.status());
-                    tg_alert!(
-                        crate::telegram::Severity::Warning,
-                        "fxview-sse",
-                        "fxview-sse HTTP {status}",
-                        status = r.status()
-                    );
+                    if attempt == 1 {
+                        log::error!("[fxview-sse] HTTP {}: reconnecting", r.status());
+                        tg_alert!(
+                            crate::telegram::Severity::Warning,
+                            "fxview-sse",
+                            "fxview-sse HTTP {status}",
+                            status = r.status()
+                        );
+                    } else {
+                        log::debug!(
+                            "[fxview-sse] HTTP {} (attempt #{attempt})",
+                            r.status()
+                        );
+                    }
                     backoff_sleep(attempt).await;
                     continue;
                 }
                 Err(e) => {
-                    log::warn!("[fxview-sse] connect failed: {e}");
+                    if attempt == 1 {
+                        log::warn!("[fxview-sse] connect failed: {e}");
+                    } else if attempt
+                        .is_multiple_of(FXVIEW_SSE_SUSTAINED_LOG_EVERY)
+                    {
+                        log::info!(
+                            "[fxview-sse] still failing after {attempt} attempts: {e}"
+                        );
+                    } else {
+                        log::debug!("[fxview-sse] connect failed (attempt #{attempt}): {e}");
+                    }
                     backoff_sleep(attempt).await;
                     continue;
                 }
