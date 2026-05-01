@@ -25,7 +25,7 @@ pub use config::state::{Layouts, State};
 pub use config::theme::Theme;
 pub use config::timezone::UserTimezone;
 
-use ::log::{error, info, warn};
+use ::log::{debug, error, info, warn};
 pub use layout::{Dashboard, Layout, Pane};
 
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
@@ -150,7 +150,11 @@ pub fn data_path(path_name: Option<&str>) -> PathBuf {
 
 fn cleanup_directory(data_path: &PathBuf) -> usize {
     if !data_path.exists() {
-        warn!("Data path {:?} does not exist, skipping cleanup", data_path);
+        // First-run / clean-machine state — no aggTrades archive to clean up.
+        // This is the expected outcome on a fresh install, so info-level
+        // (or even debug) is appropriate. WARN here was alarming users
+        // unnecessarily on every clean launch.
+        debug!("data path {:?} does not exist, skipping cleanup", data_path);
         return 0;
     }
 
