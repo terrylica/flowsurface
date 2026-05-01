@@ -1427,20 +1427,33 @@ fn catchup_response_to_result(catchup: CatchupResponse, request_uuid: uuid::Uuid
         warnings.push(msg);
     }
 
-    // Check 3: trades strictly ascending by agg_trade_id
+    // Check 3: trades strictly ascending by agg_trade_id.
+    // Special-case `0 >= 0`: the catchup endpoint emits trades with
+    // agg_trade_id=0 as a sentinel for "no real ID available". Two consecutive
+    // zero-IDs are a known producer-side condition, NOT a critical pipeline
+    // breach — demote to debug log without a Telegram alert. Real misordering
+    // (positive IDs going backward) still escalates as before.
     for window in trades.windows(2) {
         if let (Some(a), Some(b)) = (window[0].agg_trade_id, window[1].agg_trade_id)
             && a >= b
         {
             let msg = format!("trades misordered: id {a} >= {b}");
-            log::error!("[catchup-validation] uuid={request_uuid}: {msg}");
-            tg_alert!(
-                crate::telegram::Severity::Critical,
-                "catchup-validation",
-                "uuid={request_uuid}: {msg}"
-            );
-            warnings.push(msg);
-            break; // only alert once
+            if a == 0 && b == 0 {
+                log::debug!(
+                    "[catchup-validation] uuid={request_uuid}: \
+                     {msg} (zero-id sentinel; not a real misorder)"
+                );
+                // Don't push to `warnings` — this is producer-side noise.
+            } else {
+                log::error!("[catchup-validation] uuid={request_uuid}: {msg}");
+                tg_alert!(
+                    crate::telegram::Severity::Critical,
+                    "catchup-validation",
+                    "uuid={request_uuid}: {msg}"
+                );
+                warnings.push(msg);
+            }
+            break; // only alert once per response
         }
     }
 
