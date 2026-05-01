@@ -991,7 +991,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2172,7 +2172,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3155,9 +3155,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-client"
-version = "13.70.3"
+version = "13.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffe52b4bc4601659d4919b85783e0d43a412868f20cc4643d5dbf3b156a6d9c3"
+checksum = "a5baf582e5b3d8a62d259bd7cc9fccca4c083d3ea33fe8a42d28f7fc502098ac"
 dependencies = [
  "bytes",
  "eventsource-client",
@@ -3173,9 +3173,9 @@ dependencies = [
 
 [[package]]
 name = "opendeviationbar-core"
-version = "13.70.3"
+version = "13.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91afccafc9e36e2ba8711ecd9a3022a045776f7ebf55dbf62fefc9a60d00c338"
+checksum = "4eca4be86be8e1cc0a56740fc89b5f0f0eff25ce0ea41815c1afa8645f1e812d"
 dependencies = [
  "foldhash 0.2.0",
  "libm",
@@ -3189,14 +3189,15 @@ dependencies = [
  "serde_json",
  "smallvec",
  "thiserror 2.0.18",
+ "tracing",
  "wide",
 ]
 
 [[package]]
 name = "opendeviationbar-hurst"
-version = "13.70.3"
+version = "13.75.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5a12d7f809726e6ca468a5107adc92f4ee948ee6855caf2ec172ecd6f2c1bbd"
+checksum = "036c4354f9a4182db78af036211647fb12b50767840ebcc2dcd48415aff90233"
 dependencies = [
  "linreg",
  "rustfft",
@@ -3525,7 +3526,7 @@ dependencies = [
 
 [[package]]
 name = "qta"
-version = "1.23.2"
+version = "2.55.0"
 dependencies = [
  "thiserror 2.0.18",
  "tracing",
@@ -3601,7 +3602,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4034,7 +4035,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4397,7 +4398,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4612,7 +4613,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5449,7 +5450,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
