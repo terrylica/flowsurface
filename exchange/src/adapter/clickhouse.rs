@@ -1308,11 +1308,16 @@ pub fn connect_sse_stream(
                     }
                     OdbSseEvent::Disconnected(reason) => {
                         SSE_CONNECTED.store(false, Ordering::Relaxed);
-                        log::warn!("[SSE] disconnected: {reason}, reconnecting in 5s");
-                        tg_alert!(
-                            crate::telegram::Severity::Warning,
-                            "sse",
-                            "SSE disconnected for {symbol}@{threshold_dbps}: {reason}"
+                        // Routine producer-side idle timeouts close the stream every
+                        // ~3min; the reconnect loop below handles recovery silently.
+                        // Demoted from tg_alert!(Warning) to log-only — these were
+                        // spamming Telegram with 5+ messages every 3-5 minutes per
+                        // subscribed (symbol, threshold) pair. If you need outage
+                        // detection, watch flowsurface-current.log for sustained
+                        // gaps in [SSE] connected lines.
+                        log::warn!(
+                            "[SSE] disconnected for {symbol}@{threshold_dbps}: {reason}, \
+                             reconnecting in 5s"
                         );
                         break;
                     }
@@ -1862,11 +1867,11 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                 }
             }
 
-            log::warn!("[fxview-sse] stream closed, reconnecting");
-            tg_alert!(
-                crate::telegram::Severity::Info,
-                "fxview-sse",
-                "fxview-sse stream closed last_seq={last_quote_seq}"
+            // Routine producer-side idle timeout. Reconnect handled by the loop
+            // below; no alert needed (was spamming Telegram every ~3min). See the
+            // matching demotion in the OdbSseEvent::Disconnected handler above.
+            log::warn!(
+                "[fxview-sse] stream closed last_seq={last_quote_seq}, reconnecting"
             );
             backoff_sleep(attempt.saturating_add(1)).await;
         }
