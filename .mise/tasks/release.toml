@@ -32,11 +32,12 @@ export FLOWSURFACE_CH_PORT="${FLOWSURFACE_CH_PORT:-18123}"
 export FLOWSURFACE_SSE_ENABLED="${FLOWSURFACE_SSE_ENABLED:-true}"
 export FLOWSURFACE_SSE_HOST="${FLOWSURFACE_SSE_HOST:-localhost}"
 export FLOWSURFACE_SSE_PORT="${FLOWSURFACE_SSE_PORT:-18081}"
+export FLOWSURFACE_FXVIEW_SSE_URL="${FLOWSURFACE_FXVIEW_SSE_URL:-http://localhost:18082/forex/ticks/stream}"
 export FLOWSURFACE_OUROBOROS_MODE="${FLOWSURFACE_OUROBOROS_MODE:-aion}"
 export FLOWSURFACE_ALWAYS_ON_TOP="${FLOWSURFACE_ALWAYS_ON_TOP:-1}"
-# Auto-start SSH tunnel to bigblack if not running (CH + SSE ports)
+# Auto-start SSH tunnel to bigblack if not running (CH + crypto SSE + forex tick SSE)
 if ! lsof -ti:18123 >/dev/null 2>&1; then
-  ssh -fNL 18123:localhost:8123 -L 18081:localhost:8081 bigblack 2>/dev/null
+  ssh -fNL 18123:localhost:8123 -L 18081:localhost:8081 -L 18082:localhost:8082 bigblack 2>/dev/null
 fi
 DIR="$(cd "$(dirname "$0")" && pwd)"
 exec "$DIR/flowsurface.bin" "$@"

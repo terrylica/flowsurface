@@ -13,6 +13,7 @@ FLOWSURFACE_CH_PORT = "18123"
 FLOWSURFACE_SSE_ENABLED = "true"  # re-enabled: crate 13.70.3 fixes #336 (_us fields) + #355 (ref_id by-design ADR)
 FLOWSURFACE_SSE_HOST = "localhost"
 FLOWSURFACE_SSE_PORT = "18081"
+FLOWSURFACE_FXVIEW_SSE_URL = "http://localhost:18082/forex/ticks/stream"  # forex live tick SSE via ssh-tunnel-companion port forward
 FLOWSURFACE_OUROBOROS_MODE = "aion"
 FLOWSURFACE_ALWAYS_ON_TOP = "1"
 # Telegram telemetry bot — credentials read from secrets files
