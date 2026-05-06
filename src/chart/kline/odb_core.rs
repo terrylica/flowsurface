@@ -224,6 +224,7 @@ impl KlineChart {
             #[cfg(feature = "telemetry")]
             last_snapshot: Instant::now(),
             odb_processor,
+            forex_forming_bar: None,
             next_agg_id: 0,
             odb_completed_count: 0,
             pending_local_bars: 0,
@@ -368,6 +369,15 @@ impl KlineChart {
                         turnover_imbalance: m.turnover_imbalance,
                     });
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
+
+                    // Forex: producer-emitted bar replaces any tick-derived forming
+                    // bar. Cleared here so the next live tick reseeds with the new
+                    // close as its open anchor (visual continuity).
+                    if self.chart.ticker_info.ticker.exchange.venue()
+                        == exchange::adapter::Venue::ClickHouse
+                    {
+                        self.forex_forming_bar = None;
+                    }
 
                     // Attach agg_trade_id_range and open_time_ms from SSE/CH bar data.
                     // These are set after replace_or_append_kline (two-phase pattern)
@@ -589,6 +599,16 @@ impl KlineChart {
                 }
             }
         }
+
+        // Trigger repaint so the new bar lands visibly. Crypto charts get
+        // continuous repaints from `insert_trades` (Binance WS trades arrive
+        // every ~50ms), so this looked superfluous. But forex (Venue::ClickHouse)
+        // has no executed-trade feed — only fxview-sse ticks — and any brief
+        // SSE hiccup between CH bar arrivals would leave the chart visually
+        // frozen while the data has actually advanced. Decoupling the repaint
+        // trigger from the tick stream fixes the "lost real-time sights"
+        // symptom on EURUSD/XAUUSD.
+        let _ = self.invalidate(None);
     }
 
     pub fn reset_request_handler(&mut self) {
@@ -849,6 +869,52 @@ impl KlineChart {
                             self.chart.last_price =
                                 Some(PriceInfoLabel::new(last_trade.price, reference));
                             self.chart.last_trade_time = Some(last_trade.time);
+
+                            // Maintain a tick-derived forming bar for forex. Cleared on
+                            // CH/SSE bar arrival in update_latest_kline; rebuilt here on
+                            // the next tick. Open anchors to prev bar's close for visual
+                            // continuity (matches OdbProcessor's seed_open_price contract).
+                            let last_price_f32 = last_trade.price.to_f32();
+                            let last_time_ms = last_trade.time;
+                            let prev_close_f32 =
+                                prev_close.map(|p| p.to_f32()).unwrap_or(last_price_f32);
+
+                            match &mut self.forex_forming_bar {
+                                Some(forming) => {
+                                    for t in trades_buffer.iter() {
+                                        let p = t.price.to_f32();
+                                        if p > forming.high {
+                                            forming.high = p;
+                                        }
+                                        if p < forming.low {
+                                            forming.low = p;
+                                        }
+                                    }
+                                    forming.close = last_price_f32;
+                                    forming.close_time_ms = last_time_ms;
+                                }
+                                None => {
+                                    let mut high = prev_close_f32.max(last_price_f32);
+                                    let mut low = prev_close_f32.min(last_price_f32);
+                                    for t in trades_buffer.iter() {
+                                        let p = t.price.to_f32();
+                                        if p > high {
+                                            high = p;
+                                        }
+                                        if p < low {
+                                            low = p;
+                                        }
+                                    }
+                                    self.forex_forming_bar = Some(super::ForexFormingBar {
+                                        open: prev_close_f32,
+                                        high,
+                                        low,
+                                        close: last_price_f32,
+                                        close_time_ms: last_time_ms,
+                                    });
+                                }
+                            }
+
                             let _ = self.invalidate(None);
                         }
                         return None;

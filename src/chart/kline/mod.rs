@@ -214,6 +214,28 @@ impl PlotConstants for KlineChart {
     }
 }
 
+/// Tick-derived forming bar for forex (Venue::ClickHouse) ODB charts.
+///
+/// The producer (fxview-sidecar Portcullis) is the canonical bar author, but it
+/// only ships completed bars via CH poll/SSE. Between those arrivals, ticks from
+/// the live SSE stream feed this lightweight OHLC accumulator so the chart shows
+/// a still-forming bar at the right edge. Cleared whenever a CH/SSE bar arrives
+/// — the producer's authoritative bar replaces any in-flight tick aggregation.
+///
+/// Why this is a separate field rather than using `OdbProcessor`: the Portcullis
+/// breach engine expects executed trades with bid/ask context. Forex SSE ticks
+/// are quote mid-prices with `qty = 0`, which never trigger a breach close;
+/// feeding them to `OdbProcessor` produced the "session-wide forming bar" bug
+/// fixed in commit 17abf95. This struct sidesteps the breach logic entirely.
+#[derive(Debug, Clone)]
+pub struct ForexFormingBar {
+    pub open: f32,
+    pub high: f32,
+    pub low: f32,
+    pub close: f32,
+    pub close_time_ms: u64,
+}
+
 pub struct KlineChart {
     chart: ViewState,
     data_source: PlotData<KlineDataPoint>,
@@ -230,6 +252,9 @@ pub struct KlineChart {
     /// In-process ODB processor (opendeviationbar-core). Produces completed bars
     /// from raw WebSocket trades, eliminating the ClickHouse live polling path.
     odb_processor: Option<OpenDeviationBarProcessor>,
+    /// Forex-only: tick-derived forming bar shown between CH/SSE bar arrivals.
+    /// See `ForexFormingBar` doc comment for rationale.
+    forex_forming_bar: Option<ForexFormingBar>,
     /// Monotonic counter for AggTrade IDs fed to the ODB processor.
     next_agg_id: i64,
     /// Total completed bars from the in-process processor (diagnostic).
@@ -389,6 +414,7 @@ impl KlineChart {
                     #[cfg(feature = "telemetry")]
                     last_snapshot: Instant::now(),
                     odb_processor: None,
+                    forex_forming_bar: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
@@ -476,6 +502,7 @@ impl KlineChart {
                     #[cfg(feature = "telemetry")]
                     last_snapshot: Instant::now(),
                     odb_processor: None,
+                    forex_forming_bar: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
@@ -596,6 +623,7 @@ impl KlineChart {
                     #[cfg(feature = "telemetry")]
                     last_snapshot: Instant::now(),
                     odb_processor,
+                    forex_forming_bar: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
@@ -1402,15 +1430,73 @@ impl canvas::Program<Message> for KlineChart {
                     // Render the in-process forming bar (ODB bars only).
                     // Drawn at x = +cell_width (one slot right of index-0 = newest completed bar).
                     // Semi-transparent to signal it is still accumulating.
-                    if chart.basis.is_odb()
-                        && let Some(ref processor) = self.odb_processor
-                        && let Some(forming) = processor.get_incomplete_bar()
-                    {
+                    //
+                    // Two sources, one render path:
+                    //   - Crypto: OdbProcessor's incomplete_bar (Portcullis breach engine)
+                    //   - Forex (Venue::ClickHouse): forex_forming_bar (tick-derived OHLC,
+                    //     populated by insert_trades_inner; producer's CH bar resets it)
+                    let forming_ohlc: Option<(f32, f32, f32, f32)> = if chart.basis.is_odb() {
+                        if let Some(ref processor) = self.odb_processor
+                            && let Some(forming) = processor.get_incomplete_bar()
+                        {
+                            Some((
+                                forming.open.to_f64() as f32,
+                                forming.high.to_f64() as f32,
+                                forming.low.to_f64() as f32,
+                                forming.close.to_f64() as f32,
+                            ))
+                        } else {
+                            self.forex_forming_bar
+                                .as_ref()
+                                .map(|f| (f.open, f.high, f.low, f.close))
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Sanity cap: hide forming bars whose range exceeds 2× the threshold.
+                    // Symptom: OdbProcessor seeded with a historical anchor (close+timestamp
+                    // from a bar minutes/days old) sometimes fails to fire breach detection
+                    // for the early trades after seeding, producing a forming bar that spans
+                    // multiple thresholds wide. Rather than show a misleading bar at the
+                    // chart's right edge, we drop it — the dotted last_price line still
+                    // shows the live quote, and the next correctly-completed bar will land
+                    // shortly. Producer-side fix tracking: opendeviationbar-core seeding.
+                    let forming_ohlc = forming_ohlc.filter(|(open, high, low, _close)| {
+                        if let Basis::Odb(threshold_dbps) = chart.basis {
+                            let range = *high - *low;
+                            // dbps = 0.001%, so threshold_pct = dbps / 100_000.
+                            let threshold_pct = (threshold_dbps as f32) / 100_000.0;
+                            let max_sane_range = *open * threshold_pct * 2.0;
+                            range <= max_sane_range
+                        } else {
+                            true
+                        }
+                    });
+
+                    if let Some((open_f32, high_f32, low_f32, close_f32)) = forming_ohlc {
+                        // Wick cap: bound the rendered wick to ±1 threshold from the
+                        // bar's open. Without this, a brief tick spike (whether from
+                        // an outlier quote or a within-batch breach the producer hasn't
+                        // committed yet) leaves a permanently-extended wick on the
+                        // forming bar. Body (open→close) is preserved; only the wick's
+                        // visual extent past the body is capped. ODB-only.
+                        let (display_high, display_low) =
+                            if let Basis::Odb(threshold_dbps) = chart.basis {
+                                let threshold_pct = (threshold_dbps as f32) / 100_000.0;
+                                let excursion = open_f32 * threshold_pct;
+                                let body_high = open_f32.max(close_f32);
+                                let body_low = open_f32.min(close_f32);
+                                // Cap wicks at open±threshold; floor at body extents
+                                // so the wick never visually shrinks inside the body.
+                                let dh = high_f32.min(open_f32 + excursion).max(body_high);
+                                let dl = low_f32.max(open_f32 - excursion).min(body_low);
+                                (dh, dl)
+                            } else {
+                                (high_f32, low_f32)
+                            };
+
                         let x_forming = chart.cell_width;
-                        let open_f32 = forming.open.to_f64() as f32;
-                        let high_f32 = forming.high.to_f64() as f32;
-                        let low_f32 = forming.low.to_f64() as f32;
-                        let close_f32 = forming.close.to_f64() as f32;
 
                         let direction_color = if close_f32 >= open_f32 {
                             palette.success.base.color
@@ -1423,8 +1509,8 @@ impl canvas::Program<Message> for KlineChart {
                         };
 
                         let y_open = price_to_y(Price::from_f32(open_f32));
-                        let y_high = price_to_y(Price::from_f32(high_f32));
-                        let y_low = price_to_y(Price::from_f32(low_f32));
+                        let y_high = price_to_y(Price::from_f32(display_high));
+                        let y_low = price_to_y(Price::from_f32(display_low));
                         let y_close = price_to_y(Price::from_f32(close_f32));
 
                         // Body
@@ -1499,13 +1585,25 @@ impl canvas::Program<Message> for KlineChart {
                 let (_, rounded_aggregation) =
                     chart.draw_crosshair(frame, theme, bounds_size, cursor_position, interaction);
 
-                // Build forming bar Kline from odb_processor for tooltip
+                // Build forming bar Kline for tooltip. Two sources:
+                //   - Crypto: OdbProcessor's incomplete_bar
+                //   - Forex (Venue::ClickHouse): tick-derived forex_forming_bar
                 let forming_kline = if rounded_aggregation == u64::MAX {
-                    let fk = self
+                    let from_processor = self
                         .odb_processor
                         .as_ref()
                         .and_then(|p| p.get_incomplete_bar())
                         .map(|bar| odb_to_kline(&bar, chart.ticker_info.min_ticksize));
+                    let fk = from_processor.or_else(|| {
+                        self.forex_forming_bar.as_ref().map(|f| exchange::Kline {
+                            time: f.close_time_ms,
+                            open: Price::from_f32(f.open),
+                            high: Price::from_f32(f.high),
+                            low: Price::from_f32(f.low),
+                            close: Price::from_f32(f.close),
+                            volume: exchange::Volume::empty_buy_sell(),
+                        })
+                    });
                     log::trace!("[XHAIR] forming bar zone: forming_kline={}", fk.is_some());
                     fk
                 } else {
