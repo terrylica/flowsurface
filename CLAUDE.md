@@ -170,8 +170,6 @@ Top errors here. Module-specific errors → [exchange/CLAUDE.md](exchange/CLAUDE
 
 **Release model**: Native desktop app — no crates.io, no version tags. Use `mise run build:release` or `mise run release:app-bundle`. Ad-hoc code signing built into launch tasks.
 
-<!-- GSD:project-start source:PROJECT.md -->
-
 ## Project
 
 **Flowsurface Refactoring — Maintainability Push**
@@ -186,9 +184,6 @@ A systematic refactoring of the flowsurface codebase to improve maintainability,
 - **No behavior change**: All existing functionality must work identically
 - **Incremental**: Each phase is independently shippable — no big-bang rewrites
 - **Rust edition**: 2024, toolchain 1.93.1
-<!-- GSD:project-end -->
-
-<!-- GSD:stack-start source:codebase/STACK.md -->
 
 ## Technology Stack
 
@@ -283,9 +278,6 @@ A systematic refactoring of the flowsurface codebase to improve maintainability,
 - Format: JSON (serde serialization)
 - Content: Pane layouts, chart configuration, UI state
 - File: `data/src/lib.rs` defines `SAVED_STATE_PATH`
-<!-- GSD:stack-end -->
-
-<!-- GSD:conventions-start source:CONVENTIONS.md -->
 
 ## Conventions
 
@@ -398,9 +390,6 @@ A systematic refactoring of the flowsurface codebase to improve maintainability,
 - `// FILE-SIZE-OK:` explains why monolithic files aren't split
 - Example: `// FILE-SIZE-OK: monolithic adapter — CH HTTP, SSE, catchup, SQL builder are tightly coupled`
 - Used to prevent future refactors breaking intentional design
-<!-- GSD:conventions-end -->
-
-<!-- GSD:architecture-start source:ARCHITECTURE.md -->
 
 ## Architecture
 
@@ -526,29 +515,3 @@ A systematic refactoring of the flowsurface codebase to improve maintainability,
 
 ## Cross-Cutting Concerns
 
-<!-- GSD:architecture-end -->
-
-<!-- GSD:workflow-start source:GSD defaults -->
-
-## GSD Workflow Enforcement
-
-Before using Edit, Write, or other file-changing tools, start work through a GSD command so planning artifacts and execution context stay in sync.
-
-Use these entry points:
-
-- `/gsd:quick` for small fixes, doc updates, and ad-hoc tasks
-- `/gsd:debug` for investigation and bug fixing
-- `/gsd:execute-phase` for planned phase work
-
-Do not make direct repo edits outside a GSD workflow unless the user explicitly asks to bypass it.
-
-<!-- GSD:workflow-end -->
-
-<!-- GSD:profile-start -->
-
-## Developer Profile
-
-> Profile not yet configured. Run `/gsd:profile-user` to generate your developer profile.
-> This section is managed by `generate-claude-profile` -- do not edit manually.
-
-<!-- GSD:profile-end -->
