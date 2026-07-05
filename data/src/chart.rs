@@ -127,20 +127,13 @@ impl Basis {
 
     /// ODB threshold options for a given venue.
     /// Forex uses finer thresholds (5/10/25 dbps) than crypto (100-750).
-    pub fn odb_options_for_venue(
-        venue: exchange::adapter::Venue,
-    ) -> Vec<Basis> {
+    pub fn odb_options_for_venue(venue: exchange::adapter::Venue) -> Vec<Basis> {
         match venue {
-            exchange::adapter::Venue::ClickHouse => {
-                ODB_THRESHOLDS_FOREX
-                    .iter()
-                    .map(|&t| Basis::Odb(t))
-                    .collect()
-            }
-            _ => ODB_THRESHOLDS
+            exchange::adapter::Venue::ClickHouse => ODB_THRESHOLDS_FOREX
                 .iter()
                 .map(|&t| Basis::Odb(t))
                 .collect(),
+            _ => ODB_THRESHOLDS.iter().map(|&t| Basis::Odb(t)).collect(),
         }
     }
 

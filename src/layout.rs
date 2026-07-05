@@ -230,8 +230,7 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
                 // WebSocket streams — skip DepthAndTrades injection.
                 let is_ch_only = stream_type.iter().any(|s| match s {
                     PersistStreamKind::RangeBarKline { ticker, .. } => {
-                        ticker.exchange
-                            == exchange::adapter::Exchange::ClickhouseSpot
+                        ticker.exchange == exchange::adapter::Exchange::ClickhouseSpot
                     }
                     _ => false,
                 });

@@ -213,14 +213,16 @@ impl Flowsurface {
 
         // Fetch available ODB symbols from ClickHouse (non-blocking).
         // After symbols are cached, auto-open a EURUSD pane if available.
-        let init_odb_symbols =
-            Task::perform(exchange::adapter::clickhouse::init_odb_symbols(), |symbols| {
+        let init_odb_symbols = Task::perform(
+            exchange::adapter::clickhouse::init_odb_symbols(),
+            |symbols| {
                 if symbols.contains(&"EURUSD".to_string()) {
                     Message::AutoOpenForexPane("EURUSD".to_string())
                 } else {
                     Message::Tick(std::time::Instant::now())
                 }
-            });
+            },
+        );
 
         let set_on_top: Task<Message> = if APP_CONFIG.always_on_top {
             iced::window::set_level(main_window_id, iced::window::Level::AlwaysOnTop)
@@ -366,10 +368,8 @@ impl Flowsurface {
             Message::AutoOpenForexPane(symbol) => {
                 // Create a forex ODB pane after CH metadata is available.
                 // Uses the same path as user ticker selection.
-                let ticker = exchange::Ticker::new(
-                    &symbol,
-                    exchange::adapter::Exchange::ClickhouseSpot,
-                );
+                let ticker =
+                    exchange::Ticker::new(&symbol, exchange::adapter::Exchange::ClickhouseSpot);
                 if let Some(ti) = self
                     .sidebar
                     .tickers_info()
@@ -377,9 +377,7 @@ impl Flowsurface {
                     .and_then(|opt| *opt)
                 {
                     let main_window_id = self.main_window.id;
-                    log::info!(
-                        "[forex] auto-opening {symbol} pane"
-                    );
+                    log::info!("[forex] auto-opening {symbol} pane");
                     return self
                         .active_dashboard_mut()
                         .init_focused_pane(
@@ -399,10 +397,7 @@ impl Flowsurface {
                 );
                 return Task::perform(
                     async {
-                        tokio::time::sleep(
-                            std::time::Duration::from_secs(2),
-                        )
-                        .await;
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     },
                     move |_| Message::AutoOpenForexPane(symbol),
                 );

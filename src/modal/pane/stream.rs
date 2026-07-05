@@ -560,12 +560,9 @@ impl Modifier {
                                 .map(|ti| ti.ticker.exchange.venue())
                                 .unwrap_or(exchange::adapter::Venue::Binance),
                         });
-                        let options =
-                            data::chart::Basis::odb_options_for_venue(
-                                venue.unwrap_or(
-                                    exchange::adapter::Venue::Binance,
-                                ),
-                            );
+                        let options = data::chart::Basis::odb_options_for_venue(
+                            venue.unwrap_or(exchange::adapter::Venue::Binance),
+                        );
                         let odb_grid = modifiers_grid(
                             &options,
                             selected_threshold.map(Basis::Odb),

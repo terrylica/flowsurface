@@ -328,16 +328,10 @@ impl TickersTable {
 
                     // NOTE(fork): ClickHouse-only tickers have no live
                     // stats feed — create rows directly from metadata.
-                    if venue == Venue::ClickHouse
-                        && !self.row_index.contains_key(&ticker)
-                    {
-                        let precision = ticker_info
-                            .as_ref()
-                            .map(|ti| ti.min_ticksize);
+                    if venue == Venue::ClickHouse && !self.row_index.contains_key(&ticker) {
+                        let precision = ticker_info.as_ref().map(|ti| ti.min_ticksize);
                         let stats = exchange::TickerStats {
-                            mark_price: exchange::unit::Price::from_f32(
-                                0.0,
-                            ),
+                            mark_price: exchange::unit::Price::from_f32(0.0),
                             daily_price_chg: 0.0,
                             daily_volume: exchange::unit::Qty::from(0.0),
                         };
@@ -346,9 +340,7 @@ impl TickersTable {
                             ticker,
                             stats,
                             previous_stats: None,
-                            is_favorited: self
-                                .favorited_tickers
-                                .contains(&ticker),
+                            is_favorited: self.favorited_tickers.contains(&ticker),
                         };
                         self.ticker_rows.push(row);
                         let idx = self.ticker_rows.len() - 1;

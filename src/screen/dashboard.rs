@@ -1907,8 +1907,7 @@ pub fn odb_kline_subscription(
         // opendeviationbar-py, which only knows crypto). So for forex, SSE
         // would connect silently but deliver zero bars. Always use CH HTTP
         // polling for forex regardless of the global SSE flag.
-        let is_forex = cfg.id.0.ticker.exchange.venue()
-            == exchange::adapter::Venue::ClickHouse;
+        let is_forex = cfg.id.0.ticker.exchange.venue() == exchange::adapter::Venue::ClickHouse;
         if adapter::clickhouse::sse_enabled() && !is_forex {
             adapter::clickhouse::connect_sse_stream(cfg.id.0, cfg.id.1).boxed()
         } else {

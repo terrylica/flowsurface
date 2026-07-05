@@ -162,11 +162,7 @@ pub(super) fn build_content_and_streams(
                     settings,
                     base_ticker.min_ticksize.into(),
                 );
-                let default_threshold = if derived_plan
-                    .ticker_info
-                    .ticker
-                    .exchange
-                    .venue()
+                let default_threshold = if derived_plan.ticker_info.ticker.exchange.venue()
                     == exchange::adapter::Venue::ClickHouse
                 {
                     // 5 dbps: finest-grained threshold with densest data coverage
@@ -175,20 +171,11 @@ pub(super) fn build_content_and_streams(
                 } else {
                     250
                 };
-                let is_ch = derived_plan
-                    .ticker_info
-                    .ticker
-                    .exchange
-                    .venue()
+                let is_ch = derived_plan.ticker_info.ticker.exchange.venue()
                     == exchange::adapter::Venue::ClickHouse;
                 let threshold = match derived_plan.basis {
                     Some(Basis::Odb(t)) if !is_ch => t,
-                    Some(Basis::Odb(t))
-                        if data::chart::ODB_THRESHOLDS_FOREX
-                            .contains(&t) =>
-                    {
-                        t
-                    }
+                    Some(Basis::Odb(t)) if data::chart::ODB_THRESHOLDS_FOREX.contains(&t) => t,
                     _ => default_threshold,
                 };
                 // Sync selected_basis with the validated threshold
@@ -201,11 +188,7 @@ pub(super) fn build_content_and_streams(
                 // Depth (orderbook) stream — skip. Trades is served by
                 // fxview-sidecar's live tick SSE (via connect_tick_stream),
                 // so it's kept so the last-price label jitters between bars.
-                let is_ch_venue = derived_plan
-                    .ticker_info
-                    .ticker
-                    .exchange
-                    .venue()
+                let is_ch_venue = derived_plan.ticker_info.ticker.exchange.venue()
                     == exchange::adapter::Venue::ClickHouse;
                 if !is_ch_venue {
                     s.push(depth_stream(&derived_plan));

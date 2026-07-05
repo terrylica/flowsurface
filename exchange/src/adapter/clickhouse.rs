@@ -189,13 +189,10 @@ fn ouroboros_mode_for(symbol: &str) -> &str {
 /// Ticker metadata for ClickHouse-only symbols (forex).
 /// Derives tick precision from actual ClickHouse price data.
 /// Returns tickers for symbols NOT available on any crypto exchange.
-pub async fn fetch_ch_ticker_metadata(
-) -> Result<
-    std::collections::HashMap<crate::Ticker, Option<TickerInfo>>,
-    super::AdapterError,
-> {
-    use crate::{Ticker, unit::MinQtySize};
+pub async fn fetch_ch_ticker_metadata()
+-> Result<std::collections::HashMap<crate::Ticker, Option<TickerInfo>>, super::AdapterError> {
     use super::Exchange;
+    use crate::{Ticker, unit::MinQtySize};
 
     // Query forex metadata from the quote-native fxview_cache.forex_bars table.
     // Forex migrated here 2026-04-14 — no forex rows remain in the crypto table.
@@ -241,8 +238,7 @@ pub async fn fetch_ch_ticker_metadata(
                     }
                 };
                 let tick = tick_from_price(avg_price);
-                let ticker =
-                    Ticker::new(sym, Exchange::ClickhouseSpot);
+                let ticker = Ticker::new(sym, Exchange::ClickhouseSpot);
                 let info = TickerInfo {
                     ticker,
                     min_ticksize: MinTicksize::from(tick),
@@ -258,9 +254,7 @@ pub async fn fetch_ch_ticker_metadata(
             }
         }
         Err(e) => {
-            log::warn!(
-                "failed to fetch CH forex metadata: {e}"
-            );
+            log::warn!("failed to fetch CH forex metadata: {e}");
         }
     }
     Ok(out)
@@ -917,7 +911,9 @@ pub fn connect_kline_stream(
             "SELECT max(close_time_us) AS ts FROM {table} \
              WHERE symbol = '{}' AND threshold_decimal_bps = {} \
                AND ouroboros_mode = '{}' FORMAT JSONEachRow",
-            symbol, threshold_dbps, ouroboros_mode_for(&symbol)
+            symbol,
+            threshold_dbps,
+            ouroboros_mode_for(&symbol)
         );
         let mut last_ts: u64 = 0;
         for attempt in 1..=3 {
@@ -993,7 +989,10 @@ pub fn connect_kline_stream(
                  ORDER BY close_time_us ASC \
                  LIMIT 100 \
                  FORMAT JSONEachRow",
-                symbol, threshold_dbps, ouroboros_mode_for(&symbol), last_ts
+                symbol,
+                threshold_dbps,
+                ouroboros_mode_for(&symbol),
+                last_ts
             );
 
             match query(&sql).await {
@@ -1687,10 +1686,8 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
         let _ = output.send(Event::Connected(exchange)).await;
 
         // Symbol → TickerInfo filter for the server's broadcast fanout.
-        let symbol_map: rustc_hash::FxHashMap<String, TickerInfo> = tickers
-            .iter()
-            .map(|ti| (bare_symbol(ti), *ti))
-            .collect();
+        let symbol_map: rustc_hash::FxHashMap<String, TickerInfo> =
+            tickers.iter().map(|ti| (bare_symbol(ti), *ti)).collect();
         log::info!(
             "[fxview-sse] subscribing for symbols: {:?}",
             symbol_map.keys().collect::<Vec<_>>()
@@ -1703,8 +1700,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
         // bid/ask/mid → Trade.price mapping for verification. First tick per
         // symbol is always logged (provability); thereafter every Nth.
         const FXVIEW_SSE_SAMPLE_LOG_EVERY: u64 = 250;
-        let mut tick_counts: rustc_hash::FxHashMap<String, u64> =
-            rustc_hash::FxHashMap::default();
+        let mut tick_counts: rustc_hash::FxHashMap<String, u64> = rustc_hash::FxHashMap::default();
 
         // Progressive disclosure for connect-failure logging.
         // First failure: log at WARN (something just broke).
@@ -1719,9 +1715,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
             // the failure progression — first attempt logs at info, retries
             // are quiet unless RUST_LOG=debug.
             if attempt == 1 {
-                log::info!(
-                    "[fxview-sse] connecting url={url} last_seq={last_quote_seq}"
-                );
+                log::info!("[fxview-sse] connecting url={url} last_seq={last_quote_seq}");
             } else {
                 log::debug!(
                     "[fxview-sse] connecting (attempt #{attempt}) url={url} last_seq={last_quote_seq}"
@@ -1763,10 +1757,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                             status = r.status()
                         );
                     } else {
-                        log::debug!(
-                            "[fxview-sse] HTTP {} (attempt #{attempt})",
-                            r.status()
-                        );
+                        log::debug!("[fxview-sse] HTTP {} (attempt #{attempt})", r.status());
                     }
                     backoff_sleep(attempt).await;
                     continue;
@@ -1774,12 +1765,8 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                 Err(e) => {
                     if attempt == 1 {
                         log::warn!("[fxview-sse] connect failed: {e}");
-                    } else if attempt
-                        .is_multiple_of(FXVIEW_SSE_SUSTAINED_LOG_EVERY)
-                    {
-                        log::info!(
-                            "[fxview-sse] still failing after {attempt} attempts: {e}"
-                        );
+                    } else if attempt.is_multiple_of(FXVIEW_SSE_SUSTAINED_LOG_EVERY) {
+                        log::info!("[fxview-sse] still failing after {attempt} attempts: {e}");
                     } else {
                         log::debug!("[fxview-sse] connect failed (attempt #{attempt}): {e}");
                     }
@@ -1827,7 +1814,8 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                                             .entry(tick.symbol.clone())
                                             .and_modify(|c| *c += 1)
                                             .or_insert(1);
-                                        if *n == 1 || n.is_multiple_of(FXVIEW_SSE_SAMPLE_LOG_EVERY) {
+                                        if *n == 1 || n.is_multiple_of(FXVIEW_SSE_SAMPLE_LOG_EVERY)
+                                        {
                                             let mid = (tick.bid + tick.ask) / 2.0;
                                             log::info!(
                                                 "[fxview-sse] tick #{n} {symbol} \
@@ -1849,9 +1837,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                                     }
                                 }
                                 Err(e) => {
-                                    log::warn!(
-                                        "[fxview-sse] parse error: {e} data={data_json}"
-                                    );
+                                    log::warn!("[fxview-sse] parse error: {e} data={data_json}");
                                 }
                             }
                         }
@@ -1870,9 +1856,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
             // Routine producer-side idle timeout. Reconnect handled by the loop
             // below; no alert needed (was spamming Telegram every ~3min). See the
             // matching demotion in the OdbSseEvent::Disconnected handler above.
-            log::warn!(
-                "[fxview-sse] stream closed last_seq={last_quote_seq}, reconnecting"
-            );
+            log::warn!("[fxview-sse] stream closed last_seq={last_quote_seq}, reconnecting");
             backoff_sleep(attempt.saturating_add(1)).await;
         }
     })

@@ -579,11 +579,7 @@ impl KlineChart {
                     // cancels this shift so user-visible bars stay anchored.
                     // Only compensate after the first bar (to avoid shifting
                     // the initial view) and only for ODB basis (index-based).
-                    if is_new_bar
-                        && had_prev_bar
-                        && chart.layout.frozen
-                        && chart.basis.is_odb()
-                    {
+                    if is_new_bar && had_prev_bar && chart.layout.frozen && chart.basis.is_odb() {
                         chart.translation.x += chart.cell_width;
                     }
 
@@ -855,12 +851,7 @@ impl KlineChart {
                     // update `last_price` (for the jittering reference line) +
                     // `last_trade_time`, then return. The CH poll owns bar
                     // assembly via update_latest_kline on CH/SSE events.
-                    if self
-                        .chart
-                        .ticker_info
-                        .ticker
-                        .exchange
-                        .venue()
+                    if self.chart.ticker_info.ticker.exchange.venue()
                         == exchange::adapter::Venue::ClickHouse
                     {
                         if let Some(last_trade) = trades_buffer.last() {

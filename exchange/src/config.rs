@@ -52,8 +52,7 @@ impl Default for AppConfig {
             sse_enabled: false,
             sse_host: "localhost".to_string(),
             sse_port: 18081,
-            fxview_sse_url: "http://bigblack.tail0f299b.ts.net:8082/forex/ticks/stream"
-                .to_string(),
+            fxview_sse_url: "http://bigblack.tail0f299b.ts.net:8082/forex/ticks/stream".to_string(),
             tg_bot_token: None,
             tg_chat_id: None,
             always_on_top: false,

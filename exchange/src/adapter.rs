@@ -476,9 +476,7 @@ impl Exchange {
     pub fn is_depth_client_aggr(&self) -> bool {
         !matches!(
             self,
-            Exchange::HyperliquidLinear
-                | Exchange::HyperliquidSpot
-                | Exchange::ClickhouseSpot
+            Exchange::HyperliquidLinear | Exchange::HyperliquidSpot | Exchange::ClickhouseSpot
         )
     }
 
