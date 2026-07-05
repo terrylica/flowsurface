@@ -335,8 +335,8 @@ A systematic refactoring of the flowsurface codebase to improve maintainability,
 - `log::info!()` — startup state, feature toggles, significant events (e.g., SSE enabled/disabled)
 - `log::warn!()` — recoverable issues (e.g., partial fetch results)
 - `log::error!()` — errors that degrade functionality
-- File: `~/Library/Logs/flowsurface.log` (configured in `src/logger.rs` via fern)
-- Rotation: on-demand via `fern::log_file()` without abort on rotation failure
+- File: `~/Library/Application Support/flowsurface/flowsurface-current.log` (path from `data::log::path()`, configured in `src/logger.rs` via fern; debug builds log to stdout instead)
+- Rotation: on startup, current log renamed to `flowsurface-previous.log` (see `initial_rotation()`); no abort on rotation failure
 - Levels: Debug mode defaults to `Level::Debug`, Release defaults to `Level::Info`
 - Critical issues sent via `tg_alert!(critical: "...")` macro (49 alert sites across codebase)
 - Cooldown: 30-second window (`should_alert()`) prevents spam for same-category alerts
@@ -514,4 +514,3 @@ A systematic refactoring of the flowsurface codebase to improve maintainability,
 - **Telegram alerts**: 3-level severity (Critical, Warning, Info); cooldown via `should_alert()` to prevent spam
 
 ## Cross-Cutting Concerns
-
