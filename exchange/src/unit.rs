@@ -5,7 +5,7 @@ pub use price::{Price, PriceStep};
 pub use qty::Qty;
 
 pub type ContractSize = Power10<-4, 6>;
-pub type MinTicksize = Power10<-8, 2>;
+pub type MinTicksize = Power10<-11, 2>;
 pub type MinQtySize = Power10<-6, 8>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
