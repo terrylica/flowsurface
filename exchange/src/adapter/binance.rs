@@ -101,6 +101,23 @@ fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
     }
 }
 
+// NOTE(fork): ported from upstream 0b2c6ec — Binance split perp WS routes into
+// `/public/stream` (depth) and `/market/stream` (kline/aggTrade)
+enum WsTrafficKind {
+    Public,
+    Market,
+}
+
+fn ws_stream_path(market: MarketKind, traffic_kind: WsTrafficKind) -> &'static str {
+    match market {
+        MarketKind::Spot => "stream",
+        MarketKind::LinearPerps | MarketKind::InversePerps => match traffic_kind {
+            WsTrafficKind::Public => "public/stream",
+            WsTrafficKind::Market => "market/stream",
+        },
+    }
+}
+
 fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
@@ -390,7 +407,8 @@ pub fn connect_depth_stream(
                     let stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Public);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -668,7 +686,8 @@ pub fn connect_trade_stream(
                         .join("/");
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Market);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         state = State::Connected(websocket);
@@ -836,7 +855,8 @@ pub fn connect_kline_stream(
                         .join("/");
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream_str}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Market);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream_str}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         state = State::Connected(websocket);
