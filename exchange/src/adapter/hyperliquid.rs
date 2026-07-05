@@ -270,7 +270,10 @@ async fn fetch_metadata(market: MarketKind) -> Result<TickerMetadata, AdapterErr
 }
 
 /// Fetch metadata and asset contexts for a specific DEX that HIP-3 on Hyperliquid supports
-async fn fetch_meta_for_dex(dex_name: Option<&str>) -> Result<TickerMetadata, AdapterError> {
+async fn fetch_meta_for_dex(
+    dex_name: Option<&str>,
+    spot_token_names_by_index: Option<&HashMap<u32, String>>,
+) -> Result<TickerMetadata, AdapterError> {
     let body = match dex_name {
         Some(name) => json!({ "type": "metaAndAssetCtxs", "dex": name }),
         None => json!({ "type": "metaAndAssetCtxs" }),
@@ -286,11 +289,29 @@ async fn fetch_meta_for_dex(dex_name: Option<&str>) -> Result<TickerMetadata, Ad
         .and_then(|arr| arr.as_array())
         .ok_or_else(|| AdapterError::ParseError("Missing asset contexts array".to_string()))?;
 
-    process_perp_assets(metadata, asset_contexts, Exchange::HyperliquidLinear)
+    process_perp_assets(
+        metadata,
+        asset_contexts,
+        Exchange::HyperliquidLinear,
+        spot_token_names_by_index,
+    )
 }
 
 async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
     let dexes_json: Value = post_info(&json!({ "type": "perpDexs" })).await?;
+
+    // NOTE(fork): ported from upstream 54403f1 — resolve quote assets from spot
+    // token metadata so USDC-quoted perps stop displaying artificial USDT suffixes
+    let spot_token_names_by_index = match fetch_spot_token_names_by_index().await {
+        Ok(map) => Some(map),
+        Err(error) => {
+            log::warn!(
+                "Failed to resolve Hyperliquid spot token names. Perp quote labels may be incomplete: {}",
+                error
+            );
+            None
+        }
+    };
 
     let dexes = dexes_json
         .as_array()
@@ -304,8 +325,9 @@ async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
         })
         .collect();
 
+    let spot_token_names = spot_token_names_by_index.as_ref();
     let futures = dex_names.into_iter().map(|name| async move {
-        let result = fetch_meta_for_dex(name.as_deref()).await;
+        let result = fetch_meta_for_dex(name.as_deref(), spot_token_names).await;
         (name, result)
     });
 
@@ -336,6 +358,24 @@ async fn fetch_perps_metadata() -> Result<TickerMetadata, AdapterError> {
     }
 
     Ok((combined_info, combined_stats))
+}
+
+async fn fetch_spot_token_names_by_index() -> Result<HashMap<u32, String>, AdapterError> {
+    let body = json!({"type": "spotMetaAndAssetCtxs"});
+    let response_json: Value = post_info(&body).await?;
+
+    let metadata = response_json
+        .get(0)
+        .ok_or_else(|| AdapterError::ParseError("Missing spot metadata".to_string()))?;
+
+    let spot_meta: HyperliquidSpotMeta = serde_json::from_value(metadata.clone())
+        .map_err(|e| AdapterError::ParseError(format!("Failed to parse spot meta: {}", e)))?;
+
+    Ok(spot_meta
+        .tokens
+        .into_iter()
+        .map(|token| (token.index, token.name))
+        .collect())
 }
 
 async fn fetch_spot_metadata() -> Result<TickerMetadata, AdapterError> {
@@ -382,11 +422,19 @@ fn process_perp_assets(
     metadata: &Value,
     asset_contexts: &[Value],
     exchange: Exchange,
+    spot_token_names_by_index: Option<&HashMap<u32, String>>,
 ) -> Result<TickerMetadata, AdapterError> {
     let universe = metadata
         .get("universe")
         .and_then(|u| u.as_array())
         .ok_or_else(|| AdapterError::ParseError("Missing universe in metadata".to_string()))?;
+
+    let collateral_token_name = metadata
+        .get("collateralToken")
+        .and_then(|token| token.as_u64())
+        .and_then(|token| u32::try_from(token).ok())
+        .and_then(|token| spot_token_names_by_index.and_then(|token_names| token_names.get(&token)))
+        .map(String::as_str);
 
     let mut ticker_info_map = HashMap::new();
     let mut ticker_stats_map = HashMap::new();
@@ -396,7 +444,7 @@ fn process_perp_assets(
             && let Some(asset_ctx) = asset_contexts.get(index)
             && let Ok(ctx) = serde_json::from_value::<HyperliquidAssetContext>(asset_ctx.clone())
         {
-            let ticker = Ticker::new(&asset_info.name, exchange);
+            let ticker = create_perp_ticker(&asset_info.name, exchange, collateral_token_name);
             insert_ticker_from_ctx(
                 ticker,
                 asset_info.sz_decimals,
@@ -408,6 +456,30 @@ fn process_perp_assets(
     }
 
     Ok((ticker_info_map, ticker_stats_map))
+}
+
+/// Build a perp ticker whose display symbol carries the real quote asset
+/// (e.g. `BTCUSDC`) instead of an artificial `USDT` suffix.
+fn create_perp_ticker(symbol: &str, exchange: Exchange, quote_symbol: Option<&str>) -> Ticker {
+    let Some(quote_symbol) = quote_symbol else {
+        return Ticker::new(symbol, exchange);
+    };
+
+    if symbol.ends_with(quote_symbol) {
+        return Ticker::new(symbol, exchange);
+    }
+
+    let display_symbol = format!("{}{}", symbol, quote_symbol);
+    if display_symbol.len() > Ticker::MAX_LEN as usize {
+        log::warn!(
+            "Hyperliquid perp display symbol too long, keeping raw symbol: {} -> {}",
+            symbol,
+            display_symbol
+        );
+        return Ticker::new(symbol, exchange);
+    }
+
+    Ticker::new_with_display(symbol, exchange, Some(&display_symbol))
 }
 
 fn process_spot_assets(
