@@ -1343,17 +1343,17 @@ pub async fn fetch_ticker_stats(
                 AdapterError::ParseError("Price change percent not found".to_string())
             })?;
 
-        let volume = {
-            match market {
-                MarketKind::Spot | MarketKind::LinearPerps => {
-                    serde_util::value_as_f32(&item["quoteVolume"]).ok_or_else(|| {
-                        AdapterError::ParseError("Quote volume not found".to_string())
-                    })?
-                }
-                MarketKind::InversePerps => serde_util::value_as_f32(&item["volume"])
-                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?,
+        // NOTE(fork): ported from upstream b985a9f — Binance is merging linear/inverse
+        // APIs and pushes inverse tickers into linear metadata endpoints; fall back to
+        // `volume` when `quoteVolume` is absent instead of failing the whole fetch
+        let volume = match market {
+            MarketKind::Spot | MarketKind::LinearPerps => {
+                serde_util::value_as_f32(&item["quoteVolume"])
+                    .or_else(|| serde_util::value_as_f32(&item["volume"]))
             }
-        };
+            _ => serde_util::value_as_f32(&item["volume"]),
+        }
+        .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
 
         let daily_volume = match market {
             MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32(volume),
