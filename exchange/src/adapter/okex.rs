@@ -754,7 +754,9 @@ pub async fn fetch_ticker_metadata(
                 continue;
             }
 
-            if item["quoteCcy"].as_str() != Some("USDT") {
+            if item["quoteCcy"].as_str() != Some("USDT")
+                && item["quoteCcy"].as_str() != Some("USDC")
+            {
                 continue;
             }
 
