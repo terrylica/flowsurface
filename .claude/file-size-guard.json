@@ -26,6 +26,7 @@
     "bybit.rs",
     "okex.rs",
     "hyperliquid.rs",
+    "mexc.rs",
     "*.generated.*",
     "*.lock"
   ],

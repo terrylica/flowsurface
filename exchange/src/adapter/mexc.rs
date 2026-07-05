@@ -44,12 +44,14 @@ struct DepthSnapshotResponse {
     data: DepthData,
 }
 
+// NOTE(fork): ported from upstream 5299635 — REST depth snapshot items arrive as
+// arrays, not objects; deserialize directly into `DeOrder` (custom array visitor)
 #[derive(Deserialize)]
 struct DepthData {
     #[serde(rename = "asks")]
-    asks: Vec<FuturesDepthItem>,
+    asks: Vec<DeOrder>,
     #[serde(rename = "bids")]
-    bids: Vec<FuturesDepthItem>,
+    bids: Vec<DeOrder>,
     #[serde(rename = "version")]
     version: u64,
     #[serde(rename = "timestamp")]
@@ -665,25 +667,11 @@ pub async fn fetch_depth_snapshot(symbol: &str) -> Result<DepthPayload, AdapterE
         AdapterError::ParseError(e.to_string())
     })?;
 
-    let parse_orders = |arr: &Vec<FuturesDepthItem>| -> Vec<DeOrder> {
-        arr.iter()
-            .map(|x| DeOrder {
-                price: x.price,
-                qty: x.qty,
-            })
-            .collect()
-    };
-
-    let bids = parse_orders(&snapshot.data.bids);
-    let asks = parse_orders(&snapshot.data.asks);
-
-    let time = snapshot.data.timestamp;
-
     Ok(DepthPayload {
         last_update_id: snapshot.data.version,
-        time,
-        bids,
-        asks,
+        time: snapshot.data.timestamp,
+        bids: snapshot.data.bids,
+        asks: snapshot.data.asks,
     })
 }
 
