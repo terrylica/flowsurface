@@ -279,7 +279,6 @@ impl Ticker {
         display_symbol: Option<&str>,
     ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
-        assert!(ticker.is_ascii(), "Ticker must be ASCII");
         assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
@@ -291,7 +290,6 @@ impl Ticker {
                 display.len() <= Self::MAX_LEN as usize,
                 "Display symbol too long"
             );
-            assert!(display.is_ascii(), "Display symbol must be ASCII");
             // Display symbol cannot contain '|' as it's used as delimiter
             assert!(!display.contains('|'), "Display symbol cannot contain '|'");
             display_bytes[..display.len()].copy_from_slice(display.as_bytes());
