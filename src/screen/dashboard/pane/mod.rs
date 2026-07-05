@@ -912,8 +912,13 @@ impl State {
                                 self.settings.selected_basis = Some(new_basis);
                                 // Reset stale status and staleness flag -- fresh
                                 // data for the new basis will re-evaluate staleness.
-                                if matches!(self.status, Status::Stale(_)) {
-                                    self.status = Status::default();
+                                // NOTE(fork): upstream 3e95c99 — tick basis no longer
+                                // waits on trade fetches, so force Ready to avoid a
+                                // stuck Loading(FetchingTrades) status.
+                                if matches!(new_basis, Basis::Tick(_))
+                                    || matches!(self.status, Status::Stale(_))
+                                {
+                                    self.status = Status::Ready;
                                 }
                                 self.staleness_checked = false;
                                 let base_ticker = self.stream_pair();

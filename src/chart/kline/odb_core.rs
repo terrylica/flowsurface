@@ -1502,15 +1502,17 @@ impl KlineChart {
             let _ = self.insert_trades_inner(&raw_trades, true);
         } else {
             match self.data_source {
-                PlotData::TickBased(ref mut tick_aggr) => {
-                    tick_aggr.insert_trades(&raw_trades);
+                PlotData::TickBased(_) => {
+                    // NOTE(fork): ported from upstream 3e95c99 — fetched trades are
+                    // unreliable for tick aggregation (the aggregator counts purely by
+                    // live stream sequence and cannot detect cut-off fetches); rely on
+                    // live WS trades only. The ODB gap-fill path above is unaffected.
                 }
                 PlotData::TimeBased(ref mut timeseries) => {
                     timeseries.insert_trades_existing_buckets(&raw_trades);
+                    self.raw_trades.extend(raw_trades);
                 }
             }
-
-            self.raw_trades.extend(raw_trades);
         }
 
         if progress == GapFillProgress::Complete {

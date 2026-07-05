@@ -480,7 +480,10 @@ impl KlineChart {
                 };
                 chart.translation.x = x_translation;
 
-                let data_source = PlotData::TickBased(TickAggr::new(interval, step, &raw_trades));
+                // NOTE(fork): ported from upstream 3e95c99 — never seed tick aggregation
+                // from fetched raw trades; the aggregator counts by live stream sequence
+                // and cut-off fetches produce wrong tick bars
+                let data_source = PlotData::TickBased(TickAggr::new(interval, step, &[]));
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
@@ -776,16 +779,28 @@ impl KlineChart {
 
     #[must_use = "returned Action must be dispatched"]
     pub fn set_basis(&mut self, new_basis: Basis) -> Option<Action> {
+        // NOTE(fork): ported from upstream 3e95c99 — trades collected under a
+        // different basis are unreliable for the new one; clear them on switch
+        let previous_basis = self.chart.basis;
+
         self.chart.last_price = None;
         self.chart.basis = new_basis;
 
         match new_basis {
             Basis::Time(interval) => {
+                if !matches!(previous_basis, Basis::Time(_)) {
+                    self.raw_trades.clear();
+                }
+
                 let step = self.chart.tick_size;
                 let timeseries = TimeSeries::<KlineDataPoint>::new(interval, step, &[]);
                 self.data_source = PlotData::TimeBased(timeseries);
             }
             Basis::Tick(tick_count) => {
+                if !matches!(previous_basis, Basis::Tick(_)) {
+                    self.raw_trades.clear();
+                }
+
                 let step = self.chart.tick_size;
                 let tick_aggr = TickAggr::new(tick_count, step, &self.raw_trades);
                 self.data_source = PlotData::TickBased(tick_aggr);
