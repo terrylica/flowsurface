@@ -232,10 +232,14 @@ impl PlotConstants for KlineChart {
 /// check (ported from ODB Helm's builder): `bid >= open*(1+r) || ask <=
 /// open*(1-r)` with `r = threshold_dbps / 100_000`. Bid/ask are reconstructed
 /// from the quote Trade (`price` = mid, `qty` = spread — see
-/// `live_tick_to_trade`). On breach the bar FREEZES (close pinned at the
-/// breach tick) instead of appending: the producer's authoritative CH bar
-/// arrives within ~1s and replaces it via `update_latest_kline`, which avoids
-/// any local-vs-producer double-append race. OHLC stays mid-derived — the
+/// `live_tick_to_trade`). On breach the completed bar is appended as a
+/// PROVISIONAL datapoint (tracked via `pending_local_bars`, mirroring the
+/// crypto RBP local bars) and this forming bar reseeds at the breach mid so
+/// the chart keeps tracking live. The producer's authoritative CH/SSE bar
+/// pops provisionals on arrival in `update_latest_kline`. The earlier
+/// freeze-and-wait design left the chart dead for the producer's ~10s
+/// graduation-queue latency in fast markets (user-reported catch-up
+/// regression, 2026-07-05, XAUUSD BPR1). OHLC stays mid-derived — the
 /// producer's chart columns are mid OHLC too (bid/ask OHLC live in separate
 /// columns).
 #[derive(Debug, Clone)]
@@ -245,9 +249,6 @@ pub struct ForexFormingBar {
     pub low: f32,
     pub close: f32,
     pub close_time_ms: u64,
-    /// Portcullis breach reached — bar is complete locally; waiting for the
-    /// producer's authoritative CH bar to replace it. No further accumulation.
-    pub frozen: bool,
 }
 
 pub struct KlineChart {

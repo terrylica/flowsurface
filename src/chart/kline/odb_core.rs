@@ -318,21 +318,44 @@ impl KlineChart {
                     let provisional_micro =
                         tick_aggr.datapoints.last().and_then(|dp| dp.microstructure);
 
+                    let is_forex_venue = self.chart.ticker_info.ticker.exchange.venue()
+                        == exchange::adapter::Venue::ClickHouse;
+
                     // Pop locally-completed bars before reconciling with authoritative
                     // SSE/CH bars. Local bars have approximate boundaries (arbitrary WS
                     // start point) and are replaced by the authoritative version.
+                    //
+                    // NOTE(fork): forex keeps provisionals NEWER than the incoming
+                    // authoritative bar — the producer's graduation queue delays bars
+                    // ~10s, so several local breaches can be pending; popping them all
+                    // on the oldest authoritative arrival would blank bars the user
+                    // already saw. Forex provisional close times come from the same
+                    // venue quote timeline as the producer's, so the comparison is
+                    // exact. Crypto keeps the pop-all semantic (approximate boundaries
+                    // + processor replay rebuild the forming state).
+                    let mut kept_provisionals: Vec<_> = Vec::new();
                     if self.pending_local_bars > 0 {
                         let to_pop =
                             (self.pending_local_bars as usize).min(tick_aggr.datapoints.len());
-                        tick_aggr
-                            .datapoints
-                            .truncate(tick_aggr.datapoints.len() - to_pop);
+                        let pop_from = tick_aggr.datapoints.len() - to_pop;
+                        if is_forex_venue {
+                            kept_provisionals = tick_aggr
+                                .datapoints
+                                .split_off(pop_from)
+                                .into_iter()
+                                .filter(|dp| dp.kline.time > kline.time)
+                                .collect();
+                        } else {
+                            tick_aggr.datapoints.truncate(pop_from);
+                        }
                         log::info!(
-                            "[SSE] popped {} pending local bar(s), appending authoritative bar ts={}",
-                            to_pop,
+                            "[SSE] popped {} pending local bar(s) (kept {} newer), \
+                             appending authoritative bar ts={}",
+                            to_pop - kept_provisionals.len(),
+                            kept_provisionals.len(),
                             kline.time,
                         );
-                        self.pending_local_bars = 0;
+                        self.pending_local_bars = kept_provisionals.len() as u32;
                     }
 
                     // Get previous bar's close for color direction.
@@ -377,13 +400,20 @@ impl KlineChart {
                     });
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
 
-                    // Forex: producer-emitted bar replaces any tick-derived forming
-                    // bar. Cleared here so the next live tick reseeds with the new
-                    // close as its open anchor (visual continuity).
-                    if self.chart.ticker_info.ticker.exchange.venue()
-                        == exchange::adapter::Venue::ClickHouse
-                    {
-                        self.forex_forming_bar = None;
+                    // Forex: clear the tick-derived forming bar only when the
+                    // authoritative bar is at/after our last processed tick — i.e.
+                    // our forming state is stale (catch-up after a poll outage, or
+                    // instant bar-push delivery). With roll-on-breach, a forming
+                    // bar newer than the incoming bar is live tracking and must
+                    // survive delayed authoritative arrivals (graduation queue).
+                    if is_forex_venue {
+                        let stale = self
+                            .forex_forming_bar
+                            .as_ref()
+                            .is_none_or(|f| kline.time >= f.close_time_ms);
+                        if stale {
+                            self.forex_forming_bar = None;
+                        }
                     }
 
                     // Attach agg_trade_id_range and open_time_ms from SSE/CH bar data.
@@ -483,6 +513,15 @@ impl KlineChart {
                             "Oracle FAIL: CH sent micro but stored bar has None, bar_ts={}",
                             kline.time
                         );
+                    }
+
+                    // NOTE(fork): re-append forex provisionals newer than the
+                    // authoritative bar (strictly newer, so order is preserved).
+                    // Deliberately after the oracle checks above — they read
+                    // datapoints.last() expecting the authoritative bar, and a
+                    // re-appended provisional (micro=None) would false-alarm.
+                    if !kept_provisionals.is_empty() {
+                        tick_aggr.datapoints.extend(kept_provisionals);
                     }
 
                     self.indicators
@@ -876,9 +915,16 @@ impl KlineChart {
                             // NOTE(fork): issue #32 — per-tick portcullis breach check
                             // (ODB Helm builder parity). Trade carries mid in `price`
                             // and spread in `qty`; breach uses reconstructed bid/ask.
-                            // On breach the bar freezes until the producer's CH bar
-                            // replaces it — it must NOT keep stretching past the
-                            // threshold while the poll is in flight.
+                            //
+                            // On breach the completed bar is appended as a PROVISIONAL
+                            // datapoint (tracked via `pending_local_bars`, mirroring
+                            // the crypto RBP local bars) and the forming bar reseeds
+                            // at the breach mid — the chart keeps tracking live. The
+                            // producer's authoritative CH/SSE bar pops provisionals on
+                            // arrival (`update_latest_kline`). The earlier freeze-and-
+                            // wait design left the chart dead for the producer's ~10s
+                            // graduation-queue latency in fast markets (user-reported
+                            // catch-up regression, 2026-07-05, XAUUSD BPR1).
                             let last_price_f32 = last_trade.price.to_f32();
                             let prev_close_f32 =
                                 prev_close.map(|p| p.to_f32()).unwrap_or(last_price_f32);
@@ -888,6 +934,7 @@ impl KlineChart {
                                 _ => 0.0,
                             };
 
+                            let min_tick = self.chart.ticker_info.min_ticksize;
                             let forming =
                                 self.forex_forming_bar
                                     .get_or_insert(super::ForexFormingBar {
@@ -896,33 +943,13 @@ impl KlineChart {
                                         low: prev_close_f32,
                                         close: prev_close_f32,
                                         close_time_ms: last_trade.time,
-                                        frozen: false,
                                     });
 
-                            // Staleness escape (review finding on #32): the freeze
-                            // relies on the producer's CH bar arriving to replace the
-                            // bar. If the CH poll is down (tunnel dead, CH restart),
-                            // a frozen bar would otherwise sit stale forever while
-                            // live quotes keep flowing. After 30s without replacement
-                            // (venue-clock delta, no wall clock), unfreeze and resume
-                            // tracking — degrading to the pre-freeze behavior, which
-                            // is more honest than a dead chart.
-                            const FROZEN_STALE_MS: u64 = 30_000;
-
+                            // Multiple breaches per buffer are possible on tight
+                            // thresholds (XAUUSD BPR1 = 0.01% can breach twice in one
+                            // quote burst), so collect ALL locally-completed bars.
+                            let mut provisionals: Vec<Kline> = Vec::new();
                             for t in trades_buffer.iter() {
-                                if forming.frozen {
-                                    if t.time.saturating_sub(forming.close_time_ms)
-                                        > FROZEN_STALE_MS
-                                    {
-                                        forming.frozen = false;
-                                        log::warn!(
-                                            "[forex-forming] frozen bar unreplaced for >30s \
-                                             — unfreezing (CH poll down?)"
-                                        );
-                                    } else {
-                                        break;
-                                    }
-                                }
                                 let mid = t.price.to_f32();
                                 forming.high = forming.high.max(mid);
                                 forming.low = forming.low.min(mid);
@@ -937,17 +964,54 @@ impl KlineChart {
                                     let up = forming.open * (1.0 + breach_ratio);
                                     let down = forming.open * (1.0 - breach_ratio);
                                     if bid >= up || ask <= down {
-                                        forming.frozen = true;
+                                        provisionals.push(Kline::new(
+                                            t.time,
+                                            forming.open,
+                                            forming.high,
+                                            forming.low,
+                                            mid,
+                                            exchange::Volume::BuySell(Qty::zero(), Qty::zero()),
+                                            min_tick,
+                                        ));
                                         log::debug!(
                                             "[forex-forming] local breach close: open={open:.5} \
                                              mid={mid:.5} bid={bid:.5} ask={ask:.5} \
-                                             ratio={breach_ratio:.6} — frozen until CH bar",
+                                             ratio={breach_ratio:.6} — provisional append",
                                             open = forming.open,
                                         );
+                                        // Roll: the next bar anchors at the breach mid
+                                        // (producer seed_open_price contract) so live
+                                        // tracking continues without waiting.
+                                        *forming = super::ForexFormingBar {
+                                            open: mid,
+                                            high: mid,
+                                            low: mid,
+                                            close: mid,
+                                            close_time_ms: t.time,
+                                        };
                                     }
                                 }
                             }
-                            let breached = forming.frozen;
+                            let breached = !provisionals.is_empty();
+                            for kline in &provisionals {
+                                tick_aggr.replace_or_append_kline(kline, None);
+                                self.pending_local_bars += 1;
+                            }
+                            if breached {
+                                log::info!(
+                                    "[forex-forming] appended {} provisional bar(s), \
+                                     pending_local_bars={}",
+                                    provisionals.len(),
+                                    self.pending_local_bars,
+                                );
+                                self.indicators
+                                    .values_mut()
+                                    .filter_map(Option::as_mut)
+                                    .for_each(|indi| {
+                                        indi.on_insert_klines(&provisionals);
+                                        indi.rebuild_from_source(&self.data_source);
+                                    });
+                            }
 
                             // NOTE(fork): issue #37 — coalesce forming-bar repaints to
                             // ~5Hz (leading-edge, ODB Helm parity). Quote bursts arrive
