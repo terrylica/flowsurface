@@ -269,6 +269,11 @@ pub struct KlineChart {
     /// Forex-only: tick-derived forming bar shown between CH/SSE bar arrivals.
     /// See `ForexFormingBar` doc comment for rationale.
     forex_forming_bar: Option<ForexFormingBar>,
+    /// NOTE(fork): issue #37 — leading-edge repaint throttle for the forex
+    /// forming bar (~5Hz, ODB Helm parity). Data accumulation is per-tick;
+    /// only canvas invalidation is coalesced. The next tick repaints within
+    /// ms, so no trailing-edge timer is needed.
+    forex_last_repaint: Option<std::time::Instant>,
     /// Monotonic counter for AggTrade IDs fed to the ODB processor.
     next_agg_id: i64,
     /// Total completed bars from the in-process processor (diagnostic).
@@ -429,6 +434,7 @@ impl KlineChart {
                     last_snapshot: Instant::now(),
                     odb_processor: None,
                     forex_forming_bar: None,
+                    forex_last_repaint: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
@@ -520,6 +526,7 @@ impl KlineChart {
                     last_snapshot: Instant::now(),
                     odb_processor: None,
                     forex_forming_bar: None,
+                    forex_last_repaint: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,
@@ -641,6 +648,7 @@ impl KlineChart {
                     last_snapshot: Instant::now(),
                     odb_processor,
                     forex_forming_bar: None,
+                    forex_last_repaint: None,
                     next_agg_id: 0,
                     odb_completed_count: 0,
                     pending_local_bars: 0,

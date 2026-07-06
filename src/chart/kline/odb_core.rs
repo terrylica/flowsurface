@@ -225,6 +225,7 @@ impl KlineChart {
             last_snapshot: Instant::now(),
             odb_processor,
             forex_forming_bar: None,
+            forex_last_repaint: None,
             next_agg_id: 0,
             odb_completed_count: 0,
             pending_local_bars: 0,
@@ -919,8 +920,24 @@ impl KlineChart {
                                     }
                                 }
                             }
+                            let breached = forming.frozen;
 
-                            let _ = self.invalidate(None);
+                            // NOTE(fork): issue #37 — coalesce forming-bar repaints to
+                            // ~5Hz (leading-edge, ODB Helm parity). Quote bursts arrive
+                            // many-per-second; the next tick repaints within ms so no
+                            // trailing-edge timer is needed. A breach always repaints
+                            // immediately (the freeze must be visible without delay).
+                            const FORMING_REPAINT_MIN: std::time::Duration =
+                                std::time::Duration::from_millis(200);
+                            let now = std::time::Instant::now();
+                            let due = breached
+                                || self
+                                    .forex_last_repaint
+                                    .is_none_or(|t| now.duration_since(t) >= FORMING_REPAINT_MIN);
+                            if due {
+                                self.forex_last_repaint = Some(now);
+                                let _ = self.invalidate(None);
+                            }
                         }
                         return None;
                     }
