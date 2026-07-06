@@ -564,6 +564,11 @@ impl Exchange {
     }
 }
 
+// NOTE(fork): KlineReceived carries the ODB microstructure sidecar inline
+// (issue #35 grew it past clippy's variant-size threshold). Boxing it would
+// churn the fork-specific 6-field KlineReceived signature that the upstream
+// merge checklist tracks; kline events are ~1/s, so the padding is irrelevant.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Event {
     Connected(Exchange),

@@ -103,6 +103,9 @@ impl KlineChart {
                     is_liquidation_cascade: cm.is_liquidation_cascade,
                     vwap_close_deviation: cm.vwap_close_deviation,
                     turnover_imbalance: cm.turnover_imbalance,
+                    spread_close: cm.spread_close,
+                    spread_mean: cm.spread_mean,
+                    spread_suspect: cm.spread_suspect,
                 })
             })
             .collect();
@@ -368,6 +371,9 @@ impl KlineChart {
                         is_liquidation_cascade: m.is_liquidation_cascade,
                         vwap_close_deviation: m.vwap_close_deviation,
                         turnover_imbalance: m.turnover_imbalance,
+                        spread_close: m.spread_close,
+                        spread_mean: m.spread_mean,
+                        spread_suspect: m.spread_suspect,
                     });
                     tick_aggr.replace_or_append_kline(kline, odb_micro);
 
@@ -883,14 +889,15 @@ impl KlineChart {
                             };
 
                             let forming =
-                                self.forex_forming_bar.get_or_insert(super::ForexFormingBar {
-                                    open: prev_close_f32,
-                                    high: prev_close_f32,
-                                    low: prev_close_f32,
-                                    close: prev_close_f32,
-                                    close_time_ms: last_trade.time,
-                                    frozen: false,
-                                });
+                                self.forex_forming_bar
+                                    .get_or_insert(super::ForexFormingBar {
+                                        open: prev_close_f32,
+                                        high: prev_close_f32,
+                                        low: prev_close_f32,
+                                        close: prev_close_f32,
+                                        close_time_ms: last_trade.time,
+                                        frozen: false,
+                                    });
 
                             for t in trades_buffer.iter() {
                                 if forming.frozen {
@@ -1300,6 +1307,9 @@ impl KlineChart {
                                             is_liquidation_cascade: micro.is_liquidation_cascade,
                                             vwap_close_deviation: micro.vwap_close_deviation,
                                             turnover_imbalance: micro.turnover_imbalance,
+                                            spread_close: micro.spread_close,
+                                            spread_mean: micro.spread_mean,
+                                            spread_suspect: micro.spread_suspect,
                                         });
                                         // Guard: skip synthetic anchor IDs (0 from startup anchor).
                                         // Without this, the first bar's tooltip would show
@@ -1592,6 +1602,9 @@ impl KlineChart {
                                     is_liquidation_cascade: cm.is_liquidation_cascade,
                                     vwap_close_deviation: cm.vwap_close_deviation,
                                     turnover_imbalance: cm.turnover_imbalance,
+                                    spread_close: cm.spread_close,
+                                    spread_mean: cm.spread_mean,
+                                    spread_suspect: cm.spread_suspect,
                                 })
                             })
                             .collect()

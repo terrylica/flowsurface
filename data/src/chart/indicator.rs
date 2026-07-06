@@ -38,6 +38,9 @@ pub enum KlineIndicator {
     VwapCloseDeviation,
     /// Turnover imbalance signed histogram [-1, 1].
     TurnoverImbalance,
+    // NOTE(fork): issue #35 — forex quote-native bid/ask spread per bar.
+    /// Bid-ask spread histogram (forex ODB bars only; fxview_cache columns).
+    Spread,
 }
 
 impl Indicator for KlineIndicator {
@@ -62,7 +65,7 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 14] = [
+    const FOR_SPOT: [KlineIndicator; 15] = [
         KlineIndicator::Volume,
         KlineIndicator::Delta,
         KlineIndicator::TradeCount,
@@ -77,6 +80,9 @@ impl KlineIndicator {
         KlineIndicator::LiquidationCascade,
         KlineIndicator::VwapCloseDeviation,
         KlineIndicator::TurnoverImbalance,
+        // Forex (Exchange::ClickhouseSpot) is Spot-market; spread data only
+        // exists there. Crypto spot panes show "no spread data".
+        KlineIndicator::Spread,
     ];
     /// Indicators that can be used with perpetual swap market tickers
     const FOR_PERPS: [KlineIndicator; 15] = [
@@ -122,6 +128,7 @@ impl Display for KlineIndicator {
             KlineIndicator::TurnoverImbalance => {
                 write!(f, "Turnover Imbalance")
             }
+            KlineIndicator::Spread => write!(f, "Spread"),
         }
     }
 }

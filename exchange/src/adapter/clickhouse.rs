@@ -53,6 +53,14 @@ pub struct ChMicrostructure {
     pub is_liquidation_cascade: bool,
     pub vwap_close_deviation: Option<f32>,
     pub turnover_imbalance: Option<f32>,
+    // NOTE(fork): issue #35 — forex quote-native spread (fxview_cache.forex_bars).
+    // None for crypto bars (trade-centric table has no spread columns).
+    /// (ask − bid) at the breach tick, in price units.
+    pub spread_close: Option<f32>,
+    /// Arithmetic mean of (ask − bid) across all quotes in the bar.
+    pub spread_mean: Option<f32>,
+    /// Producer's spread sanity flag: true = inverted/implausibly wide.
+    pub spread_suspect: Option<bool>,
 }
 
 // === opendeviationbar-core in-process integration ===
@@ -119,6 +127,10 @@ pub fn odb_to_microstructure(bar: &OpenDeviationBar) -> ChMicrostructure {
         is_liquidation_cascade: false,
         vwap_close_deviation: None,
         turnover_imbalance: None,
+        // Spread: forex-only (CH quote-native table); never on in-process bars.
+        spread_close: None,
+        spread_mean: None,
+        spread_suspect: None,
     }
 }
 
@@ -595,6 +607,14 @@ struct ChKline {
     vwap_close_deviation: Option<f64>,
     #[serde(default)]
     turnover_imbalance: Option<f64>,
+    // Forex quote-native spread columns (issue #35); absent on crypto rows.
+    #[serde(default)]
+    spread_close: Option<f64>,
+    #[serde(default)]
+    spread_mean: Option<f64>,
+    /// Producer flag: 1 = suspect (inverted/implausibly wide), 3 = normal.
+    #[serde(default)]
+    spread_suspect_flag: Option<i8>,
 }
 
 pub async fn fetch_klines(
@@ -652,7 +672,8 @@ fn build_odb_sql(symbol: &str, threshold_dbps: u32, range: Option<(u64, u64)>) -
             "fxview_cache.forex_bars",
             "close_time_us, open_time_us, open, high, low, close, \
              quote_count AS individual_trade_count, \
-             duration_us",
+             duration_us, \
+             spread_close, spread_mean, spread_suspect_flag",
         )
     } else {
         (
@@ -730,6 +751,30 @@ fn parse_microstructure(ck: &ChKline) -> Option<ChMicrostructure> {
             is_liquidation_cascade: ck.is_liquidation_cascade.unwrap_or(0) != 0,
             vwap_close_deviation: ck.vwap_close_deviation.map(|v| v as f32),
             turnover_imbalance: ck.turnover_imbalance.map(|v| v as f32),
+            spread_close: None,
+            spread_mean: None,
+            spread_suspect: None,
+        }),
+        // NOTE(fork): issue #35 — forex rows are quote-native: no ofi /
+        // trade_intensity columns exist, so the crypto arm above never fires
+        // and forex bars used to carry NO microstructure at all (TradeCount /
+        // Duration were dead on forex). Spread IS the forex microstructure;
+        // trade_count carries quote_count via the SELECT alias.
+        (Some(tc), None, None) if ck.spread_close.is_some() => Some(ChMicrostructure {
+            trade_count: tc,
+            ofi: 0.0,
+            trade_intensity: 0.0,
+            has_gap: false,
+            gap_trade_count: 0,
+            vwap: None,
+            duration_us: ck.duration_us,
+            is_liquidation_cascade: false,
+            vwap_close_deviation: None,
+            turnover_imbalance: None,
+            spread_close: ck.spread_close.map(|v| v as f32),
+            spread_mean: ck.spread_mean.map(|v| v as f32),
+            // Producer semantics: 1 = suspect, 3 = normal.
+            spread_suspect: ck.spread_suspect_flag.map(|f| f == 1),
         }),
         _ => None,
     }
@@ -972,7 +1017,8 @@ pub fn connect_kline_stream(
             let cols = if is_forex_symbol(&symbol) {
                 "close_time_us, open_time_us, open, high, low, close, \
                  quote_count AS individual_trade_count, \
-                 duration_us"
+                 duration_us, \
+                 spread_close, spread_mean, spread_suspect_flag"
             } else {
                 "close_time_us, open_time_us, open, high, low, close, \
                  buy_volume, sell_volume, \
@@ -1209,6 +1255,10 @@ fn odb_bar_to_kline_tuple(
                     .get("turnover_imbalance")
                     .and_then(|v| v.as_f64())
                     .map(|v| v as f32),
+                // Spread: forex-only; SSE bars are crypto (opendeviationbar-py).
+                spread_close: None,
+                spread_mean: None,
+                spread_suspect: None,
             })
         }
         _ => None,
@@ -1858,8 +1908,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                                     {
                                         let missed = tick.quote_seq - prev - 1;
                                         let tick_ms = (tick.time_us / 1000) as u64;
-                                        let now_ms =
-                                            chrono::Utc::now().timestamp_millis() as u64;
+                                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
                                         let is_live =
                                             now_ms.saturating_sub(tick_ms) < GAP_LIVE_GATE_MS;
                                         if is_live {

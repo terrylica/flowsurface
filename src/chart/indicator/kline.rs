@@ -25,6 +25,8 @@ pub mod liquidation_cascade;
 pub mod turnover_imbalance;
 pub mod vwap;
 pub mod vwap_close_deviation;
+// NOTE(fork): issue #35 — forex quote-native spread
+pub mod spread;
 
 pub trait KlineIndicatorImpl {
     /// Clear all caches for a full redraw
@@ -158,5 +160,7 @@ pub fn make_indicator(
         KlineIndicator::TurnoverImbalance => {
             Box::new(super::kline::turnover_imbalance::TurnoverImbalanceIndicator::new())
         }
+        // NOTE(fork): issue #35 — forex quote-native spread
+        KlineIndicator::Spread => Box::new(super::kline::spread::SpreadIndicator::new()),
     }
 }

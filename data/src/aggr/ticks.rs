@@ -21,6 +21,13 @@ pub struct OdbMicrostructure {
     pub is_liquidation_cascade: bool,
     pub vwap_close_deviation: Option<f32>,
     pub turnover_imbalance: Option<f32>,
+    // NOTE(fork): issue #35 — forex quote-native spread; None on crypto bars.
+    /// (ask − bid) at the breach tick, in price units.
+    pub spread_close: Option<f32>,
+    /// Mean (ask − bid) across all quotes in the bar.
+    pub spread_mean: Option<f32>,
+    /// Producer sanity flag: true = inverted/implausibly wide spread.
+    pub spread_suspect: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -373,6 +380,29 @@ impl TickAggr {
                 dp.microstructure
                     .and_then(|m| m.duration_us)
                     .map(|v| (idx as u64, v as f32 / 1_000_000.0))
+            })
+            .collect()
+    }
+
+    /// Forex spread per bar from microstructure sidecar (issue #35).
+    /// Value: (spread_close, spread_mean, suspect) in price units.
+    pub fn spread_data(&self) -> BTreeMap<u64, (f32, f32, bool)> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure.and_then(|m| {
+                    m.spread_close.map(|close| {
+                        (
+                            idx as u64,
+                            (
+                                close,
+                                m.spread_mean.unwrap_or(close),
+                                m.spread_suspect.unwrap_or(false),
+                            ),
+                        )
+                    })
+                })
             })
             .collect()
     }
