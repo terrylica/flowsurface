@@ -1627,6 +1627,10 @@ const FXVIEW_SSE_REQUEST_TIMEOUT_S: u64 = 300;
 /// mpsc buffer depth for the `connect::channel` subscription — matches
 /// `connect_sse_stream` for consistency.
 const FXVIEW_SSE_CHANNEL_DEPTH: usize = 64;
+/// Gap alarms only fire for ticks younger than this (issue #34). Replay /
+/// backlog catch-up after a reconnect naturally skips sequence ranges and must
+/// not alarm — same live-gate ODB Helm uses (10s).
+const GAP_LIVE_GATE_MS: u64 = 10_000;
 
 #[derive(Debug, Deserialize)]
 struct LiveTickEvent {
@@ -1694,6 +1698,12 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
         );
 
         let mut last_quote_seq: u64 = 0;
+        // NOTE(fork): issue #34 — quote_seq is a PER-SYMBOL monotonic counter
+        // (one sidecar RingConsumer per symbol), so gap detection must track
+        // each symbol independently; a single global counter miscounts on the
+        // merged stream.
+        let mut last_seq_by_symbol: rustc_hash::FxHashMap<String, u64> =
+            rustc_hash::FxHashMap::default();
         let mut attempt: u32 = 0;
 
         // Sample logging: per-symbol tick counter so we can periodically log
@@ -1804,6 +1814,49 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                             match serde_json::from_str::<LiveTickEvent>(&data_json) {
                                 Ok(tick) => {
                                     last_quote_seq = tick.quote_seq.max(last_quote_seq);
+
+                                    // Gap alarm (issue #34): a skip in the per-symbol
+                                    // quote_seq means quotes were lost between the
+                                    // sidecar and us. Live-gated (<10s old) so replay
+                                    // and backlog catch-up never alarm — mirrors ODB
+                                    // Helm's chaos-validated "no silent loss" pattern.
+                                    if let Some(&prev) = last_seq_by_symbol.get(&tick.symbol)
+                                        && tick.quote_seq > prev + 1
+                                    {
+                                        let missed = tick.quote_seq - prev - 1;
+                                        let tick_ms = (tick.time_us / 1000) as u64;
+                                        let now_ms =
+                                            chrono::Utc::now().timestamp_millis() as u64;
+                                        let is_live =
+                                            now_ms.saturating_sub(tick_ms) < GAP_LIVE_GATE_MS;
+                                        if is_live {
+                                            log::warn!(
+                                                "[fxview-ticks] quote_seq GAP {prev}->{seq} \
+                                                 (missed {missed}) {symbol}",
+                                                seq = tick.quote_seq,
+                                                symbol = tick.symbol,
+                                            );
+                                            tg_alert!(
+                                                crate::telegram::Severity::Warning,
+                                                "fxview-gap",
+                                                "fxview {symbol} quote gap: missed {missed}",
+                                                symbol = tick.symbol,
+                                            );
+                                        } else {
+                                            log::debug!(
+                                                "[fxview-ticks] replay quote_seq gap \
+                                                 {prev}->{seq} (missed {missed}) {symbol} — \
+                                                 not live, muted",
+                                                seq = tick.quote_seq,
+                                                symbol = tick.symbol,
+                                            );
+                                        }
+                                    }
+                                    last_seq_by_symbol
+                                        .entry(tick.symbol.clone())
+                                        .and_modify(|s| *s = (*s).max(tick.quote_seq))
+                                        .or_insert(tick.quote_seq);
+
                                     if let Some(&ticker_info) = symbol_map.get(&tick.symbol) {
                                         let trade = live_tick_to_trade(&tick);
                                         // Provability log: confirm bid/ask/mid → Trade.price
