@@ -1705,6 +1705,28 @@ struct LiveTickEvent {
     ask: f64,
 }
 
+/// Completed-bar event pushed by the fxview-sidecar at BAR CLOSE over the
+/// same SSE stream (`event: bar` frames) — ~10s ahead of the ClickHouse row,
+/// which waits in the sidecar's graduation queue for forward-window labels.
+/// Field names mirror `fxview_cache.forex_bars`. The CH poll remains
+/// authoritative and reconciles later (same `close_time_us` → clean replace).
+/// GitHub: terrylica/flowsurface#36
+#[derive(Debug, Deserialize)]
+struct LiveBarEvent {
+    symbol: String,
+    threshold_decimal_bps: u32,
+    open_time_us: i64,
+    close_time_us: i64,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    quote_count: u32,
+    duration_us: i64,
+    spread_close: f64,
+    spread_mean: f64,
+}
+
 /// Map a live quote event to the shared `Trade` struct.
 ///
 /// Forex quotes are directionless bid/ask updates — we synthesize a Trade from
@@ -1874,6 +1896,7 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
             let mut body = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::with_capacity(4096);
             let mut cur_data: Option<String> = None;
+            let mut cur_event: Option<String> = None;
 
             'read: while let Some(chunk) = body.next().await {
                 let chunk = match chunk {
@@ -1894,6 +1917,78 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
 
                     if line.is_empty() {
                         // Frame boundary — dispatch accumulated `data` (if any).
+                        let event_name = cur_event.take();
+                        // Completed-bar push (issue #36): the sidecar broadcasts
+                        // `event: bar` frames at bar CLOSE, ~10s ahead of the CH
+                        // row (graduation queue). Route as KlineReceived on the
+                        // OdbKline stream — the later CH poll row reconciles via
+                        // replace_or_append (identical close_time).
+                        if event_name.as_deref() == Some("bar") {
+                            if let Some(data_json) = cur_data.take() {
+                                match serde_json::from_str::<LiveBarEvent>(&data_json) {
+                                    Ok(bar) => {
+                                        if let Some(&ticker_info) = symbol_map.get(&bar.symbol) {
+                                            let kline = Kline::new(
+                                                (bar.close_time_us / 1000) as u64,
+                                                bar.open as f32,
+                                                bar.high as f32,
+                                                bar.low as f32,
+                                                bar.close as f32,
+                                                Volume::BuySell(
+                                                    Qty::from(0.0_f32),
+                                                    Qty::from(0.0_f32),
+                                                ),
+                                                ticker_info.min_ticksize,
+                                            );
+                                            let micro = ChMicrostructure {
+                                                trade_count: bar.quote_count,
+                                                ofi: 0.0,
+                                                trade_intensity: 0.0,
+                                                has_gap: false,
+                                                gap_trade_count: 0,
+                                                vwap: None,
+                                                duration_us: Some(bar.duration_us),
+                                                is_liquidation_cascade: false,
+                                                vwap_close_deviation: None,
+                                                turnover_imbalance: None,
+                                                spread_close: Some(bar.spread_close as f32),
+                                                spread_mean: Some(bar.spread_mean as f32),
+                                                // Computed at graduation; unknown here.
+                                                spread_suspect: None,
+                                            };
+                                            let raw =
+                                                [bar.open, bar.high, bar.low, bar.close, 0.0, 0.0];
+                                            log::info!(
+                                                "[fxview-sse] bar push {symbol} @{th} \
+                                                 close={close} (pre-graduation)",
+                                                symbol = bar.symbol,
+                                                th = bar.threshold_decimal_bps,
+                                                close = bar.close,
+                                            );
+                                            let _ = output
+                                                .send(Event::KlineReceived(
+                                                    StreamKind::OdbKline {
+                                                        ticker_info,
+                                                        threshold_dbps: bar.threshold_decimal_bps,
+                                                    },
+                                                    kline,
+                                                    Some(raw),
+                                                    None,
+                                                    Some(micro),
+                                                    Some((bar.open_time_us / 1000) as u64),
+                                                ))
+                                                .await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "[fxview-sse] bar parse error: {e} data={data_json}"
+                                        );
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         if let Some(data_json) = cur_data.take() {
                             match serde_json::from_str::<LiveTickEvent>(&data_json) {
                                 Ok(tick) => {
@@ -2031,12 +2126,12 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                         }
                     } else if let Some(val) = line.strip_prefix("data: ") {
                         cur_data = Some(val.to_string());
-                    } else if line.starts_with("id: ")
-                        || line.starts_with("event: ")
-                        || line.starts_with(':')
-                    {
-                        // id: and event: fields are handled on frame dispatch;
-                        // `:` prefix is an SSE keepalive comment — ignore all.
+                    } else if let Some(val) = line.strip_prefix("event: ") {
+                        // Frame type: "tick" (default) or "bar" (issue #36).
+                        cur_event = Some(val.to_string());
+                    } else if line.starts_with("id: ") || line.starts_with(':') {
+                        // id: is redundant with the payload's quote_seq;
+                        // `:` prefix is an SSE keepalive comment — ignore both.
                     }
                 }
             }
