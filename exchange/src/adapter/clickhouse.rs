@@ -1744,10 +1744,25 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                 }
             };
 
+            // Resume-from-seq (issue #33): the sidecar reads `?last_event_id=`
+            // as a QUERY PARAM (axum extract::Query in sse.rs), not the SSE
+            // `Last-Event-ID` header — the header alone is silently ignored.
+            // quote_seq is per-symbol, so resume from the MINIMUM across
+            // symbols: the further-ahead symbol gets an at-least-once overlap
+            // that the per-symbol dedup below collapses to effectively-once.
+            let resume_seq = last_seq_by_symbol.values().copied().min().unwrap_or(0);
+            let connect_url = if resume_seq > 0 {
+                let sep = if url.contains('?') { '&' } else { '?' };
+                format!("{url}{sep}last_event_id={resume_seq}")
+            } else {
+                url.clone()
+            };
+
             let mut req = client
-                .get(&url)
+                .get(&connect_url)
                 .header(reqwest::header::ACCEPT, "text/event-stream");
             if last_quote_seq > 0 {
+                // Spec-friendly duplicate of the query param; sidecar ignores it today.
                 req = req.header("Last-Event-ID", last_quote_seq.to_string());
             }
 
@@ -1814,6 +1829,17 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                             match serde_json::from_str::<LiveTickEvent>(&data_json) {
                                 Ok(tick) => {
                                     last_quote_seq = tick.quote_seq.max(last_quote_seq);
+
+                                    // Dedup (issue #33): resume replays from the min
+                                    // seq across symbols, so the further-ahead symbol
+                                    // re-receives events it already processed. Skip
+                                    // anything at-or-below the per-symbol watermark —
+                                    // at-least-once + idempotency = effectively-once.
+                                    if let Some(&prev) = last_seq_by_symbol.get(&tick.symbol)
+                                        && tick.quote_seq <= prev
+                                    {
+                                        continue;
+                                    }
 
                                     // Gap alarm (issue #34): a skip in the per-symbol
                                     // quote_seq means quotes were lost between the
