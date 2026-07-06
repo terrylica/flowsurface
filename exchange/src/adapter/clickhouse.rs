@@ -1681,6 +1681,15 @@ const FXVIEW_SSE_CHANNEL_DEPTH: usize = 64;
 /// backlog catch-up after a reconnect naturally skips sequence ranges and must
 /// not alarm — same live-gate ODB Helm uses (10s).
 const GAP_LIVE_GATE_MS: u64 = 10_000;
+/// Sidecar seq-rollback detection (review finding on #33/#34): if a LIVE tick
+/// arrives with a seq this far BELOW the watermark, the sidecar's ring was
+/// recreated (restart) — reset the watermark instead of dedup-starving the
+/// stream and false-alarming on the eventual catch-up. Normal replay overlap
+/// is bounded by the sidecar's history ring (~15 min ≪ this margin).
+const SEQ_ROLLBACK_MARGIN: u64 = 100_000;
+/// Backstop for small rollbacks under the margin: after this many consecutive
+/// dedup-skipped LIVE ticks on one symbol, conclude rollback and reset.
+const SEQ_ROLLBACK_SKIP_LIMIT: u32 = 500;
 
 #[derive(Debug, Deserialize)]
 struct LiveTickEvent {
@@ -1760,6 +1769,9 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
         // each symbol independently; a single global counter miscounts on the
         // merged stream.
         let mut last_seq_by_symbol: rustc_hash::FxHashMap<String, u64> =
+            rustc_hash::FxHashMap::default();
+        // Consecutive dedup-skipped LIVE ticks per symbol — rollback backstop.
+        let mut live_skip_counts: rustc_hash::FxHashMap<String, u32> =
             rustc_hash::FxHashMap::default();
         let mut attempt: u32 = 0;
 
@@ -1892,10 +1904,51 @@ pub fn connect_tick_stream(tickers: Vec<TickerInfo>) -> impl Stream<Item = Event
                                     // re-receives events it already processed. Skip
                                     // anything at-or-below the per-symbol watermark —
                                     // at-least-once + idempotency = effectively-once.
+                                    //
+                                    // Rollback escape (review finding): a sidecar
+                                    // restart recreates its ring and quote_seq starts
+                                    // over LOW. Without detection, every live tick is
+                                    // dedup-skipped forever (stream starves) and the
+                                    // eventual seq catch-up past the stale watermark
+                                    // fires a false gap alarm. A LIVE tick far below
+                                    // the watermark (or too many consecutive live
+                                    // skips) means rollback — reset the watermark and
+                                    // accept the tick.
                                     if let Some(&prev) = last_seq_by_symbol.get(&tick.symbol)
                                         && tick.quote_seq <= prev
                                     {
-                                        continue;
+                                        let tick_ms = (tick.time_us / 1000) as u64;
+                                        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                                        let is_live =
+                                            now_ms.saturating_sub(tick_ms) < GAP_LIVE_GATE_MS;
+                                        let big_rollback =
+                                            prev > tick.quote_seq + SEQ_ROLLBACK_MARGIN;
+                                        let skips = live_skip_counts
+                                            .entry(tick.symbol.clone())
+                                            .or_insert(0);
+                                        if is_live {
+                                            *skips += 1;
+                                        }
+                                        if is_live
+                                            && (big_rollback || *skips > SEQ_ROLLBACK_SKIP_LIMIT)
+                                        {
+                                            log::warn!(
+                                                "[fxview-ticks] quote_seq ROLLBACK \
+                                                 {prev}->{seq} {symbol} — resetting \
+                                                 watermark (sidecar restart?)",
+                                                seq = tick.quote_seq,
+                                                symbol = tick.symbol,
+                                            );
+                                            last_seq_by_symbol
+                                                .insert(tick.symbol.clone(), tick.quote_seq);
+                                            *skips = 0;
+                                            // fall through: accept this tick
+                                        } else {
+                                            continue;
+                                        }
+                                    } else {
+                                        // Normal-order tick — clear the skip streak.
+                                        live_skip_counts.insert(tick.symbol.clone(), 0);
                                     }
 
                                     // Gap alarm (issue #34): a skip in the per-symbol

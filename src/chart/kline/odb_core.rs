@@ -899,9 +899,29 @@ impl KlineChart {
                                         frozen: false,
                                     });
 
+                            // Staleness escape (review finding on #32): the freeze
+                            // relies on the producer's CH bar arriving to replace the
+                            // bar. If the CH poll is down (tunnel dead, CH restart),
+                            // a frozen bar would otherwise sit stale forever while
+                            // live quotes keep flowing. After 30s without replacement
+                            // (venue-clock delta, no wall clock), unfreeze and resume
+                            // tracking — degrading to the pre-freeze behavior, which
+                            // is more honest than a dead chart.
+                            const FROZEN_STALE_MS: u64 = 30_000;
+
                             for t in trades_buffer.iter() {
                                 if forming.frozen {
-                                    break;
+                                    if t.time.saturating_sub(forming.close_time_ms)
+                                        > FROZEN_STALE_MS
+                                    {
+                                        forming.frozen = false;
+                                        log::warn!(
+                                            "[forex-forming] frozen bar unreplaced for >30s \
+                                             — unfreezing (CH poll down?)"
+                                        );
+                                    } else {
+                                        break;
+                                    }
                                 }
                                 let mid = t.price.to_f32();
                                 forming.high = forming.high.max(mid);
