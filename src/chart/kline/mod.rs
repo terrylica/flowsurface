@@ -224,9 +224,20 @@ impl PlotConstants for KlineChart {
 ///
 /// Why this is a separate field rather than using `OdbProcessor`: the Portcullis
 /// breach engine expects executed trades with bid/ask context. Forex SSE ticks
-/// are quote mid-prices with `qty = 0`, which never trigger a breach close;
+/// are quote mid-prices, which the crypto processor cannot breach-close;
 /// feeding them to `OdbProcessor` produced the "session-wide forming bar" bug
-/// fixed in commit 17abf95. This struct sidesteps the breach logic entirely.
+/// fixed in commit 17abf95.
+///
+/// NOTE(fork): issue #32 — this accumulator now runs its OWN portcullis breach
+/// check (ported from ODB Helm's builder): `bid >= open*(1+r) || ask <=
+/// open*(1-r)` with `r = threshold_dbps / 100_000`. Bid/ask are reconstructed
+/// from the quote Trade (`price` = mid, `qty` = spread — see
+/// `live_tick_to_trade`). On breach the bar FREEZES (close pinned at the
+/// breach tick) instead of appending: the producer's authoritative CH bar
+/// arrives within ~1s and replaces it via `update_latest_kline`, which avoids
+/// any local-vs-producer double-append race. OHLC stays mid-derived — the
+/// producer's chart columns are mid OHLC too (bid/ask OHLC live in separate
+/// columns).
 #[derive(Debug, Clone)]
 pub struct ForexFormingBar {
     pub open: f32,
@@ -234,6 +245,9 @@ pub struct ForexFormingBar {
     pub low: f32,
     pub close: f32,
     pub close_time_ms: u64,
+    /// Portcullis breach reached — bar is complete locally; waiting for the
+    /// producer's authoritative CH bar to replace it. No further accumulation.
+    pub frozen: bool,
 }
 
 pub struct KlineChart {

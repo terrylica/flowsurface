@@ -1649,17 +1649,24 @@ struct LiveTickEvent {
 /// Map a live quote event to the shared `Trade` struct.
 ///
 /// Forex quotes are directionless bid/ask updates — we synthesize a Trade from
-/// the mid-price so it plugs into the existing last-price-label path. `qty=0`
-/// marks it as a zero-volume tick (quote update, not executed trade).
+/// the mid-price so it plugs into the existing last-price-label path.
 /// `quote_seq` is smuggled through `agg_trade_id` for downstream gap detection.
+///
+/// NOTE(fork): issue #32 — `qty` smuggles the SPREAD (ask − bid), not volume.
+/// The forex branch in `insert_trades_inner` (odb_core.rs) is fully isolated
+/// from volume aggregation (early return, never reaches TickAggr), and the
+/// consumer reconstructs `bid = mid − qty/2`, `ask = mid + qty/2` for the
+/// portcullis breach check on the tick-derived forming bar. Do NOT read `qty`
+/// as volume anywhere on the ClickHouse-venue trades path.
 fn live_tick_to_trade(tick: &LiveTickEvent) -> Trade {
     let mid = ((tick.bid + tick.ask) / 2.0) as f32;
+    let spread = (tick.ask - tick.bid).max(0.0) as f32;
     Trade {
         // time_us → time_ms (venue-authoritative, per handoff invariant)
         time: (tick.time_us / 1000) as u64,
         is_sell: false,
         price: Price::from_f32_lossy(mid),
-        qty: Qty::from(0.0_f32),
+        qty: Qty::from(spread),
         agg_trade_id: Some(tick.quote_seq),
     }
 }

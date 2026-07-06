@@ -865,44 +865,58 @@ impl KlineChart {
                             // CH/SSE bar arrival in update_latest_kline; rebuilt here on
                             // the next tick. Open anchors to prev bar's close for visual
                             // continuity (matches OdbProcessor's seed_open_price contract).
+                            //
+                            // NOTE(fork): issue #32 — per-tick portcullis breach check
+                            // (ODB Helm builder parity). Trade carries mid in `price`
+                            // and spread in `qty`; breach uses reconstructed bid/ask.
+                            // On breach the bar freezes until the producer's CH bar
+                            // replaces it — it must NOT keep stretching past the
+                            // threshold while the poll is in flight.
                             let last_price_f32 = last_trade.price.to_f32();
-                            let last_time_ms = last_trade.time;
                             let prev_close_f32 =
                                 prev_close.map(|p| p.to_f32()).unwrap_or(last_price_f32);
 
-                            match &mut self.forex_forming_bar {
-                                Some(forming) => {
-                                    for t in trades_buffer.iter() {
-                                        let p = t.price.to_f32();
-                                        if p > forming.high {
-                                            forming.high = p;
-                                        }
-                                        if p < forming.low {
-                                            forming.low = p;
-                                        }
-                                    }
-                                    forming.close = last_price_f32;
-                                    forming.close_time_ms = last_time_ms;
+                            let breach_ratio = match self.chart.basis {
+                                data::chart::Basis::Odb(dbps) => dbps as f32 * 1e-5,
+                                _ => 0.0,
+                            };
+
+                            let forming =
+                                self.forex_forming_bar.get_or_insert(super::ForexFormingBar {
+                                    open: prev_close_f32,
+                                    high: prev_close_f32,
+                                    low: prev_close_f32,
+                                    close: prev_close_f32,
+                                    close_time_ms: last_trade.time,
+                                    frozen: false,
+                                });
+
+                            for t in trades_buffer.iter() {
+                                if forming.frozen {
+                                    break;
                                 }
-                                None => {
-                                    let mut high = prev_close_f32.max(last_price_f32);
-                                    let mut low = prev_close_f32.min(last_price_f32);
-                                    for t in trades_buffer.iter() {
-                                        let p = t.price.to_f32();
-                                        if p > high {
-                                            high = p;
-                                        }
-                                        if p < low {
-                                            low = p;
-                                        }
+                                let mid = t.price.to_f32();
+                                forming.high = forming.high.max(mid);
+                                forming.low = forming.low.min(mid);
+                                forming.close = mid;
+                                forming.close_time_ms = t.time;
+
+                                // Portcullis breach: bid >= open*(1+r) OR ask <= open*(1-r)
+                                if breach_ratio > 0.0 && forming.open > 0.0 {
+                                    let half_spread = t.qty.to_f32_lossy() / 2.0;
+                                    let bid = mid - half_spread;
+                                    let ask = mid + half_spread;
+                                    let up = forming.open * (1.0 + breach_ratio);
+                                    let down = forming.open * (1.0 - breach_ratio);
+                                    if bid >= up || ask <= down {
+                                        forming.frozen = true;
+                                        log::debug!(
+                                            "[forex-forming] local breach close: open={open:.5} \
+                                             mid={mid:.5} bid={bid:.5} ask={ask:.5} \
+                                             ratio={breach_ratio:.6} — frozen until CH bar",
+                                            open = forming.open,
+                                        );
                                     }
-                                    self.forex_forming_bar = Some(super::ForexFormingBar {
-                                        open: prev_close_f32,
-                                        high,
-                                        low,
-                                        close: last_price_f32,
-                                        close_time_ms: last_time_ms,
-                                    });
                                 }
                             }
 
