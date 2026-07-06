@@ -127,7 +127,19 @@ impl TickersTable {
     }
 
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
-        let selected_exchanges = settings.selected_exchanges.to_vec();
+        // Ensure new venues are enabled for existing saved states. This MUST
+        // happen before the fetch task list is built: an old saved-state.json
+        // without ClickHouse would otherwise show the venue as selected but
+        // never dispatch its metadata fetch — EURUSD TickerInfo never resolves
+        // and AutoOpenForexPane retries forever (root cause of the 1600+
+        // "ticker info not ready" log spam).
+        let selected_exchanges = {
+            let mut v = settings.selected_exchanges.to_vec();
+            if !v.contains(&Venue::ClickHouse) {
+                v.push(Venue::ClickHouse);
+            }
+            v
+        };
 
         let fetch_metadata = selected_exchanges
             .iter()
@@ -147,13 +159,7 @@ impl TickersTable {
                 is_shown: false,
                 tickers_info: FxHashMap::default(),
                 unavailable_exchanges: FxHashSet::default(),
-                selected_exchanges: {
-                    let mut exch: FxHashSet<Venue> =
-                        settings.selected_exchanges.iter().cloned().collect();
-                    // Ensure new venues are enabled for existing saved states
-                    exch.insert(Venue::ClickHouse);
-                    exch
-                },
+                selected_exchanges: selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),

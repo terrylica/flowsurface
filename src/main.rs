@@ -151,7 +151,9 @@ enum Message {
     AudioStream(modal::audio::Message),
     Widget(widget_window::WidgetMessage),
     /// Auto-open a forex ODB pane after ClickHouse symbols are discovered.
-    AutoOpenForexPane(String),
+    /// Auto-open a forex ODB pane once CH metadata resolves.
+    /// Second field = retry attempt count (capped — see handler).
+    AutoOpenForexPane(String, u32),
     ToggleWidget,
 }
 
@@ -217,7 +219,7 @@ impl Flowsurface {
             exchange::adapter::clickhouse::init_odb_symbols(),
             |symbols| {
                 if symbols.contains(&"EURUSD".to_string()) {
-                    Message::AutoOpenForexPane("EURUSD".to_string())
+                    Message::AutoOpenForexPane("EURUSD".to_string(), 0)
                 } else {
                     Message::Tick(std::time::Instant::now())
                 }
@@ -365,7 +367,7 @@ impl Flowsurface {
                     }
                 }
             }
-            Message::AutoOpenForexPane(symbol) => {
+            Message::AutoOpenForexPane(symbol, attempt) => {
                 // Create a forex ODB pane after CH metadata is available.
                 // Uses the same path as user ticker selection.
                 let ticker =
@@ -390,16 +392,29 @@ impl Flowsurface {
                             event: msg,
                         });
                 }
-                // Ticker metadata may not be loaded yet — retry after delay
-                log::info!(
-                    "[forex] {symbol} ticker info not ready, \
-                     retrying in 2s"
-                );
+                // Ticker metadata may not be loaded yet — retry after delay,
+                // but give up after ~2 min instead of spamming the log forever
+                // (a prior saved-state bug caused 1600+ retries per run).
+                const AUTO_OPEN_MAX_ATTEMPTS: u32 = 60;
+                if attempt >= AUTO_OPEN_MAX_ATTEMPTS {
+                    log::warn!(
+                        "[forex] {symbol} ticker info never resolved after \
+                         {AUTO_OPEN_MAX_ATTEMPTS} attempts — giving up on auto-open \
+                         (is the ClickHouse venue metadata fetch failing?)"
+                    );
+                    return Task::none();
+                }
+                if attempt == 0 || attempt.is_multiple_of(15) {
+                    log::info!(
+                        "[forex] {symbol} ticker info not ready, retrying \
+                         (attempt {attempt}/{AUTO_OPEN_MAX_ATTEMPTS})"
+                    );
+                }
                 return Task::perform(
                     async {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     },
-                    move |_| Message::AutoOpenForexPane(symbol),
+                    move |_| Message::AutoOpenForexPane(symbol, attempt + 1),
                 );
             }
             Message::Tick(now) => {
