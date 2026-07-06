@@ -908,49 +908,85 @@ impl KlineChart {
                             self.chart.last_trade_time = Some(last_trade.time);
 
                             // Maintain a tick-derived forming bar for forex. Cleared on
-                            // CH/SSE bar arrival in update_latest_kline; rebuilt here on
-                            // the next tick. Open anchors to prev bar's close for visual
-                            // continuity (matches OdbProcessor's seed_open_price contract).
+                            // CH/SSE bar arrival in update_latest_kline (staleness-
+                            // gated) and on local breach; the NEXT tick opens the new
+                            // bar at its own mid/time.
                             //
-                            // NOTE(fork): issue #32 — per-tick portcullis breach check
-                            // (ODB Helm builder parity). Trade carries mid in `price`
-                            // and spread in `qty`; breach uses reconstructed bid/ask.
+                            // NOTE(fork): issue #32 — per-tick portcullis breach check.
+                            // Trade carries mid in `price` and spread in `qty`; breach
+                            // uses reconstructed bid/ask.
+                            //
+                            // BUILDER PARITY (user request 2026-07-05): this loop
+                            // mirrors fxview-core `BarBuilder::process` (bit-exact
+                            // with ODB Helm's Go builder per its parity vectors):
+                            //   - fresh bar opens AT the seeding tick (open = its mid,
+                            //     open_time = its time); no breach check on that tick
+                            //   - monotonic gate: strictly-older ticks are dropped
+                            //   - 4h gap OR 4h bar-duration → reset: discard forming
+                            //     without emit, reseed at the current tick (weekend /
+                            //     outage boundary, gap-driven ouroboros)
+                            //   - breach tick closes the bar (it IS the close); the
+                            //     next bar starts on the FOLLOWING tick
                             //
                             // On breach the completed bar is appended as a PROVISIONAL
                             // datapoint (tracked via `pending_local_bars`, mirroring
-                            // the crypto RBP local bars) and the forming bar reseeds
-                            // at the breach mid — the chart keeps tracking live. The
-                            // producer's authoritative CH/SSE bar pops provisionals on
-                            // arrival (`update_latest_kline`). The earlier freeze-and-
-                            // wait design left the chart dead for the producer's ~10s
+                            // the crypto RBP local bars). The producer's authoritative
+                            // CH/SSE bar pops provisionals on arrival
+                            // (`update_latest_kline`). The earlier freeze-and-wait
+                            // design left the chart dead for the producer's ~10s
                             // graduation-queue latency in fast markets (user-reported
                             // catch-up regression, 2026-07-05, XAUUSD BPR1).
-                            let last_price_f32 = last_trade.price.to_f32();
-                            let prev_close_f32 =
-                                prev_close.map(|p| p.to_f32()).unwrap_or(last_price_f32);
-
                             let breach_ratio = match self.chart.basis {
                                 data::chart::Basis::Odb(dbps) => dbps as f32 * 1e-5,
                                 _ => 0.0,
                             };
 
+                            // Producer parity: sidecar overrides the builder gap
+                            // threshold to 4h for forex (`with_gap_threshold`).
+                            const FOREX_GAP_RESET_MS: u64 = 4 * 3_600 * 1_000;
+
                             let min_tick = self.chart.ticker_info.min_ticksize;
-                            let forming =
-                                self.forex_forming_bar
-                                    .get_or_insert(super::ForexFormingBar {
-                                        open: prev_close_f32,
-                                        high: prev_close_f32,
-                                        low: prev_close_f32,
-                                        close: prev_close_f32,
-                                        close_time_ms: last_trade.time,
-                                    });
 
                             // Multiple breaches per buffer are possible on tight
                             // thresholds (XAUUSD BPR1 = 0.01% can breach twice in one
-                            // quote burst), so collect ALL locally-completed bars.
-                            let mut provisionals: Vec<Kline> = Vec::new();
+                            // quote burst), so collect ALL locally-completed bars
+                            // together with their open_time_ms.
+                            let mut provisionals: Vec<(Kline, u64)> = Vec::new();
                             for t in trades_buffer.iter() {
                                 let mid = t.price.to_f32();
+
+                                let needs_seed = match self.forex_forming_bar.as_ref() {
+                                    None => true,
+                                    Some(f) => {
+                                        // Monotonic gate (builder parity): drop
+                                        // strictly-older ticks; equal timestamps pass.
+                                        if t.time < f.close_time_ms {
+                                            continue;
+                                        }
+                                        // Gap / duration reset (builder parity, 4h):
+                                        // discard the forming bar without emitting and
+                                        // reseed at this tick.
+                                        t.time.saturating_sub(f.close_time_ms) > FOREX_GAP_RESET_MS
+                                            || t.time.saturating_sub(f.open_time_ms)
+                                                > FOREX_GAP_RESET_MS
+                                    }
+                                };
+                                if needs_seed {
+                                    self.forex_forming_bar = Some(super::ForexFormingBar {
+                                        open: mid,
+                                        high: mid,
+                                        low: mid,
+                                        close: mid,
+                                        open_time_ms: t.time,
+                                        close_time_ms: t.time,
+                                    });
+                                    // Builder parity: no breach check on the opening
+                                    // tick (upper/lower derive from this tick's mid).
+                                    continue;
+                                }
+                                let Some(forming) = self.forex_forming_bar.as_mut() else {
+                                    continue;
+                                };
                                 forming.high = forming.high.max(mid);
                                 forming.low = forming.low.min(mid);
                                 forming.close = mid;
@@ -964,14 +1000,17 @@ impl KlineChart {
                                     let up = forming.open * (1.0 + breach_ratio);
                                     let down = forming.open * (1.0 - breach_ratio);
                                     if bid >= up || ask <= down {
-                                        provisionals.push(Kline::new(
-                                            t.time,
-                                            forming.open,
-                                            forming.high,
-                                            forming.low,
-                                            mid,
-                                            exchange::Volume::BuySell(Qty::zero(), Qty::zero()),
-                                            min_tick,
+                                        provisionals.push((
+                                            Kline::new(
+                                                t.time,
+                                                forming.open,
+                                                forming.high,
+                                                forming.low,
+                                                mid,
+                                                exchange::Volume::BuySell(Qty::zero(), Qty::zero()),
+                                                min_tick,
+                                            ),
+                                            forming.open_time_ms,
                                         ));
                                         log::debug!(
                                             "[forex-forming] local breach close: open={open:.5} \
@@ -979,23 +1018,20 @@ impl KlineChart {
                                              ratio={breach_ratio:.6} — provisional append",
                                             open = forming.open,
                                         );
-                                        // Roll: the next bar anchors at the breach mid
-                                        // (producer seed_open_price contract) so live
-                                        // tracking continues without waiting.
-                                        *forming = super::ForexFormingBar {
-                                            open: mid,
-                                            high: mid,
-                                            low: mid,
-                                            close: mid,
-                                            close_time_ms: t.time,
-                                        };
+                                        // Builder parity: the breach tick belongs only
+                                        // to the closed bar. Clear; the next tick
+                                        // opens the new bar at its own mid/time.
+                                        self.forex_forming_bar = None;
                                     }
                                 }
                             }
                             let breached = !provisionals.is_empty();
-                            for kline in &provisionals {
+                            for (kline, open_time_ms) in &provisionals {
                                 tick_aggr.replace_or_append_kline(kline, None);
                                 self.pending_local_bars += 1;
+                                if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                                    last_dp.open_time_ms = Some(*open_time_ms);
+                                }
                             }
                             if breached {
                                 log::info!(
@@ -1004,11 +1040,13 @@ impl KlineChart {
                                     provisionals.len(),
                                     self.pending_local_bars,
                                 );
+                                let klines: Vec<Kline> =
+                                    provisionals.iter().map(|(k, _)| *k).collect();
                                 self.indicators
                                     .values_mut()
                                     .filter_map(Option::as_mut)
                                     .for_each(|indi| {
-                                        indi.on_insert_klines(&provisionals);
+                                        indi.on_insert_klines(&klines);
                                         indi.rebuild_from_source(&self.data_source);
                                     });
                             }

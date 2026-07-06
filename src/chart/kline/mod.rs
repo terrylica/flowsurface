@@ -234,20 +234,29 @@ impl PlotConstants for KlineChart {
 /// from the quote Trade (`price` = mid, `qty` = spread — see
 /// `live_tick_to_trade`). On breach the completed bar is appended as a
 /// PROVISIONAL datapoint (tracked via `pending_local_bars`, mirroring the
-/// crypto RBP local bars) and this forming bar reseeds at the breach mid so
-/// the chart keeps tracking live. The producer's authoritative CH/SSE bar
+/// crypto RBP local bars) and the forming slot CLEARS — the next tick opens
+/// the new bar at ITS OWN mid/time (producer `BarBuilder` parity: the breach
+/// tick belongs only to the closed bar; `open_mid` is the first tick of the
+/// next bar, never the prev close). The producer's authoritative CH/SSE bar
 /// pops provisionals on arrival in `update_latest_kline`. The earlier
 /// freeze-and-wait design left the chart dead for the producer's ~10s
 /// graduation-queue latency in fast markets (user-reported catch-up
 /// regression, 2026-07-05, XAUUSD BPR1). OHLC stays mid-derived — the
 /// producer's chart columns are mid OHLC too (bid/ask OHLC live in separate
 /// columns).
+///
+/// Builder-parity rules mirrored client-side (fxview-core `BarBuilder::
+/// process`, itself bit-exact with ODB Helm's Go builder per the parity
+/// vectors): monotonic tick gate (strictly-older ticks dropped), 4h gap /
+/// 4h bar-duration reset (discard without emit, reseed at the current tick).
 #[derive(Debug, Clone)]
 pub struct ForexFormingBar {
     pub open: f32,
     pub high: f32,
     pub low: f32,
     pub close: f32,
+    /// First-tick timestamp of the forming bar (builder: `open_time_us`).
+    pub open_time_ms: u64,
     pub close_time_ms: u64,
 }
 
