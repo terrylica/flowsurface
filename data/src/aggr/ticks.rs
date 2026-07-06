@@ -538,19 +538,33 @@ impl TickAggr {
             });
         }
 
-        if let Some(last) = self.datapoints.last_mut() {
-            if kline.time == last.kline.time {
-                // Replace: use incoming microstructure if available, else preserve existing.
-                // Preserve agg_trade_id_range and open_time_ms — they are attached separately
-                // after this call (like a two-phase commit), so must not be cleared here.
-                let resolved_micro = micro.or(last.microstructure);
-                let preserved_ids = last.agg_trade_id_range;
-                let preserved_open_time = last.open_time_ms;
-                last.kline = *kline;
-                last.microstructure = resolved_micro;
-                last.agg_trade_id_range = preserved_ids;
-                last.open_time_ms = preserved_open_time;
-            } else if kline.time > last.kline.time {
+        // NOTE(fork): bounded backward scan instead of tail-only matching.
+        // With SSE bar-push (bars arrive at close time, ~10s ahead of the
+        // CH row), the CH poll re-delivers a bar that is no longer the tail
+        // datapoint. Tail-only matching silently dropped that re-delivery,
+        // losing the fully-graduated row (e.g. spread_suspect is only known
+        // at graduation). Scanning a bounded window lets the poll upgrade
+        // the pushed bar in place. Genuinely older bars beyond the window
+        // are still dropped (full reload self-corrects).
+        const REPLACE_SCAN_WINDOW: usize = 32;
+        let scan_start = self.datapoints.len().saturating_sub(REPLACE_SCAN_WINDOW);
+        if let Some(dp) = self.datapoints[scan_start..]
+            .iter_mut()
+            .rev()
+            .find(|dp| dp.kline.time == kline.time)
+        {
+            // Replace: use incoming microstructure if available, else preserve existing.
+            // Preserve agg_trade_id_range and open_time_ms — they are attached separately
+            // after this call (like a two-phase commit), so must not be cleared here.
+            let resolved_micro = micro.or(dp.microstructure);
+            let preserved_ids = dp.agg_trade_id_range;
+            let preserved_open_time = dp.open_time_ms;
+            dp.kline = *kline;
+            dp.microstructure = resolved_micro;
+            dp.agg_trade_id_range = preserved_ids;
+            dp.open_time_ms = preserved_open_time;
+        } else if let Some(last) = self.datapoints.last() {
+            if kline.time > last.kline.time {
                 self.datapoints.push(TickAccumulation {
                     tick_count: 1,
                     kline: *kline,

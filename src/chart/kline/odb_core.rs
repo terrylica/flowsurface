@@ -419,12 +419,23 @@ impl KlineChart {
                     // Attach agg_trade_id_range and open_time_ms from SSE/CH bar data.
                     // These are set after replace_or_append_kline (two-phase pattern)
                     // because replace_or_append_kline doesn't carry them.
-                    if let Some(last_dp) = tick_aggr.datapoints.last_mut() {
+                    //
+                    // NOTE(fork): locate the stored bar BY TIME, not tail — with
+                    // bar-push, the CH poll re-delivers a bar that replaced a
+                    // mid-window datapoint; attaching to last() would stamp the
+                    // wrong (newest) bar.
+                    if let Some(dp) = tick_aggr
+                        .datapoints
+                        .iter_mut()
+                        .rev()
+                        .take(32)
+                        .find(|dp| dp.kline.time == kline.time)
+                    {
                         if let Some(range) = bar_agg_id_range {
-                            last_dp.agg_trade_id_range = Some(range);
+                            dp.agg_trade_id_range = Some(range);
                         }
                         if let Some(ts) = bar_open_time_ms {
-                            last_dp.open_time_ms = Some(ts);
+                            dp.open_time_ms = Some(ts);
                         }
                     }
 
@@ -472,16 +483,17 @@ impl KlineChart {
                     }
 
                     // Oracle: the CORRECT assertion — after store, does the bar have microstructure?
-                    let stored_has_micro = tick_aggr
+                    // NOTE(fork): locate by time (see attach block above) — with
+                    // bar-push the stored bar may not be the tail datapoint.
+                    let stored_micro = tick_aggr
                         .datapoints
-                        .last()
-                        .and_then(|dp| dp.microstructure)
-                        .is_some();
-                    let stored_ti = tick_aggr
-                        .datapoints
-                        .last()
-                        .and_then(|dp| dp.microstructure)
-                        .map(|m| m.trade_intensity);
+                        .iter()
+                        .rev()
+                        .take(32)
+                        .find(|dp| dp.kline.time == kline.time)
+                        .and_then(|dp| dp.microstructure);
+                    let stored_has_micro = stored_micro.is_some();
+                    let stored_ti = stored_micro.map(|m| m.trade_intensity);
 
                     log::info!(
                         "[oracle-micro] bar_ts={} ch_ti={} ch_ofi={} ch_tc={} \
