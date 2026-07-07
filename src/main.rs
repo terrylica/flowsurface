@@ -135,6 +135,8 @@ enum Message {
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
     RequestRestart,
     RequestQuit,
+    /// 30s layout autosave tick (fork; survives force-kills).
+    RequestAutosave,
     GoBack,
     DataFolderRequested,
     OpenUrlRequested(Cow<'static, str>),
@@ -150,10 +152,10 @@ enum Message {
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
     Widget(widget_window::WidgetMessage),
-    /// Auto-open a forex ODB pane after ClickHouse symbols are discovered.
-    /// Auto-open a forex ODB pane once CH metadata resolves.
-    /// Second field = retry attempt count (capped — see handler).
-    AutoOpenForexPane(String, u32),
+    /// Auto-open a forex ODB pane once ClickHouse metadata resolves.
+    /// Fields: (symbol, preset ODB threshold in dbps, retry attempt).
+    /// `None` threshold → stream_setup's per-venue default (5 dbps forex).
+    AutoOpenForexPane(String, Option<u32>, u32),
     ToggleWidget,
 }
 
@@ -219,7 +221,7 @@ impl Flowsurface {
             exchange::adapter::clickhouse::init_odb_symbols(),
             |symbols| {
                 if symbols.contains(&"EURUSD".to_string()) {
-                    Message::AutoOpenForexPane("EURUSD".to_string(), 0)
+                    Message::AutoOpenForexPane("EURUSD".to_string(), None, 0)
                 } else {
                     Message::Tick(std::time::Instant::now())
                 }
@@ -367,30 +369,68 @@ impl Flowsurface {
                     }
                 }
             }
-            Message::AutoOpenForexPane(symbol, attempt) => {
+            Message::AutoOpenForexPane(symbol, threshold_dbps, attempt) => {
                 // Create a forex ODB pane after CH metadata is available.
                 // Uses the same path as user ticker selection.
+                //
+                // Chain: EURUSD (venue default 5 dbps) → XAUUSD BPR1 (10 dbps).
+                // The user's primary instrument is XAUUSD BPR1; kill -9
+                // relaunches skip the graceful-exit state save, so relying on
+                // saved-state alone kept losing the pane (2026-07-05).
+                let follow_up = |sym: &str| -> Task<Message> {
+                    if sym == "EURUSD" {
+                        Task::done(Message::AutoOpenForexPane(
+                            "XAUUSD".to_string(),
+                            Some(10),
+                            0,
+                        ))
+                    } else {
+                        Task::none()
+                    }
+                };
                 let ticker =
                     exchange::Ticker::new(&symbol, exchange::adapter::Exchange::ClickhouseSpot);
+                let main_window_id = self.main_window.id;
+                // Idempotence: saved-state (or a prior auto-open) may already
+                // show this ticker — skip, but still chain the next symbol.
+                if self
+                    .active_dashboard_mut()
+                    .has_ticker_pane(main_window_id, &ticker)
+                {
+                    log::info!("[forex] {symbol} pane already present — skipping auto-open");
+                    return follow_up(&symbol);
+                }
                 if let Some(ti) = self
                     .sidebar
                     .tickers_info()
                     .get(&ticker)
                     .and_then(|opt| *opt)
                 {
-                    let main_window_id = self.main_window.id;
-                    log::info!("[forex] auto-opening {symbol} pane");
-                    return self
-                        .active_dashboard_mut()
-                        .init_focused_pane(
-                            main_window_id,
-                            ti,
-                            data::layout::pane::ContentKind::OdbChart,
-                        )
+                    log::info!(
+                        "[forex] auto-opening {symbol} pane (threshold={threshold_dbps:?} dbps)"
+                    );
+                    let dashboard = self.active_dashboard_mut();
+                    // Second and later auto-panes: split instead of replacing
+                    // the pane the previous auto-open just populated.
+                    let split_task = if dashboard.focused_pane_occupied(main_window_id) {
+                        dashboard.split_focused_for_auto_open(main_window_id)
+                    } else {
+                        Task::none()
+                    };
+                    if let Some(dbps) = threshold_dbps {
+                        dashboard.preset_focused_odb_threshold(main_window_id, dbps);
+                    }
+                    let init_task = dashboard.init_focused_pane(
+                        main_window_id,
+                        ti,
+                        data::layout::pane::ContentKind::OdbChart,
+                    );
+                    return Task::batch(vec![split_task, init_task])
                         .map(move |msg| Message::Dashboard {
                             layout_id: None,
                             event: msg,
-                        });
+                        })
+                        .chain(follow_up(&symbol));
                 }
                 // Ticker metadata may not be loaded yet — retry after delay,
                 // but give up after ~2 min instead of spamming the log forever
@@ -414,7 +454,7 @@ impl Flowsurface {
                     async {
                         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     },
-                    move |_| Message::AutoOpenForexPane(symbol, attempt + 1),
+                    move |_| Message::AutoOpenForexPane(symbol, threshold_dbps, attempt + 1),
                 );
             }
             Message::Tick(now) => {
@@ -483,6 +523,14 @@ impl Flowsurface {
                     self.active_dashboard().popout.keys().copied().collect();
                 active_windows.push(self.main_window.id);
                 return window::collect_window_specs(active_windows, Message::ExitRequested);
+            }
+            // NOTE(fork): 30s layout autosave (see subscription()) — same
+            // collection as RequestQuit but routed to the non-exiting save.
+            Message::RequestAutosave => {
+                let mut active_windows: Vec<iced::window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+                return window::collect_window_specs(active_windows, Message::SaveStateRequested);
             }
             Message::GoBack => {
                 let main_window = self.main_window.id;
@@ -1010,6 +1058,14 @@ impl Flowsurface {
             None
         });
 
+        // NOTE(fork): periodic layout autosave. saved-state.json otherwise
+        // writes only on graceful exit — force-kills (`kill -9`, required
+        // because iced ignores SIGTERM) silently lose the pane layout
+        // (2026-07-05: manually-added XAUUSD pane vanished across relaunch).
+        // 30s cadence; serialization is layout-config only (small, cheap).
+        let autosave =
+            iced::time::every(std::time::Duration::from_secs(30)).map(|_| Message::RequestAutosave);
+
         // Widget has no own WS subscription — it receives trades via
         // forward_trades() from the dashboard's stream, ensuring both
         // chart and widget use the exact same trade data.
@@ -1019,6 +1075,7 @@ impl Flowsurface {
             window_events,
             tick,
             hotkeys,
+            autosave,
         ])
     }
 
