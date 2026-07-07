@@ -29,7 +29,20 @@ pub(super) fn build_content_and_streams(
     kind: ContentKind,
 ) -> Vec<StreamKind> {
     if !(content.kind() == kind) {
-        settings.selected_basis = None;
+        // NOTE(fork): preserve a pre-seeded basis that already matches the
+        // TARGET kind — auto-open presets Basis::Odb(dbps) on a fresh pane
+        // BEFORE init (main.rs AutoOpenForexPane). The clear exists to avoid
+        // carrying a stale basis ACROSS content types; a basis valid for the
+        // new kind is a deliberate preset, not staleness (switching away
+        // from OdbChart still clears it on that transition). The per-venue
+        // threshold validation below still rejects invalid values.
+        let preset_matches_new_kind = matches!(
+            (kind, settings.selected_basis),
+            (ContentKind::OdbChart, Some(Basis::Odb(_)))
+        );
+        if !preset_matches_new_kind {
+            settings.selected_basis = None;
+        }
         settings.tick_multiply = None;
     }
 
