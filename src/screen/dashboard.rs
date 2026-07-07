@@ -620,6 +620,64 @@ impl Dashboard {
         Task::none()
     }
 
+    // NOTE(fork): auto-open helpers — a second forex pane (XAUUSD) is opened
+    // at startup next to the auto EURUSD pane. See Message::AutoOpenForexPane
+    // in main.rs.
+
+    /// True if any pane (main grid or popouts) already streams `ticker`.
+    /// Used to make auto-open idempotent against saved-state layouts.
+    pub fn has_ticker_pane(&self, main_window: window::Id, ticker: &exchange::Ticker) -> bool {
+        self.iter_all_panes(main_window)
+            .any(|(_, _, state)| state.stream_pair().is_some_and(|ti| ti.ticker == *ticker))
+    }
+
+    /// True if the pane `init_focused_pane` would target already hosts
+    /// content (mirrors its focus-defaulting for the fresh single-pane case).
+    pub fn focused_pane_occupied(&self, main_window: window::Id) -> bool {
+        let focus = self.focus.or_else(|| {
+            if self.panes.len() == 1 {
+                self.panes
+                    .iter()
+                    .next()
+                    .map(|(pane, _)| (main_window, *pane))
+            } else {
+                None
+            }
+        });
+        focus
+            .and_then(|(window, pane)| self.get_pane(main_window, window, pane))
+            .and_then(pane::State::stream_pair)
+            .is_some()
+    }
+
+    /// Split the focused (or sole) main-window pane and focus the new empty
+    /// pane, so a subsequent `init_focused_pane` lands in it.
+    pub fn split_focused_for_auto_open(&mut self, main_window_id: window::Id) -> Task<Message> {
+        let target = match self.focus {
+            Some((window, pane)) if window == main_window_id => Some(pane),
+            None => self.panes.iter().next().map(|(pane, _)| *pane),
+            _ => None,
+        };
+        if let Some(pane) = target
+            && let Some((new_pane, _)) =
+                self.panes
+                    .split(pane_grid::Axis::Vertical, pane, pane::State::new())
+        {
+            return self.focus_pane(main_window_id, new_pane);
+        }
+        Task::none()
+    }
+
+    /// Preselect an ODB threshold on the focused pane BEFORE content init —
+    /// `stream_setup` derives the threshold from `settings.selected_basis`.
+    pub fn preset_focused_odb_threshold(&mut self, main_window: window::Id, dbps: u32) {
+        if let Some((window, pane)) = self.focus
+            && let Some(state) = self.get_mut_pane(main_window, window, pane)
+        {
+            state.settings.selected_basis = Some(data::chart::Basis::Odb(dbps));
+        }
+    }
+
     fn popout_pane(&mut self, main_window: &Window) -> Task<Message> {
         if let Some((_, id)) = self.focus.take()
             && let Some((pane, _)) = self.panes.close(id)
