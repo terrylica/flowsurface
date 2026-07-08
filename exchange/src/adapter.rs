@@ -18,6 +18,12 @@ pub mod hyperliquid;
 pub mod mexc;
 pub mod okex;
 
+// NOTE(fork): upstream adapter-hub layout — merge phase 1, step 1 (empty
+// skeleton tree, compiles, dispatches nothing yet). The flat adapters above
+// remain authoritative until each is ported in. See exchange/src/adapter/hub.rs
+// and https://github.com/terrylica/flowsurface/issues/30.
+pub mod hub;
+
 /// Buffer trades and flush in this interval
 const TRADE_BUCKET_INTERVAL: Duration = Duration::from_micros(33_333);
 
