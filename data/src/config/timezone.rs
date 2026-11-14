@@ -2,6 +2,11 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
+/// Compact bar timestamp: "2026 Feb 26 14:35:42.123" — year prefix, no weekday, always ms precision.
+/// Used for ODB open/close fields in the crosshair tooltip.
+const FMT_BAR_TIME_MS: &str = "%Y %b %-d %H:%M:%S.%3f";
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum UserTimezone {
     #[default]
@@ -83,6 +88,64 @@ impl UserTimezone {
             datetime.format("%-d").to_string()
         } else {
             datetime.format("%H:%M").to_string()
+        }
+    }
+
+    /// Formats a Unix timestamp (ms) for the range-bar crosshair tooltip timing row.
+    ///
+    /// Always includes milliseconds. Output: `"Jan 20 14:35:42.123"`.
+    /// Used for the compact open/close timestamp fields in the OHLC tooltip header.
+    // GitHub Issue: https://github.com/terrylica/flowsurface/issues/2
+    pub fn format_bar_time_ms(&self, timestamp_ms: i64) -> Option<String> {
+        DateTime::from_timestamp_millis(timestamp_ms).map(|datetime| {
+            self.with_user_timezone(datetime, |time_with_zone| {
+                time_with_zone.format(FMT_BAR_TIME_MS).to_string()
+            })
+        })
+    }
+
+    /// Formats a timestamp for open deviation bar axis labels.
+    /// `label_span_ms` is the time span between adjacent labels (not between bars).
+    pub fn format_odb_label(&self, timestamp: i64, label_span_ms: u64) -> String {
+        if let Some(datetime) = DateTime::from_timestamp(timestamp, 0) {
+            match self {
+                UserTimezone::Local => {
+                    let dt = datetime.with_timezone(&chrono::Local);
+                    Self::format_odb_dt(&dt, label_span_ms)
+                }
+                UserTimezone::Utc => {
+                    let dt = datetime.with_timezone(&chrono::Utc);
+                    Self::format_odb_dt(&dt, label_span_ms)
+                }
+            }
+        } else {
+            String::new()
+        }
+    }
+
+    // Fork-specific: open deviation bar support
+    fn format_odb_dt<Tz: chrono::TimeZone>(datetime: &DateTime<Tz>, label_span_ms: u64) -> String
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        if label_span_ms >= 30 * 86_400_000 {
+            // Labels > 30 days apart: show month + year
+            datetime.format("%b %Y").to_string()
+        } else if label_span_ms >= 86_400_000 {
+            // Labels > 1 day apart: show month + day + short year
+            datetime.format("%b %-d '%y").to_string()
+        } else if label_span_ms >= 3_600_000 {
+            // Labels > 1 hour apart: show day + short year + time
+            datetime.format("%b %-d '%y %H:%M").to_string()
+        } else if label_span_ms >= 300_000 {
+            // Labels > 5 minutes apart: show HH:MM only
+            datetime.format("%H:%M").to_string()
+        } else if label_span_ms >= 1_000 {
+            // Labels 1s–5min apart: show seconds
+            datetime.format("%H:%M:%S").to_string()
+        } else {
+            // Labels < 1s apart: show milliseconds
+            datetime.format("%H:%M:%S.%3f").to_string()
         }
     }
 }

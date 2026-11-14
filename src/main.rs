@@ -1,3 +1,4 @@
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/90
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
@@ -11,6 +12,7 @@ mod screen;
 mod style;
 mod version;
 mod widget;
+mod widget_window;
 mod window;
 
 use data::config::theme::default_theme;
@@ -30,6 +32,7 @@ use widget::{
     tooltip,
 };
 
+use exchange::config::APP_CONFIG;
 use iced::{
     Alignment, Element, Subscription, Task, keyboard, padding,
     widget::{
@@ -41,6 +44,44 @@ use std::{borrow::Cow, collections::HashMap, vec};
 
 fn main() {
     logger::setup(cfg!(debug_assertions)).expect("Failed to initialize logger");
+
+    #[cfg(feature = "telemetry")]
+    {
+        data::telemetry::init();
+        data::telemetry::emit(data::telemetry::TelemetryEvent::SessionStart {
+            ts_ms: data::telemetry::now_ms(),
+            build_version: env!("CARGO_PKG_VERSION"),
+        });
+    }
+
+    std::panic::set_hook(Box::new(|info| {
+        let location = info.location().map_or_else(
+            || "unknown location".to_string(),
+            |loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()),
+        );
+        let msg = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        log::error!("PANIC at {location}: {msg}");
+        eprintln!("PANIC at {location}: {msg}");
+        // Also print a backtrace
+        let bt = std::backtrace::Backtrace::force_capture();
+        eprintln!("Backtrace:\n{bt}");
+
+        // Fire Telegram alert for panics (critical).
+        // Use send_alert_blocking which creates a one-shot runtime —
+        // safe because the panic handler runs outside the async runtime context.
+        if exchange::telegram::is_configured() {
+            let detail = format!("PANIC at {location}\n<code>{msg}</code>");
+            exchange::telegram::send_alert_blocking(&format!(
+                "🔴 <b>flowsurface — crash</b>\n{detail}"
+            ));
+        }
+    }));
 
     std::thread::spawn(data::cleanup_old_market_data);
 
@@ -74,6 +115,8 @@ struct Flowsurface {
     timezone: data::UserTimezone,
     theme: data::Theme,
     notifications: Notifications,
+    /// Floating BTC ODB widget. None = widget hidden.
+    widget: Option<widget_window::WidgetController>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +133,10 @@ enum Message {
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(HashMap<window::Id, WindowSpec>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
+    RequestRestart,
+    RequestQuit,
+    /// 30s layout autosave tick (fork; survives force-kills).
+    RequestAutosave,
     GoBack,
     DataFolderRequested,
     OpenUrlRequested(Cow<'static, str>),
@@ -104,6 +151,12 @@ enum Message {
     NetworkManager(modal::network_manager::Message),
     Layouts(modal::layout_manager::Message),
     AudioStream(modal::audio::Message),
+    Widget(widget_window::WidgetMessage),
+    /// Auto-open a forex ODB pane once ClickHouse metadata resolves.
+    /// Fields: (symbol, preset ODB threshold in dbps, retry attempt).
+    /// `None` threshold → stream_setup's per-venue default (5 dbps forex).
+    AutoOpenForexPane(String, Option<u32>, u32),
+    ToggleWidget,
 }
 
 impl Flowsurface {
@@ -116,6 +169,11 @@ impl Flowsurface {
                 size,
                 position,
                 exit_on_close_request: false,
+                level: if APP_CONFIG.always_on_top {
+                    iced::window::Level::AlwaysOnTop
+                } else {
+                    iced::window::Level::default()
+                },
                 ..window::settings()
             };
             window::open(config)
@@ -138,6 +196,7 @@ impl Flowsurface {
             theme: saved_state.theme,
             notifications: Notifications::new(),
             network: NetworkManager::new(saved_state.proxy_cfg),
+            widget: None,
         };
 
         if let Some(err) = audio_init_err {
@@ -156,12 +215,43 @@ impl Flowsurface {
         );
         let load_layout = state.load_layout(active_layout_id.unique, main_window_id);
 
+        // Fetch available ODB symbols from ClickHouse (non-blocking).
+        // After symbols are cached, auto-open a EURUSD pane if available.
+        let init_odb_symbols = Task::perform(
+            exchange::adapter::clickhouse::init_odb_symbols(),
+            |symbols| {
+                if symbols.contains(&"EURUSD".to_string()) {
+                    Message::AutoOpenForexPane("EURUSD".to_string(), None, 0)
+                } else {
+                    Message::Tick(std::time::Instant::now())
+                }
+            },
+        );
+
+        let set_on_top: Task<Message> = if APP_CONFIG.always_on_top {
+            iced::window::set_level(main_window_id, iced::window::Level::AlwaysOnTop)
+        } else {
+            Task::none()
+        };
+
+        // Level 2 guard: startup health check (CH + SSE probe) + Telegram alert
+        let tg_startup: Task<Message> = if exchange::telegram::is_configured() {
+            Task::perform(exchange::telegram::startup_health_check(), |_| {
+                Message::Tick(std::time::Instant::now())
+            })
+        } else {
+            Task::none()
+        };
+
         (
             state,
             open_main_window
                 .discard()
                 .chain(load_layout)
-                .chain(launch_sidebar.map(Message::Sidebar)),
+                .chain(launch_sidebar.map(Message::Sidebar))
+                .chain(init_odb_symbols)
+                .chain(set_on_top.discard())
+                .chain(tg_startup),
         )
     }
 
@@ -169,14 +259,66 @@ impl Flowsurface {
         match message {
             Message::MarketWsEvent(event) => {
                 let main_window_id = self.main_window.id;
+
+                // Forward BTCUSDT trades to floating widget (before dashboard borrow).
+                if let exchange::Event::TradesReceived(ref stream, _, ref trades_buffer) = event
+                    && let Some(ref mut ctrl) = self.widget
+                {
+                    ctrl.forward_trades(stream, trades_buffer);
+                }
+
                 let dashboard = self.active_dashboard_mut();
 
                 match event {
                     exchange::Event::Connected(exchange) => {
                         log::info!("a stream connected to {exchange} WS");
+                        dashboard.connection_health[exchange] =
+                            exchange::health::ConnectionHealth::Connected;
+
+                        // Telegram recovery alert
+                        if exchange::telegram::is_configured() {
+                            let exc = format!("{exchange}");
+                            tokio::spawn(async move {
+                                exchange::telegram::alert(
+                                    exchange::telegram::Severity::Recovery,
+                                    "ws-stream",
+                                    &format!("{exc} stream reconnected"),
+                                )
+                                .await;
+                            });
+                        }
+
+                        // Re-validate stream subscriptions after reconnect
+                        return dashboard.refresh_streams(main_window_id).map(move |msg| {
+                            Message::Dashboard {
+                                layout_id: None,
+                                event: msg,
+                            }
+                        });
                     }
                     exchange::Event::Disconnected(exchange, reason) => {
                         log::info!("a stream disconnected from {exchange} WS: {reason:?}");
+                        dashboard.connection_health[exchange] =
+                            exchange::health::ConnectionHealth::Reconnecting;
+
+                        // Telegram disconnect alert (5-min cooldown per exchange)
+                        if exchange::telegram::is_configured()
+                            && exchange::telegram::should_alert(
+                                &format!("ws-disconnect-{exchange}"),
+                                300,
+                            )
+                        {
+                            let exc = format!("{exchange}");
+                            let rsn = reason.clone();
+                            tokio::spawn(async move {
+                                exchange::telegram::alert(
+                                    exchange::telegram::Severity::Warning,
+                                    "ws-stream",
+                                    &format!("{exc} stream disconnected: {rsn}"),
+                                )
+                                .await;
+                            });
+                        }
                     }
                     exchange::Event::DepthReceived(stream, depth_update_t, depth) => {
                         let task = dashboard
@@ -202,9 +344,24 @@ impl Flowsurface {
 
                         return task;
                     }
-                    exchange::Event::KlineReceived(stream, kline) => {
+                    exchange::Event::KlineReceived(
+                        stream,
+                        kline,
+                        raw_f64,
+                        bar_agg_id_range,
+                        micro,
+                        bar_open_time_ms,
+                    ) => {
                         return dashboard
-                            .update_latest_klines(&stream, &kline, main_window_id)
+                            .update_latest_klines(
+                                &stream,
+                                &kline,
+                                raw_f64,
+                                bar_agg_id_range,
+                                micro,
+                                bar_open_time_ms,
+                                main_window_id,
+                            )
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,
@@ -212,12 +369,101 @@ impl Flowsurface {
                     }
                 }
             }
+            Message::AutoOpenForexPane(symbol, threshold_dbps, attempt) => {
+                // Create a forex ODB pane after CH metadata is available.
+                // Uses the same path as user ticker selection.
+                //
+                // Chain: EURUSD (venue default 5 dbps) → XAUUSD BPR1 (10 dbps).
+                // XAUUSD BPR1 is a common choice here; kill -9
+                // relaunches skip the graceful-exit state save, so relying on
+                // saved-state alone kept losing the pane (2026-07-05).
+                let follow_up = |sym: &str| -> Task<Message> {
+                    if sym == "EURUSD" {
+                        Task::done(Message::AutoOpenForexPane(
+                            "XAUUSD".to_string(),
+                            Some(10),
+                            0,
+                        ))
+                    } else {
+                        Task::none()
+                    }
+                };
+                let ticker =
+                    exchange::Ticker::new(&symbol, exchange::adapter::Exchange::ClickhouseSpot);
+                let main_window_id = self.main_window.id;
+                // Idempotence: saved-state (or a prior auto-open) may already
+                // show this ticker — skip, but still chain the next symbol.
+                if self
+                    .active_dashboard_mut()
+                    .has_ticker_pane(main_window_id, &ticker)
+                {
+                    log::info!("[forex] {symbol} pane already present — skipping auto-open");
+                    return follow_up(&symbol);
+                }
+                if let Some(ti) = self
+                    .sidebar
+                    .tickers_info()
+                    .get(&ticker)
+                    .and_then(|opt| *opt)
+                {
+                    log::info!(
+                        "[forex] auto-opening {symbol} pane (threshold={threshold_dbps:?} dbps)"
+                    );
+                    let dashboard = self.active_dashboard_mut();
+                    // Second and later auto-panes: split instead of replacing
+                    // the pane the previous auto-open just populated.
+                    let split_task = if dashboard.focused_pane_occupied(main_window_id) {
+                        dashboard.split_focused_for_auto_open(main_window_id)
+                    } else {
+                        Task::none()
+                    };
+                    if let Some(dbps) = threshold_dbps {
+                        dashboard.preset_focused_odb_threshold(main_window_id, dbps);
+                    }
+                    let init_task = dashboard.init_focused_pane(
+                        main_window_id,
+                        ti,
+                        data::layout::pane::ContentKind::OdbChart,
+                    );
+                    return Task::batch(vec![split_task, init_task])
+                        .map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        })
+                        .chain(follow_up(&symbol));
+                }
+                // Ticker metadata may not be loaded yet — retry after delay,
+                // but give up after ~2 min instead of spamming the log forever
+                // (a prior saved-state bug caused 1600+ retries per run).
+                const AUTO_OPEN_MAX_ATTEMPTS: u32 = 60;
+                if attempt >= AUTO_OPEN_MAX_ATTEMPTS {
+                    log::warn!(
+                        "[forex] {symbol} ticker info never resolved after \
+                         {AUTO_OPEN_MAX_ATTEMPTS} attempts — giving up on auto-open \
+                         (is the ClickHouse venue metadata fetch failing?)"
+                    );
+                    return Task::none();
+                }
+                if attempt == 0 || attempt.is_multiple_of(15) {
+                    log::info!(
+                        "[forex] {symbol} ticker info not ready, retrying \
+                         (attempt {attempt}/{AUTO_OPEN_MAX_ATTEMPTS})"
+                    );
+                }
+                return Task::perform(
+                    async {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    },
+                    move |_| Message::AutoOpenForexPane(symbol, threshold_dbps, attempt + 1),
+                );
+            }
             Message::Tick(now) => {
                 let main_window_id = self.main_window.id;
+                let timezone = self.timezone;
 
                 return self
                     .active_dashboard_mut()
-                    .tick(now, main_window_id)
+                    .tick(now, timezone, main_window_id)
                     .map(move |msg| Message::Dashboard {
                         layout_id: None,
                         event: msg,
@@ -225,6 +471,16 @@ impl Flowsurface {
             }
             Message::WindowEvent(event) => match event {
                 window::Event::CloseRequested(window) => {
+                    // Widget window close.
+                    if self
+                        .widget
+                        .as_ref()
+                        .is_some_and(|c| c.window_id() == window)
+                    {
+                        let ctrl = self.widget.take().unwrap();
+                        return ctrl.close();
+                    }
+
                     let main_window = self.main_window.id;
                     let dashboard = self.active_dashboard_mut();
 
@@ -254,6 +510,28 @@ impl Flowsurface {
                 self.save_state_to_disk(&windows);
                 return self.restart();
             }
+            Message::RequestRestart => {
+                self.sidebar.set_menu(None);
+                let mut active_windows: Vec<iced::window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+                return window::collect_window_specs(active_windows, Message::RestartRequested);
+            }
+            Message::RequestQuit => {
+                self.sidebar.set_menu(None);
+                let mut active_windows: Vec<iced::window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+                return window::collect_window_specs(active_windows, Message::ExitRequested);
+            }
+            // NOTE(fork): 30s layout autosave (see subscription()) — same
+            // collection as RequestQuit but routed to the non-exiting save.
+            Message::RequestAutosave => {
+                let mut active_windows: Vec<iced::window::Id> =
+                    self.active_dashboard().popout.keys().copied().collect();
+                active_windows.push(self.main_window.id);
+                return window::collect_window_specs(active_windows, Message::SaveStateRequested);
+            }
             Message::GoBack => {
                 let main_window = self.main_window.id;
 
@@ -282,6 +560,11 @@ impl Flowsurface {
             } => {
                 let Some(active_layout) = self.layout_manager.active_layout_id() else {
                     log::error!("No active layout to handle dashboard message");
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Critical,
+                        "layout",
+                        "No active layout — UI unresponsive"
+                    );
                     return Task::none();
                 };
 
@@ -298,7 +581,13 @@ impl Flowsurface {
                             data,
                             stream,
                         }) => dashboard
-                            .distribute_fetched_data(main_window.id, pane_id, data, stream)
+                            .distribute_fetched_data(
+                                main_window.id,
+                                layout_id,
+                                pane_id,
+                                data,
+                                stream,
+                            )
                             .map(move |msg| Message::Dashboard {
                                 layout_id: Some(layout_id),
                                 event: msg,
@@ -322,7 +611,21 @@ impl Flowsurface {
                             let resolved_streams =
                                 streams.into_iter().try_fold(vec![], |mut acc, persist| {
                                     let resolver = |t: &exchange::Ticker| {
-                                        tickers_info.get(t).and_then(|opt| *opt)
+                                        let result = tickers_info.get(t).and_then(|opt| *opt);
+                                        if result.is_none() {
+                                            log::warn!(
+                                                "[RESOLVE] TickerInfo NOT found for {:?} (exchange={:?}, venue={:?}). Available CH tickers: {}",
+                                                t,
+                                                t.exchange,
+                                                t.exchange.venue(),
+                                                tickers_info.keys()
+                                                    .filter(|k| k.exchange.venue() == exchange::adapter::Venue::ClickHouse)
+                                                    .map(|k| k.to_string())
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ")
+                                            );
+                                        }
+                                        result
                                     };
 
                                     match persist.into_stream_kinds(resolver) {
@@ -330,9 +633,14 @@ impl Flowsurface {
                                             acc.append(&mut resolved);
                                             Ok(acc)
                                         }
-                                        Err(err) => Err(format!(
-                                            "Persisted stream still not resolvable: {err}"
-                                        )),
+                                        Err(err) => {
+                                            log::error!(
+                                                "[RESOLVE] Stream resolution FAILED: {err}"
+                                            );
+                                            Err(format!(
+                                                "Persisted stream still not resolvable: {err}"
+                                            ))
+                                        }
                                     }
                                 });
 
@@ -564,6 +872,18 @@ impl Flowsurface {
                             event: msg,
                         });
                     }
+                    Some(dashboard::sidebar::Action::SyncToAllPanes(ticker_info)) => {
+                        let main_window_id = self.main_window.id;
+
+                        let task = self
+                            .active_dashboard_mut()
+                            .switch_all_panes_to_ticker(main_window_id, ticker_info);
+
+                        return task.map(move |msg| Message::Dashboard {
+                            layout_id: None,
+                            event: msg,
+                        });
+                    }
                     Some(dashboard::sidebar::Action::ErrorOccurred(err)) => {
                         self.notifications.push(Toast::error(err.to_string()));
                     }
@@ -581,6 +901,29 @@ impl Flowsurface {
                 active_windows.push(self.main_window.id);
 
                 return window::collect_window_specs(active_windows, Message::RestartRequested);
+            }
+            Message::Widget(widget_window::WidgetMessage::Drag) => {
+                if let Some(ref ctrl) = self.widget {
+                    return iced::window::drag(ctrl.window_id());
+                }
+            }
+            Message::ToggleWidget => {
+                if let Some(ctrl) = self.widget.take() {
+                    return ctrl.close();
+                }
+
+                let ticker_info = widget_window::WidgetController::find_btcusdt_ticker_info(
+                    self.sidebar.tickers_info(),
+                );
+
+                if let Some(ti) = ticker_info {
+                    let (ctrl, task) = widget_window::WidgetController::open(ti);
+                    self.widget = Some(ctrl);
+                    return task;
+                }
+
+                self.notifications
+                    .push(Toast::error("BTCUSDT ticker info not yet loaded"));
             }
         }
         Task::none()
@@ -642,6 +985,8 @@ impl Flowsurface {
             } else {
                 base.into()
             }
+        } else if self.widget.as_ref().is_some_and(|c| c.window_id() == id) {
+            self.widget.as_ref().unwrap().view().map(Message::Widget)
         } else {
             container(
                 dashboard
@@ -673,9 +1018,9 @@ impl Flowsurface {
 
     fn title(&self, _window: window::Id) -> String {
         if let Some(id) = self.layout_manager.active_layout_id() {
-            format!("Flowsurface [{}]", id.name)
+            format!("Flowsurface v{} [{}]", env!("CARGO_PKG_VERSION"), id.name)
         } else {
-            "Flowsurface".to_string()
+            format!("Flowsurface v{}", env!("CARGO_PKG_VERSION"))
         }
     }
 
@@ -695,21 +1040,42 @@ impl Flowsurface {
         let tick = iced::window::frames().map(Message::Tick);
 
         let hotkeys = keyboard::listen().filter_map(|event| {
-            let keyboard::Event::KeyPressed { key, .. } = event else {
+            let keyboard::Event::KeyPressed { key, .. } = &event else {
                 return None;
             };
-            match key {
-                keyboard::Key::Named(keyboard::key::Named::Escape) => Some(Message::GoBack),
-                _ => None,
+            if matches!(key, keyboard::Key::Named(keyboard::key::Named::Escape)) {
+                return Some(Message::GoBack);
             }
+            // NOTE(fork): Chart keyboard navigation — routed to focused pane's chart.
+            // Key list is authoritative in keyboard_nav::is_nav_key(); no duplicate here.
+            // Fork-specific: open deviation bar support
+            if chart::keyboard_nav::is_nav_key(key) {
+                return Some(Message::Dashboard {
+                    layout_id: None,
+                    event: dashboard::Message::ChartKeyNav(event),
+                });
+            }
+            None
         });
 
+        // NOTE(fork): periodic layout autosave. saved-state.json otherwise
+        // writes only on graceful exit — force-kills (`kill -9`, required
+        // because iced ignores SIGTERM) silently lose the pane layout
+        // (2026-07-05: manually-added XAUUSD pane vanished across relaunch).
+        // 30s cadence; serialization is layout-config only (small, cheap).
+        let autosave =
+            iced::time::every(std::time::Duration::from_secs(30)).map(|_| Message::RequestAutosave);
+
+        // Widget has no own WS subscription — it receives trades via
+        // forward_trades() from the dashboard's stream, ensuring both
+        // chart and widget use the exact same trade data.
         Subscription::batch(vec![
             exchange_streams,
             sidebar,
             window_events,
             tick,
             hotkeys,
+            autosave,
         ])
     }
 
@@ -1093,7 +1459,22 @@ impl Flowsurface {
                     ]
                     .spacing(8)
                 } else {
-                    column![text("No pane selected"),].spacing(8)
+                    // NOTE(fork): ported from upstream 285bc7c — mirror the selected-pane
+                    // layout with disabled buttons so the modal height doesn't jump
+                    let reset_pane_button =
+                        button(text("Reset").align_x(Alignment::Center)).width(iced::Length::Fill);
+                    let split_pane_button =
+                        button(text("Split").align_x(Alignment::Center)).width(iced::Length::Fill);
+
+                    column![
+                        text("No pane selected"),
+                        row![
+                            tooltip(reset_pane_button, None, TooltipPosition::Top),
+                            tooltip(split_pane_button, None, TooltipPosition::Top),
+                        ]
+                        .spacing(8)
+                    ]
+                    .spacing(8)
                 };
 
                 let manage_layout_modal = {
@@ -1174,6 +1555,45 @@ impl Flowsurface {
                     align_x,
                 )
             }
+            sidebar::Menu::App => {
+                let (align_x, padding) = match sidebar_pos {
+                    sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
+                    sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
+                };
+
+                let widget_label = if self.widget.is_some() {
+                    "Hide BTC Widget"
+                } else {
+                    "Show BTC Widget"
+                };
+
+                let app_menu: Element<'_, Message> = container(
+                    column![
+                        button(text(widget_label))
+                            .width(iced::Length::Fill)
+                            .on_press(Message::ToggleWidget),
+                        button(text("Restart"))
+                            .width(iced::Length::Fill)
+                            .on_press(Message::RequestRestart),
+                        button(text("Quit"))
+                            .width(iced::Length::Fill)
+                            .on_press(Message::RequestQuit),
+                    ]
+                    .spacing(4),
+                )
+                .padding(8)
+                .style(style::dashboard_modal)
+                .into();
+
+                dashboard_modal(
+                    base,
+                    app_menu,
+                    Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
+                    padding,
+                    Alignment::End,
+                    align_x,
+                )
+            }
         }
     }
 
@@ -1240,6 +1660,11 @@ impl Flowsurface {
                 let file_name = data::SAVED_STATE_PATH;
                 if let Err(e) = data::write_json_to_file(&layout_str, file_name) {
                     log::error!("Failed to write layout state to file: {}", e);
+                    exchange::tg_alert!(
+                        exchange::telegram::Severity::Warning,
+                        "layout",
+                        "Layout state write failed"
+                    );
                 } else {
                     log::info!("Persisted state to {file_name}");
                 }

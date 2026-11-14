@@ -23,7 +23,7 @@ const X_AXIS_HEIGHT: f32 = 24.0;
 const MIN_X_TICK_PX: f32 = 80.0;
 const TEXT_SIZE: f32 = 12.0;
 
-const ZOOM_STEP_PCT: f32 = 0.05; // 5% per scroll "line"
+const ZOOM_STEP_PCT: f32 = 0.025; // 2.5% per scroll "line"
 
 /// Gap breaker to avoid drawing across missing data
 const GAP_BREAK_MULTIPLIER: f32 = 3.0;

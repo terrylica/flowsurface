@@ -1,10 +1,13 @@
+// FILE-SIZE-OK: upstream panel, not our code to refactor
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/89
 use super::Message;
 use crate::style;
+use data::UserTimezone;
 use data::config::theme::{darken, lighten};
 pub use data::panel::timeandsales::Config;
 use data::panel::timeandsales::{HistAgg, HistAggValues, StackedBar, TradeDisplay, TradeEntry};
 use exchange::unit::Qty;
-use exchange::{SizeUnit, TickerInfo, Trade, unit::qty::volume_size_unit};
+use exchange::{TickerInfo, Trade, unit::qty::volume_size_unit};
 
 use iced::widget::canvas::{self, Text};
 use iced::{Alignment, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
@@ -81,6 +84,7 @@ pub struct TimeAndSales {
     cache: canvas::Cache,
     last_tick: Instant,
     scroll_offset: f32,
+    timezone: UserTimezone,
 }
 
 impl TimeAndSales {
@@ -96,6 +100,14 @@ impl TimeAndSales {
             cache: canvas::Cache::default(),
             last_tick: Instant::now(),
             scroll_offset: 0.0,
+            timezone: UserTimezone::default(),
+        }
+    }
+
+    pub fn set_timezone(&mut self, timezone: UserTimezone) {
+        if self.timezone != timezone {
+            self.timezone = timezone;
+            self.cache.clear();
         }
     }
 
@@ -109,7 +121,7 @@ impl TimeAndSales {
         };
 
         let market_type = self.ticker_info.market_type();
-        let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+        let unit = volume_size_unit();
 
         for trade in trades_buffer {
             let trade_time_ms = trade.time;
@@ -119,17 +131,16 @@ impl TimeAndSales {
                 (trade_time_ms % 1000) as u32 * 1_000_000,
             ) {
                 let trade_display = TradeDisplay {
-                    time_str: trade_time.format("%M:%S.%3f").to_string(),
+                    time_str: trade_time
+                        .format(self.config.time_format.format_str())
+                        .to_string(),
                     price: trade.price,
                     qty: trade.qty,
                     is_sell: trade.is_sell,
                 };
 
-                let trade_size_value = market_type.qty_in_quote_value(
-                    trade_display.qty,
-                    trade.price,
-                    size_in_quote_ccy,
-                );
+                let trade_size_value =
+                    market_type.qty_in_quote_value(trade_display.qty, trade.price, unit);
 
                 if trade_size_value >= size_filter {
                     self.max_filtered_qty = self.max_filtered_qty.max(trade_display.qty);
@@ -221,17 +232,14 @@ impl TimeAndSales {
 
         if popped_any {
             let market_type = self.ticker_info.market_type();
-            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let unit = volume_size_unit();
 
             self.max_filtered_qty = self
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.display.qty,
-                        t.display.price,
-                        size_in_quote_ccy,
-                    );
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.display.qty, t.display.price, unit);
                     trade_size >= size_filter
                 })
                 .map(|e| e.display.qty)
@@ -454,18 +462,15 @@ impl canvas::Program<Message> for TimeAndSales {
             let start_index = (row_scroll_offset / row_height).floor() as usize;
             let visible_rows = (bounds.height / row_height).ceil() as usize;
 
-            let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
+            let unit = volume_size_unit();
             let max_filtered_qty_f32 = self.max_filtered_qty.to_f32_lossy();
 
             let trades_to_draw = self
                 .recent_trades
                 .iter()
                 .filter(|t| {
-                    let trade_size = market_type.qty_in_quote_value(
-                        t.display.qty,
-                        t.display.price,
-                        size_in_quote_ccy,
-                    );
+                    let trade_size =
+                        market_type.qty_in_quote_value(t.display.qty, t.display.price, unit);
                     trade_size >= self.config.trade_size_filter
                 })
                 .rev()
@@ -530,7 +535,9 @@ impl canvas::Program<Message> for TimeAndSales {
                 );
 
                 let trade_time = create_text(
-                    trade.time_str.clone(),
+                    self.config
+                        .time_format
+                        .format_timestamp(entry.ts_ms, self.timezone),
                     Point {
                         x: row_width * 0.1,
                         y: y_position,

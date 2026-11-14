@@ -1,5 +1,7 @@
+// FILE-SIZE-OK: upstream pane state machine -- Content in content.rs, stream wiring in stream_setup.rs
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/89
 use crate::{
-    chart::{self, comparison::ComparisonChart, heatmap::HeatmapChart, kline::KlineChart},
+    chart::{self},
     connector::{
         ResolvedStream,
         fetcher::{FetchSpec, InfoKind},
@@ -14,7 +16,7 @@ use crate::{
         },
     },
     screen::dashboard::{
-        panel::{self, ladder::Ladder, timeandsales::TimeAndSales},
+        panel::{self},
         tickers_table::TickersTable,
     },
     style::{self, Icon, icon_text},
@@ -23,16 +25,15 @@ use crate::{
 };
 use data::{
     UserTimezone,
-    chart::{
-        Basis, ViewConfig,
-        indicator::{HeatmapIndicator, Indicator, KlineIndicator, UiIndicator},
-    },
-    layout::pane::{ContentKind, LinkGroup, PaneSetup, Settings, VisualConfig},
+    chart::{Basis, indicator::UiIndicator},
+    layout::pane::{ContentKind, LinkGroup, Settings, VisualConfig},
     stream::PersistStreamKind,
 };
+use enum_map::EnumMap;
 use exchange::{
     Kline, OpenInterest, StreamPairKind, TickMultiplier, TickerInfo, Timeframe,
-    adapter::{MarketKind, StreamKind, StreamTicksize},
+    adapter::{Exchange, MarketKind, StreamKind},
+    health::ConnectionHealth,
     unit::PriceStep,
 };
 use iced::{
@@ -41,6 +42,11 @@ use iced::{
 };
 use std::time::Instant;
 
+mod content;
+mod stream_setup;
+pub(crate) use content::Content;
+
+#[must_use = "Effect must be handled by the caller"]
 #[derive(Debug, Clone)]
 pub enum Effect {
     RefreshStreams,
@@ -57,6 +63,7 @@ pub enum Status {
     Stale(String),
 }
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     Chart(chart::Action),
     Panel(panel::Action),
@@ -78,6 +85,8 @@ pub enum Message {
     Merge,
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
+    AutoscaleChanged(pane_grid::Pane, Option<data::chart::Autoscale>),
+    IncludeFormingChanged(pane_grid::Pane, bool),
     PaneEvent(pane_grid::Pane, Event),
 }
 
@@ -108,6 +117,10 @@ pub struct State {
     pub streams: ResolvedStream,
     pub status: Status,
     pub link_group: Option<LinkGroup>,
+    /// Set after the first staleness check for the current basis.
+    /// Reset on basis/threshold switch so the next initial fetch
+    /// re-evaluates staleness, but scroll-back fetches are skipped.
+    pub staleness_checked: bool,
 }
 
 impl State {
@@ -132,9 +145,10 @@ impl State {
 
     pub fn stream_pair(&self) -> Option<TickerInfo> {
         self.streams.find_ready_map(|stream| match stream {
-            StreamKind::Kline { ticker_info, .. } => Some(*ticker_info),
-            StreamKind::Depth { ticker_info, .. } => Some(*ticker_info),
-            StreamKind::Trades { ticker_info, .. } => Some(*ticker_info),
+            StreamKind::Kline { ticker_info, .. }
+            | StreamKind::OdbKline { ticker_info, .. }
+            | StreamKind::Depth { ticker_info, .. }
+            | StreamKind::Trades { ticker_info, .. } => Some(*ticker_info),
         })
     }
 
@@ -161,214 +175,17 @@ impl State {
         tickers: Vec<TickerInfo>,
         kind: ContentKind,
     ) -> Vec<StreamKind> {
-        if !(self.content.kind() == kind) {
-            self.settings.selected_basis = None;
-            self.settings.tick_multiply = None;
-        }
-
-        let base_ticker = tickers[0];
-        let prev_base_ticker = self.stream_pair();
-
-        let derived_plan = PaneSetup::new(
+        stream_setup::build_content_and_streams(
+            &mut self.content,
+            &mut self.streams,
+            &mut self.settings,
+            tickers,
             kind,
-            base_ticker,
-            prev_base_ticker,
-            self.settings.selected_basis,
-            self.settings.tick_multiply,
-        );
-
-        self.settings.selected_basis = derived_plan.basis;
-        self.settings.tick_multiply = derived_plan.tick_multiplier;
-
-        let (content, streams) = {
-            let kline_stream = |ti: TickerInfo, tf: Timeframe| StreamKind::Kline {
-                ticker_info: ti,
-                timeframe: tf,
-            };
-            let depth_stream = |derived_plan: &PaneSetup| StreamKind::Depth {
-                ticker_info: derived_plan.ticker_info,
-                depth_aggr: derived_plan.depth_aggr,
-                push_freq: derived_plan.push_freq,
-            };
-            let trades_stream = |derived_plan: &PaneSetup| StreamKind::Trades {
-                ticker_info: derived_plan.ticker_info,
-            };
-
-            match kind {
-                ContentKind::HeatmapChart => {
-                    let content = Content::new_heatmap(
-                        &self.content,
-                        derived_plan.ticker_info,
-                        &self.settings,
-                        derived_plan.price_step,
-                    );
-
-                    let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
-
-                    (content, streams)
-                }
-                ContentKind::FootprintChart => {
-                    let content = Content::new_kline(
-                        kind,
-                        &self.content,
-                        derived_plan.ticker_info,
-                        &self.settings,
-                        derived_plan.price_step,
-                    );
-
-                    let streams = by_basis_default(
-                        derived_plan.basis,
-                        Timeframe::M5,
-                        |tf| {
-                            vec![
-                                trades_stream(&derived_plan),
-                                kline_stream(derived_plan.ticker_info, tf),
-                            ]
-                        },
-                        || vec![trades_stream(&derived_plan)],
-                    );
-
-                    (content, streams)
-                }
-                ContentKind::CandlestickChart => {
-                    let content = {
-                        let base_ticker = tickers[0];
-                        Content::new_kline(
-                            kind,
-                            &self.content,
-                            derived_plan.ticker_info,
-                            &self.settings,
-                            base_ticker.min_ticksize.into(),
-                        )
-                    };
-
-                    let time_basis_stream = |tf| vec![kline_stream(derived_plan.ticker_info, tf)];
-                    let tick_basis_stream = || {
-                        let depth_aggr = derived_plan
-                            .ticker_info
-                            .exchange()
-                            .stream_ticksize(None, TickMultiplier(50));
-                        let temp = PaneSetup {
-                            depth_aggr,
-                            ..derived_plan
-                        };
-                        vec![trades_stream(&temp)]
-                    };
-
-                    let streams = by_basis_default(
-                        derived_plan.basis,
-                        Timeframe::M15,
-                        time_basis_stream,
-                        tick_basis_stream,
-                    );
-
-                    (content, streams)
-                }
-                ContentKind::TimeAndSales => {
-                    let config = self
-                        .settings
-                        .visual_config
-                        .clone()
-                        .and_then(|cfg| cfg.time_and_sales());
-                    let content = Content::TimeAndSales(Some(TimeAndSales::new(
-                        config,
-                        derived_plan.ticker_info,
-                    )));
-
-                    let temp = PaneSetup {
-                        push_freq: exchange::PushFrequency::ServerDefault,
-                        ..derived_plan
-                    };
-
-                    let streams = vec![trades_stream(&temp)];
-
-                    (content, streams)
-                }
-                ContentKind::Ladder => {
-                    let config = self
-                        .settings
-                        .visual_config
-                        .clone()
-                        .and_then(|cfg| cfg.ladder());
-                    let content = Content::Ladder(Some(Ladder::new(
-                        config,
-                        derived_plan.ticker_info,
-                        derived_plan.price_step,
-                    )));
-
-                    let streams = vec![depth_stream(&derived_plan), trades_stream(&derived_plan)];
-
-                    (content, streams)
-                }
-                ContentKind::ComparisonChart => {
-                    let config = self
-                        .settings
-                        .visual_config
-                        .clone()
-                        .and_then(|cfg| cfg.comparison());
-
-                    let timeframe = {
-                        let supports = |tf| {
-                            tickers
-                                .iter()
-                                .all(|ti| ti.exchange().supports_kline_timeframe(tf))
-                        };
-
-                        if let Some(tf) = derived_plan.basis.and_then(|basis| match basis {
-                            Basis::Time(tf) => Some(tf),
-                            Basis::Tick(_) => None,
-                        }) && supports(tf)
-                        {
-                            tf
-                        } else {
-                            let fallback = Timeframe::M15;
-                            if supports(fallback) {
-                                fallback
-                            } else {
-                                Timeframe::KLINE
-                                    .iter()
-                                    .copied()
-                                    .find(|tf| supports(*tf))
-                                    .unwrap_or(fallback)
-                            }
-                        }
-                    };
-
-                    let basis = Basis::Time(timeframe);
-                    self.settings.selected_basis = Some(basis);
-                    let content =
-                        Content::Comparison(Some(ComparisonChart::new(basis, &tickers, config)));
-
-                    let streams = tickers
-                        .iter()
-                        .copied()
-                        .map(|ti| kline_stream(ti, timeframe))
-                        .collect();
-
-                    (content, streams)
-                }
-                ContentKind::Starter => unreachable!(),
-            }
-        };
-
-        self.content = content;
-        self.streams = ResolvedStream::Ready(streams.clone());
-
-        streams
+        )
     }
 
     pub fn insert_hist_oi(&mut self, req_id: Option<uuid::Uuid>, oi: &[OpenInterest]) {
-        match &mut self.content {
-            Content::Kline { chart, .. } => {
-                let Some(chart) = chart else {
-                    panic!("Kline chart wasn't initialized when inserting open interest");
-                };
-                chart.insert_open_interest(req_id, oi);
-            }
-            _ => {
-                log::error!("pane content not candlestick");
-            }
-        }
+        stream_setup::insert_hist_oi(&mut self.content, req_id, oi);
     }
 
     pub fn insert_hist_klines(
@@ -378,67 +195,27 @@ impl State {
         ticker_info: TickerInfo,
         klines: &[Kline],
     ) {
-        match &mut self.content {
-            Content::Kline {
-                chart, indicators, ..
-            } => {
-                let Some(chart) = chart else {
-                    panic!("chart wasn't initialized when inserting klines");
-                };
+        stream_setup::insert_hist_klines(&mut self.content, req_id, timeframe, ticker_info, klines);
+    }
 
-                if let Some(id) = req_id {
-                    if chart.basis() != Basis::Time(timeframe) {
-                        log::warn!(
-                            "Ignoring stale kline fetch for timeframe {:?}; chart basis = {:?}",
-                            timeframe,
-                            chart.basis()
-                        );
-                        return;
-                    }
-                    chart.insert_hist_klines(id, klines);
-                } else {
-                    let (raw_trades, tick_size) = (chart.raw_trades(), chart.tick_size());
-                    let layout = chart.chart_layout();
-
-                    *chart = KlineChart::new(
-                        layout,
-                        Basis::Time(timeframe),
-                        tick_size,
-                        klines,
-                        raw_trades,
-                        indicators,
-                        ticker_info,
-                        chart.kind(),
-                    );
-                }
-            }
-            Content::Comparison(chart) => {
-                let Some(chart) = chart else {
-                    panic!("Comparison chart wasn't initialized when inserting klines");
-                };
-
-                if let Some(id) = req_id {
-                    if chart.timeframe != timeframe {
-                        log::warn!(
-                            "Ignoring stale kline fetch for timeframe {:?}; chart timeframe = {:?}",
-                            timeframe,
-                            chart.timeframe
-                        );
-                        return;
-                    }
-                    chart.insert_history(id, ticker_info, klines);
-                } else {
-                    *chart = ComparisonChart::new(
-                        Basis::Time(timeframe),
-                        &[ticker_info],
-                        Some(chart.serializable_config()),
-                    );
-                }
-            }
-            _ => {
-                log::error!("pane content not candlestick or footprint");
-            }
-        }
+    pub fn insert_odb_klines(
+        &mut self,
+        req_id: Option<uuid::Uuid>,
+        ticker_info: TickerInfo,
+        klines: &[Kline],
+        microstructure: Option<&[Option<exchange::adapter::clickhouse::ChMicrostructure>]>,
+        agg_trade_id_ranges: Option<&[Option<(u64, u64)>]>,
+        open_time_ms_list: Option<&[Option<u64>]>,
+    ) {
+        stream_setup::insert_odb_klines(
+            &mut self.content,
+            req_id,
+            ticker_info,
+            klines,
+            microstructure,
+            agg_trade_id_ranges,
+            open_time_ms_list,
+        );
     }
 
     fn has_stream(&self) -> bool {
@@ -458,6 +235,7 @@ impl State {
         main_window: &'a Window,
         timezone: UserTimezone,
         tickers_table: &'a TickersTable,
+        connection_health: &'a EnumMap<Exchange, ConnectionHealth>,
     ) -> pane_grid::Content<'a, Message, Theme, Renderer> {
         let mut top_left_buttons = if Content::Starter == self.content {
             row![]
@@ -485,7 +263,19 @@ impl State {
                 label = format!("{label} +{extra}");
             }
 
+            // Connection health dot
+            let health = connection_health[base_ti.ticker.exchange];
+            let health_dot = {
+                let color = match health {
+                    ConnectionHealth::Connected => iced::Color::from_rgb(0.2, 0.8, 0.2),
+                    ConnectionHealth::Reconnecting => iced::Color::from_rgb(1.0, 0.7, 0.0),
+                    ConnectionHealth::Disconnected => iced::Color::from_rgb(0.8, 0.2, 0.2),
+                };
+                text("●").size(8).color(color)
+            };
+
             let content = row![
+                health_dot,
                 exchange_icon.align_y(Alignment::Center).line_height(1.4),
                 text(label)
                     .size(14)
@@ -829,14 +619,14 @@ impl State {
 
                             let kind = ModifierKind::Footprint(basis, tick_multiply);
                             let stream_pair = self.stream_pair();
+                            let current_step =
+                                exchange::unit::PriceStep::from_f32(chart.tick_size());
                             let price_step = stream_pair
                                 .map(|ti| {
-                                    tick_multiply.unscale_step_or_min_tick(
-                                        chart.tick_size(),
-                                        ti.min_ticksize,
-                                    )
+                                    tick_multiply
+                                        .unscale_step_or_min_tick(current_step, ti.min_ticksize)
                                 })
-                                .unwrap_or_else(|| tick_multiply.unscale_step(chart.tick_size()));
+                                .unwrap_or_else(|| tick_multiply.unscale_step(current_step));
 
                             let exchange = stream_pair.as_ref().map(|info| info.ticker.exchange);
                             let min_ticksize = stream_pair.map(|ti| ti.min_ticksize);
@@ -867,18 +657,32 @@ impl State {
 
                             top_left_buttons = top_left_buttons.push(modifiers);
                         }
+                        data::chart::KlineChartKind::Odb => {
+                            let selected_basis =
+                                self.settings.selected_basis.unwrap_or(Basis::Odb(100));
+                            let kind = ModifierKind::OdbChart(selected_basis);
+
+                            let modifiers =
+                                row![basis_modifier(id, selected_basis, modifier, kind),]
+                                    .spacing(4);
+
+                            top_left_buttons = top_left_buttons.push(modifiers);
+                        }
                     }
 
                     let base = chart::view(chart, indicators, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::ChartInteraction(message))
                     });
                     let settings_modal = || {
+                        let chart_layout = chart.chart_layout();
                         kline_cfg_view(
                             chart.study_configurator(),
-                            data::chart::kline::Config {},
+                            chart.kline_config,
                             chart_kind,
                             id,
                             chart.basis(),
+                            chart_layout.autoscale,
+                            chart_layout.include_forming,
                         )
                     };
 
@@ -905,6 +709,7 @@ impl State {
                 } else {
                     let content_kind = match chart_kind {
                         data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
+                        data::chart::KlineChartKind::Odb => ContentKind::OdbChart,
                         data::chart::KlineChartKind::Footprint { .. } => {
                             ContentKind::FootprintChart
                         }
@@ -986,6 +791,20 @@ impl State {
         })
     }
 
+    // NOTE(fork): Pan the focused chart from the app-level keyboard subscription.
+    // Called by `dashboard::Message::ChartKeyNav` when the cursor may be off-chart.
+    // Fork-specific: open deviation bar support
+    pub fn apply_keyboard_nav(&mut self, event: &iced::keyboard::Event) {
+        // Fork-specific: open deviation bar support
+        if let Content::Kline { chart: Some(c), .. } = &mut self.content
+            && let Some(msg) = c.keyboard_nav_msg(event)
+        {
+            super::chart::update(c, &msg);
+            let _ = c.invalidate(None);
+        }
+    }
+
+    #[must_use = "returned Effect must be dispatched to dashboard"]
     pub fn update(&mut self, msg: Event) -> Option<Effect> {
         match msg {
             Event::ShowModal(requested_modal) => {
@@ -1079,180 +898,37 @@ impl State {
                             modal::stream::Action::TicksizeSelected(tm) => {
                                 modifier.update_kind_with_multiplier(tm);
                                 self.settings.tick_multiply = Some(tm);
-
-                                if let Some(ticker) = self.stream_pair() {
-                                    match &mut self.content {
-                                        Content::Kline { chart: Some(c), .. } => {
-                                            c.change_tick_size(
-                                                tm.multiply_with_min_tick_step(ticker),
-                                            );
-                                            c.reset_request_handler();
-                                        }
-                                        Content::Heatmap { chart: Some(c), .. } => {
-                                            c.change_tick_size(
-                                                tm.multiply_with_min_tick_step(ticker),
-                                            );
-                                        }
-                                        Content::Ladder(Some(p)) => {
-                                            p.set_tick_size(tm.multiply_with_min_tick_step(ticker));
-                                        }
-                                        _ => {}
-                                    }
-                                }
-
-                                let is_client = self
-                                    .stream_pair()
-                                    .map(|ti| ti.exchange().is_depth_client_aggr())
-                                    .unwrap_or(false);
-
-                                if let Some(mut it) = self.streams.ready_iter_mut() {
-                                    for s in &mut it {
-                                        if let StreamKind::Depth { depth_aggr, .. } = s {
-                                            *depth_aggr = if is_client {
-                                                StreamTicksize::Client
-                                            } else {
-                                                StreamTicksize::ServerSide(tm)
-                                            };
-                                        }
-                                    }
-                                }
-                                if !is_client {
-                                    effect = Some(Effect::RefreshStreams);
-                                }
+                                let ticker = self.stream_pair();
+                                effect = stream_setup::apply_ticksize_change(
+                                    &mut self.content,
+                                    &mut self.streams,
+                                    &self.settings,
+                                    tm,
+                                    ticker,
+                                );
                             }
                             modal::stream::Action::BasisSelected(new_basis) => {
                                 modifier.update_kind_with_basis(new_basis);
                                 self.settings.selected_basis = Some(new_basis);
-
-                                let base_ticker = self.stream_pair();
-
-                                match &mut self.content {
-                                    Content::Heatmap { chart: Some(c), .. } => {
-                                        c.set_basis(new_basis);
-
-                                        if let Some(stream_type) =
-                                            self.streams.ready_iter_mut().and_then(|mut it| {
-                                                it.find(|s| matches!(s, StreamKind::Depth { .. }))
-                                            })
-                                            && let StreamKind::Depth {
-                                                push_freq,
-                                                ticker_info,
-                                                ..
-                                            } = stream_type
-                                            && ticker_info.exchange().is_custom_push_freq()
-                                        {
-                                            match new_basis {
-                                                Basis::Time(tf) => {
-                                                    *push_freq = exchange::PushFrequency::Custom(tf)
-                                                }
-                                                Basis::Tick(_) => {
-                                                    *push_freq =
-                                                        exchange::PushFrequency::ServerDefault
-                                                }
-                                            }
-                                        }
-
-                                        effect = Some(Effect::RefreshStreams);
-                                    }
-                                    Content::Kline { chart: Some(c), .. } => {
-                                        if let Some(base_ticker) = base_ticker {
-                                            match new_basis {
-                                                Basis::Time(tf) => {
-                                                    let kline_stream = StreamKind::Kline {
-                                                        ticker_info: base_ticker,
-                                                        timeframe: tf,
-                                                    };
-                                                    let mut streams = vec![kline_stream];
-
-                                                    if matches!(
-                                                        c.kind,
-                                                        data::chart::KlineChartKind::Footprint { .. }
-                                                    ) {
-                                                        let depth_aggr = if base_ticker
-                                                            .exchange()
-                                                            .is_depth_client_aggr()
-                                                        {
-                                                            StreamTicksize::Client
-                                                        } else {
-                                                            StreamTicksize::ServerSide(
-                                                                self.settings
-                                                                    .tick_multiply
-                                                                    .unwrap_or(TickMultiplier(1)),
-                                                            )
-                                                        };
-                                                        streams.push(StreamKind::Depth {
-                                                            ticker_info: base_ticker,
-                                                            depth_aggr,
-                                                            push_freq: exchange::PushFrequency::ServerDefault,
-                                                        });
-                                                        streams.push(StreamKind::Trades {
-                                                            ticker_info: base_ticker,
-                                                        });
-                                                    }
-
-                                                    self.streams = ResolvedStream::Ready(streams);
-                                                    let action = c.set_basis(new_basis);
-
-                                                    if let Some(chart::Action::RequestFetch(
-                                                        fetch,
-                                                    )) = action
-                                                    {
-                                                        effect = Some(Effect::RequestFetch(fetch));
-                                                    }
-                                                }
-                                                Basis::Tick(_) => {
-                                                    let depth_aggr = if base_ticker
-                                                        .exchange()
-                                                        .is_depth_client_aggr()
-                                                    {
-                                                        StreamTicksize::Client
-                                                    } else {
-                                                        StreamTicksize::ServerSide(
-                                                            self.settings
-                                                                .tick_multiply
-                                                                .unwrap_or(TickMultiplier(1)),
-                                                        )
-                                                    };
-
-                                                    self.streams = ResolvedStream::Ready(vec![
-                                                        StreamKind::Depth {
-                                                            ticker_info: base_ticker,
-                                                            depth_aggr,
-                                                            push_freq: exchange::PushFrequency::ServerDefault,
-                                                        },
-                                                        StreamKind::Trades {
-                                                            ticker_info: base_ticker,
-                                                        },
-                                                    ]);
-                                                    c.set_basis(new_basis);
-                                                    effect = Some(Effect::RefreshStreams);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Content::Comparison(Some(c)) => {
-                                        if let Basis::Time(tf) = new_basis {
-                                            let streams: Vec<StreamKind> = c
-                                                .selected_tickers()
-                                                .iter()
-                                                .copied()
-                                                .map(|ti| StreamKind::Kline {
-                                                    ticker_info: ti,
-                                                    timeframe: tf,
-                                                })
-                                                .collect();
-
-                                            self.streams = ResolvedStream::Ready(streams);
-                                            let action = c.set_basis(new_basis);
-
-                                            if let Some(chart::Action::RequestFetch(fetch)) = action
-                                            {
-                                                effect = Some(Effect::RequestFetch(fetch));
-                                            }
-                                        }
-                                    }
-                                    _ => {}
+                                // Reset stale status and staleness flag -- fresh
+                                // data for the new basis will re-evaluate staleness.
+                                // NOTE(fork): upstream 3e95c99 — tick basis no longer
+                                // waits on trade fetches, so force Ready to avoid a
+                                // stuck Loading(FetchingTrades) status.
+                                if matches!(new_basis, Basis::Tick(_))
+                                    || matches!(self.status, Status::Stale(_))
+                                {
+                                    self.status = Status::Ready;
                                 }
+                                self.staleness_checked = false;
+                                let base_ticker = self.stream_pair();
+                                effect = stream_setup::apply_basis_change(
+                                    &mut self.content,
+                                    &mut self.streams,
+                                    &self.settings,
+                                    new_basis,
+                                    base_ticker,
+                                );
                             }
                         }
                     }
@@ -1468,8 +1144,22 @@ impl State {
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
+                // Filter tickers to ODB symbols when in ODB chart mode
+                let odb_filter = match &self.content {
+                    Content::Kline {
+                        kind: data::chart::KlineChartKind::Odb,
+                        ..
+                    } => exchange::adapter::clickhouse::odb_symbol_filter(),
+                    _ => None,
+                };
+
                 let mini_list = panel
-                    .view(tickers_table, selected_tickers, self.stream_pair())
+                    .view(
+                        tickers_table,
+                        selected_tickers,
+                        self.stream_pair(),
+                        odb_filter,
+                    )
                     .map(move |msg| {
                         Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
                     });
@@ -1521,6 +1211,7 @@ impl State {
         self.streams.matches_stream(stream)
     }
 
+    #[must_use = "returned Effect must be dispatched to dashboard"]
     fn show_modal_with_focus(&mut self, requested_modal: Modal) -> Option<Effect> {
         let should_toggle_close = match (&self.modal, &requested_modal) {
             (Some(Modal::StreamModifier(open)), Modal::StreamModifier(req)) => {
@@ -1544,6 +1235,7 @@ impl State {
         focus_widget_id.map(Effect::FocusWidget)
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn invalidate(&mut self, now: Instant) -> Option<Action> {
         match &mut self.content {
             Content::Heatmap { chart, .. } => chart
@@ -1584,9 +1276,15 @@ impl State {
         self.content.last_tick()
     }
 
-    pub fn tick(&mut self, now: Instant) -> Option<Action> {
+    #[must_use = "returned Action must be dispatched"]
+    pub fn tick(&mut self, now: Instant, timezone: UserTimezone) -> Option<Action> {
         let invalidate_interval: Option<u64> = self.update_interval();
         let last_tick: Option<Instant> = self.last_tick();
+
+        // Update timezone for TimeAndSales panel so trade timestamps reflect the user's timezone.
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            panel.set_timezone(timezone);
+        }
 
         if let Some(streams) = self.streams.due_streams_to_resolve(now) {
             return Some(Action::ResolveStreams(streams));
@@ -1632,410 +1330,8 @@ impl Default for State {
             notifications: vec![],
             status: Status::Ready,
             link_group: None,
+            staleness_checked: false,
         }
-    }
-}
-
-#[derive(Default)]
-pub enum Content {
-    #[default]
-    Starter,
-    Heatmap {
-        chart: Option<HeatmapChart>,
-        indicators: Vec<HeatmapIndicator>,
-        layout: data::chart::ViewConfig,
-        studies: Vec<data::chart::heatmap::HeatmapStudy>,
-    },
-    Kline {
-        chart: Option<KlineChart>,
-        indicators: Vec<KlineIndicator>,
-        layout: data::chart::ViewConfig,
-        kind: data::chart::KlineChartKind,
-    },
-    TimeAndSales(Option<TimeAndSales>),
-    Ladder(Option<Ladder>),
-    Comparison(Option<ComparisonChart>),
-}
-
-impl Content {
-    fn new_heatmap(
-        current_content: &Content,
-        ticker_info: TickerInfo,
-        settings: &Settings,
-        price_step: exchange::unit::PriceStep,
-    ) -> Self {
-        let (enabled_indicators, layout, prev_studies) = if let Content::Heatmap {
-            chart,
-            indicators,
-            studies,
-            layout,
-        } = current_content
-        {
-            (
-                indicators.clone(),
-                chart
-                    .as_ref()
-                    .map(|c| c.chart_layout())
-                    .unwrap_or(layout.clone()),
-                chart
-                    .as_ref()
-                    .map_or(studies.clone(), |c| c.studies.clone()),
-            )
-        } else {
-            (
-                vec![HeatmapIndicator::Volume],
-                ViewConfig {
-                    splits: vec![],
-                    autoscale: Some(data::chart::Autoscale::CenterLatest),
-                },
-                vec![],
-            )
-        };
-
-        let basis = settings
-            .selected_basis
-            .unwrap_or_else(|| Basis::default_heatmap_time(Some(ticker_info)));
-        let config = settings.visual_config.clone().and_then(|cfg| cfg.heatmap());
-
-        let chart = HeatmapChart::new(
-            layout.clone(),
-            basis,
-            price_step,
-            &enabled_indicators,
-            ticker_info,
-            config,
-            prev_studies.clone(),
-        );
-
-        Content::Heatmap {
-            chart: Some(chart),
-            indicators: enabled_indicators,
-            layout,
-            studies: prev_studies,
-        }
-    }
-
-    fn new_kline(
-        content_kind: ContentKind,
-        current_content: &Content,
-        ticker_info: TickerInfo,
-        settings: &Settings,
-        step: exchange::unit::PriceStep,
-    ) -> Self {
-        let (prev_indis, prev_layout, prev_kind_opt) = if let Content::Kline {
-            chart,
-            indicators,
-            kind,
-            layout,
-        } = current_content
-        {
-            (
-                Some(indicators.clone()),
-                Some(chart.as_ref().map_or(layout.clone(), |c| c.chart_layout())),
-                Some(chart.as_ref().map_or(kind.clone(), |c| c.kind().clone())),
-            )
-        } else {
-            (None, None, None)
-        };
-
-        let (default_tf, determined_chart_kind) = match content_kind {
-            ContentKind::FootprintChart => (
-                Timeframe::M5,
-                prev_kind_opt
-                    .filter(|k| matches!(k, data::chart::KlineChartKind::Footprint { .. }))
-                    .unwrap_or_else(|| data::chart::KlineChartKind::Footprint {
-                        clusters: data::chart::kline::ClusterKind::default(),
-                        scaling: data::chart::kline::ClusterScaling::default(),
-                        studies: vec![],
-                    }),
-            ),
-            ContentKind::CandlestickChart => (Timeframe::M15, data::chart::KlineChartKind::Candles),
-            _ => unreachable!("invalid content kind for kline chart"),
-        };
-
-        let basis = settings.selected_basis.unwrap_or(Basis::Time(default_tf));
-
-        let enabled_indicators = {
-            let available = KlineIndicator::for_market(ticker_info.market_type());
-            prev_indis.map_or_else(
-                || vec![KlineIndicator::Volume],
-                |indis| {
-                    indis
-                        .into_iter()
-                        .filter(|i| available.contains(i))
-                        .collect()
-                },
-            )
-        };
-
-        let splits = {
-            let main_chart_split: f32 = 0.8;
-            let mut splits_vec = vec![main_chart_split];
-
-            if !enabled_indicators.is_empty() {
-                let num_indicators = enabled_indicators.len();
-
-                if num_indicators > 0 {
-                    let indicator_total_height_ratio = 1.0 - main_chart_split;
-                    let height_per_indicator_pane =
-                        indicator_total_height_ratio / num_indicators as f32;
-
-                    let mut current_split_pos = main_chart_split;
-                    for _ in 0..(num_indicators - 1) {
-                        current_split_pos += height_per_indicator_pane;
-                        splits_vec.push(current_split_pos);
-                    }
-                }
-            }
-            splits_vec
-        };
-
-        let layout = prev_layout
-            .filter(|l| l.splits.len() == splits.len())
-            .unwrap_or(ViewConfig {
-                splits,
-                autoscale: Some(data::chart::Autoscale::FitToVisible),
-            });
-
-        let chart = KlineChart::new(
-            layout.clone(),
-            basis,
-            step,
-            &[],
-            vec![],
-            &enabled_indicators,
-            ticker_info,
-            &determined_chart_kind,
-        );
-
-        Content::Kline {
-            chart: Some(chart),
-            indicators: enabled_indicators,
-            layout,
-            kind: determined_chart_kind,
-        }
-    }
-
-    fn placeholder(kind: ContentKind) -> Self {
-        match kind {
-            ContentKind::Starter => Content::Starter,
-            ContentKind::CandlestickChart => Content::Kline {
-                chart: None,
-                indicators: vec![KlineIndicator::Volume],
-                kind: data::chart::KlineChartKind::Candles,
-                layout: ViewConfig {
-                    splits: vec![],
-                    autoscale: Some(data::chart::Autoscale::FitToVisible),
-                },
-            },
-            ContentKind::FootprintChart => Content::Kline {
-                chart: None,
-                indicators: vec![KlineIndicator::Volume],
-                kind: data::chart::KlineChartKind::Footprint {
-                    clusters: data::chart::kline::ClusterKind::default(),
-                    scaling: data::chart::kline::ClusterScaling::default(),
-                    studies: vec![],
-                },
-                layout: ViewConfig {
-                    splits: vec![],
-                    autoscale: Some(data::chart::Autoscale::FitToVisible),
-                },
-            },
-            ContentKind::HeatmapChart => Content::Heatmap {
-                chart: None,
-                indicators: vec![HeatmapIndicator::Volume],
-                studies: vec![],
-                layout: ViewConfig {
-                    splits: vec![],
-                    autoscale: Some(data::chart::Autoscale::CenterLatest),
-                },
-            },
-            ContentKind::ComparisonChart => Content::Comparison(None),
-            ContentKind::TimeAndSales => Content::TimeAndSales(None),
-            ContentKind::Ladder => Content::Ladder(None),
-        }
-    }
-
-    pub fn last_tick(&self) -> Option<Instant> {
-        match self {
-            Content::Heatmap { chart, .. } => Some(chart.as_ref()?.last_update()),
-            Content::Kline { chart, .. } => Some(chart.as_ref()?.last_update()),
-            Content::TimeAndSales(panel) => Some(panel.as_ref()?.last_update()),
-            Content::Ladder(panel) => Some(panel.as_ref()?.last_update()),
-            Content::Comparison(chart) => Some(chart.as_ref()?.last_update()),
-            Content::Starter => None,
-        }
-    }
-
-    pub fn chart_kind(&self) -> Option<data::chart::KlineChartKind> {
-        match self {
-            Content::Kline { chart, .. } => Some(chart.as_ref()?.kind().clone()),
-            _ => None,
-        }
-    }
-
-    pub fn toggle_indicator(&mut self, indicator: UiIndicator) {
-        match (self, indicator) {
-            (
-                Content::Heatmap {
-                    chart, indicators, ..
-                },
-                UiIndicator::Heatmap(ind),
-            ) => {
-                let Some(chart) = chart else {
-                    return;
-                };
-
-                if indicators.contains(&ind) {
-                    indicators.retain(|i| i != &ind);
-                } else {
-                    indicators.push(ind);
-                }
-                chart.toggle_indicator(ind);
-            }
-            (
-                Content::Kline {
-                    chart, indicators, ..
-                },
-                UiIndicator::Kline(ind),
-            ) => {
-                let Some(chart) = chart else {
-                    return;
-                };
-
-                if indicators.contains(&ind) {
-                    indicators.retain(|i| i != &ind);
-                } else {
-                    indicators.push(ind);
-                }
-                chart.toggle_indicator(ind);
-            }
-            _ => panic!("indicator toggle on {indicator:?} pane",),
-        }
-    }
-
-    pub fn reorder_indicators(&mut self, event: &column_drag::DragEvent) {
-        match self {
-            Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::TimeAndSales(_)
-            | Content::Ladder(_)
-            | Content::Starter
-            | Content::Comparison(_) => {
-                panic!("indicator reorder on {} pane", self)
-            }
-        }
-    }
-
-    pub fn change_visual_config(&mut self, config: VisualConfig) {
-        match (self, config) {
-            (Content::Heatmap { chart: Some(c), .. }, VisualConfig::Heatmap(cfg)) => {
-                c.set_visual_config(cfg);
-            }
-            (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
-                panel.config = cfg;
-            }
-            (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
-                panel.config = cfg;
-            }
-            (Content::Comparison(Some(chart)), VisualConfig::Comparison(cfg)) => {
-                chart.config = cfg;
-            }
-            _ => {}
-        }
-    }
-
-    pub fn studies(&self) -> Option<data::chart::Study> {
-        match &self {
-            Content::Heatmap { studies, .. } => Some(data::chart::Study::Heatmap(studies.clone())),
-            Content::Kline { kind, .. } => {
-                if let data::chart::KlineChartKind::Footprint { studies, .. } = kind {
-                    Some(data::chart::Study::Footprint(studies.clone()))
-                } else {
-                    None
-                }
-            }
-            Content::TimeAndSales(_)
-            | Content::Ladder(_)
-            | Content::Starter
-            | Content::Comparison(_) => None,
-        }
-    }
-
-    pub fn update_studies(&mut self, studies: data::chart::Study) {
-        match (self, studies) {
-            (
-                Content::Heatmap {
-                    chart,
-                    studies: previous,
-                    ..
-                },
-                data::chart::Study::Heatmap(studies),
-            ) => {
-                chart
-                    .as_mut()
-                    .expect("heatmap chart not initialized")
-                    .studies = studies.clone();
-                *previous = studies;
-            }
-            (Content::Kline { chart, kind, .. }, data::chart::Study::Footprint(studies)) => {
-                chart
-                    .as_mut()
-                    .expect("kline chart not initialized")
-                    .set_studies(studies.clone());
-                if let data::chart::KlineChartKind::Footprint {
-                    studies: k_studies, ..
-                } = kind
-                {
-                    *k_studies = studies;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub fn kind(&self) -> ContentKind {
-        match self {
-            Content::Heatmap { .. } => ContentKind::HeatmapChart,
-            Content::Kline { kind, .. } => match kind {
-                data::chart::KlineChartKind::Footprint { .. } => ContentKind::FootprintChart,
-                data::chart::KlineChartKind::Candles => ContentKind::CandlestickChart,
-            },
-            Content::TimeAndSales(_) => ContentKind::TimeAndSales,
-            Content::Ladder(_) => ContentKind::Ladder,
-            Content::Comparison(_) => ContentKind::ComparisonChart,
-            Content::Starter => ContentKind::Starter,
-        }
-    }
-
-    fn initialized(&self) -> bool {
-        match self {
-            Content::Heatmap { chart, .. } => chart.is_some(),
-            Content::Kline { chart, .. } => chart.is_some(),
-            Content::TimeAndSales(panel) => panel.is_some(),
-            Content::Ladder(panel) => panel.is_some(),
-            Content::Comparison(chart) => chart.is_some(),
-            Content::Starter => true,
-        }
-    }
-}
-
-impl std::fmt::Display for Content {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.kind())
-    }
-}
-
-impl PartialEq for Content {
-    fn eq(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Content::Starter, Content::Starter)
-                | (Content::Heatmap { .. }, Content::Heatmap { .. })
-                | (Content::Kline { .. }, Content::Kline { .. })
-                | (Content::TimeAndSales(_), Content::TimeAndSales(_))
-                | (Content::Ladder(_), Content::Ladder(_))
-        )
     }
 }
 
@@ -2130,16 +1426,4 @@ fn basis_modifier<'a>(
         .on_press(Message::PaneEvent(id, Event::ShowModal(modifier_modal)))
         .height(widget::PANE_CONTROL_BTN_HEIGHT)
         .into()
-}
-
-fn by_basis_default<T>(
-    basis: Option<Basis>,
-    default_tf: Timeframe,
-    on_time: impl FnOnce(Timeframe) -> T,
-    on_tick: impl FnOnce() -> T,
-) -> T {
-    match basis.unwrap_or(Basis::Time(default_tf)) {
-        Basis::Time(tf) => on_time(tf),
-        Basis::Tick(_) => on_tick(),
-    }
 }

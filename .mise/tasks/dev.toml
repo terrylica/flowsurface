@@ -1,0 +1,139 @@
+# Development tasks for flowsurface
+
+[build]
+description = "Build debug binary"
+run = "cargo build"
+
+["build:release"]
+description = "Build optimized release binary for current platform"
+run = "cargo build --release"
+
+[run]
+description = "Build and run flowsurface with ClickHouse range bar support"
+depends = ["preflight"]
+run = "cargo run"
+
+["run:app"]
+description = "Build release binary, update .app bundle, sign, and launch"
+depends = ["preflight", "build:release"]
+run = """
+set -e
+
+# Post-build tunnel integrity check — preflight runs in parallel with
+# build:release (~60s), so the tunnel may have died during the build.
+# Must pass before anything else; fail early, don't launch into broken state.
+if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+  echo "⚠ Tunnel died during build — re-establishing..."
+  mise run tunnel:start
+  if ! curl -sf -m 5 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+    echo "" >&2
+    echo "╔══════════════════════════════════════════════════════╗" >&2
+    echo "║  LAUNCH ABORTED: ClickHouse unreachable             ║" >&2
+    echo "║  Tunnel restart failed: host may be offline.        ║" >&2
+    echo "║  Check the network route to the ClickHouse host     ║" >&2
+    echo "╚══════════════════════════════════════════════════════╝" >&2
+    exit 1
+  fi
+  echo "✓ Tunnel re-established"
+fi
+
+cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+codesign --deep --force --sign - Flowsurface.app
+
+# Reset lockfile drift — cargo build may re-dirty Cargo.lock
+if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
+  git checkout -- Cargo.lock
+fi
+
+# Kill existing instance as late as possible — new binary is ready to open immediately.
+# Brief sleep required: macOS Launch Services needs time to deregister the killed bundle
+# before accepting a new open() call on the same path (error -600 without it).
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
+sleep 0.5
+open Flowsurface.app
+"""
+
+["build:fast"]
+description = "Build fast-release binary (opt-level=2, incremental) — 30-35% faster than release"
+run = "cargo build --profile fast-release"
+
+["run:fast"]
+description = "Build fast-release and launch .app — for rapid iteration"
+depends = ["preflight", "build:fast"]
+run = """
+set -e
+
+if ! curl -sf -m 3 http://localhost:18123/ -d 'SELECT 1' >/dev/null 2>&1; then
+  mise run tunnel:start
+fi
+
+cp target/fast-release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+codesign --deep --force --sign - Flowsurface.app
+
+if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
+  git checkout -- Cargo.lock
+fi
+
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
+sleep 0.5
+open Flowsurface.app
+"""
+
+["run:telemetry"]
+description = "Build and run with forensic telemetry (NDJSON artifacts)"
+depends = ["preflight"]
+run = "FLOWSURFACE_TELEMETRY=1 cargo run --features telemetry --release"
+
+[check]
+description = "Run cargo check (fast type-check without codegen)"
+run = "cargo check --workspace"
+
+[clippy]
+description = "Run clippy lints across all workspace crates"
+run = "cargo clippy --all-targets -- -D warnings"
+
+[fmt]
+description = "Format all Rust code"
+run = "cargo fmt --all"
+
+["fmt:check"]
+description = "Check Rust formatting without modifying files"
+run = "cargo fmt --all -- --check"
+
+[lint]
+description = "Run format check + clippy (matches CI)"
+depends = ["fmt:check", "clippy"]
+[test]
+description = "Run unit + proptest tests"
+run = "cargo nextest run --workspace"
+
+["test:integration"]
+description = "Run integration tests (requires CH tunnel)"
+depends = ["preflight"]
+run = "cargo nextest run --workspace --run-ignored=only"
+
+["test:gap-fill"]
+description = "Run gap-fill validation script against live logs"
+run = "bash scripts/telemetry/gap_fill_validation.sh"
+
+["widget:validate"]
+description = "Validate widget code and run app to test floating BTC widget"
+depends = ["preflight"]
+run = """
+echo "→ Checking widget module..."
+cargo check --bin flowsurface -p flowsurface 2>&1 | grep -E "error|widget" || echo "✓ Widget code checks out"
+
+echo "→ Building release for widget testing..."
+cargo build --release 2>&1 | tail -3
+
+echo "→ Launching app with widget support..."
+cp target/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+kill -9 $(pgrep -f "flowsurface.bin") 2>/dev/null || true
+open Flowsurface.app
+
+echo ""
+echo "✓ Widget validation complete. Launch widget via:"
+echo "  1. App menu → Show BTC Widget"
+echo "  2. Click and drag anywhere on the widget to move it"
+echo "  3. Watch price and range bars update in real-time from WebSocket trades"
+"""

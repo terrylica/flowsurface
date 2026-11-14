@@ -14,6 +14,33 @@ pub trait Indicator: PartialEq + Display + 'static {
 pub enum KlineIndicator {
     Volume,
     OpenInterest,
+    Delta,
+    TradeCount,
+    OFI,
+    // Fork-specific: open deviation bar support
+    OFICumulativeEma,
+    TradeIntensity,
+    /// Rolling log-quantile percentile heatmap for trade intensity (open deviation bars).
+    // Fork-specific: open deviation bar support
+    TradeIntensityHeatmap,
+    /// Streaming ZigZag swing structure overlay (confirmed + pending pivots).
+    ZigZag,
+    /// RSI (Relative Strength Index) powered by kand — momentum oscillator [0,100].
+    RSI,
+    // NOTE(fork): Tier 5 microstructure indicators (ODB only, v13.70+)
+    /// VWAP overlay line on main candle chart.
+    Vwap,
+    /// Bar duration histogram (µs → seconds).
+    Duration,
+    /// Liquidation cascade diamond markers on flagged bars.
+    LiquidationCascade,
+    /// VWAP close deviation signed histogram [-1, 1].
+    VwapCloseDeviation,
+    /// Turnover imbalance signed histogram [-1, 1].
+    TurnoverImbalance,
+    // NOTE(fork): issue #35 — forex quote-native bid/ask spread per bar.
+    /// Bid-ask spread histogram (forex ODB bars only; fxview_cache columns).
+    Spread,
 }
 
 impl Indicator for KlineIndicator {
@@ -26,12 +53,55 @@ impl Indicator for KlineIndicator {
 }
 
 impl KlineIndicator {
+    /// Whether this indicator renders as its own subplot panel.
+    /// Returns `false` for overlays that draw on the main candle pane.
+    pub fn has_subplot(&self) -> bool {
+        !matches!(
+            self,
+            Self::TradeIntensityHeatmap | Self::ZigZag | Self::Vwap | Self::LiquidationCascade
+        )
+    }
+
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 1] = [KlineIndicator::Volume];
+    const FOR_SPOT: [KlineIndicator; 15] = [
+        KlineIndicator::Volume,
+        KlineIndicator::Delta,
+        KlineIndicator::TradeCount,
+        KlineIndicator::OFI,
+        KlineIndicator::OFICumulativeEma,
+        KlineIndicator::TradeIntensity,
+        KlineIndicator::TradeIntensityHeatmap,
+        KlineIndicator::ZigZag,
+        KlineIndicator::RSI,
+        KlineIndicator::Vwap,
+        KlineIndicator::Duration,
+        KlineIndicator::LiquidationCascade,
+        KlineIndicator::VwapCloseDeviation,
+        KlineIndicator::TurnoverImbalance,
+        // Forex (Exchange::ClickhouseSpot) is Spot-market; spread data only
+        // exists there. Crypto spot panes show "no spread data".
+        KlineIndicator::Spread,
+    ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 2] = [KlineIndicator::Volume, KlineIndicator::OpenInterest];
+    const FOR_PERPS: [KlineIndicator; 15] = [
+        KlineIndicator::Volume,
+        KlineIndicator::OpenInterest,
+        KlineIndicator::Delta,
+        KlineIndicator::TradeCount,
+        KlineIndicator::OFI,
+        KlineIndicator::OFICumulativeEma,
+        KlineIndicator::TradeIntensity,
+        KlineIndicator::TradeIntensityHeatmap,
+        KlineIndicator::ZigZag,
+        KlineIndicator::RSI,
+        KlineIndicator::Vwap,
+        KlineIndicator::Duration,
+        KlineIndicator::LiquidationCascade,
+        KlineIndicator::VwapCloseDeviation,
+        KlineIndicator::TurnoverImbalance,
+    ];
 }
 
 impl Display for KlineIndicator {
@@ -39,6 +109,26 @@ impl Display for KlineIndicator {
         match self {
             KlineIndicator::Volume => write!(f, "Volume"),
             KlineIndicator::OpenInterest => write!(f, "Open Interest"),
+            KlineIndicator::Delta => write!(f, "Delta"),
+            KlineIndicator::TradeCount => write!(f, "Trade Count"),
+            KlineIndicator::OFI => write!(f, "OFI"),
+            KlineIndicator::OFICumulativeEma => write!(f, "OFI Σ EMA"),
+            KlineIndicator::TradeIntensity => write!(f, "Trade Intensity"),
+            KlineIndicator::TradeIntensityHeatmap => write!(f, "Intensity Heatmap"),
+            KlineIndicator::ZigZag => write!(f, "ZigZag"),
+            KlineIndicator::RSI => write!(f, "RSI"),
+            KlineIndicator::Vwap => write!(f, "VWAP"),
+            KlineIndicator::Duration => write!(f, "Duration"),
+            KlineIndicator::LiquidationCascade => {
+                write!(f, "Liq. Cascade")
+            }
+            KlineIndicator::VwapCloseDeviation => {
+                write!(f, "VWAP Deviation")
+            }
+            KlineIndicator::TurnoverImbalance => {
+                write!(f, "Turnover Imbalance")
+            }
+            KlineIndicator::Spread => write!(f, "Spread"),
         }
     }
 }

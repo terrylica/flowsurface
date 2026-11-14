@@ -1,3 +1,5 @@
+// FILE-SIZE-OK: upstream file, splitting out of scope for this fork
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/89
 use crate::chart::comparison::ComparisonChart;
 use crate::screen::dashboard::pane::{Event, Message};
 use crate::screen::dashboard::panel::timeandsales;
@@ -5,6 +7,7 @@ use crate::split_column;
 use crate::widget::{classic_slider_row, labeled_slider};
 use crate::{style, tooltip, widget::scrollable_content};
 
+use data::chart::Autoscale;
 use data::chart::heatmap::HeatmapStudy;
 use data::chart::kline::FootprintStudy;
 use data::chart::{
@@ -14,8 +17,46 @@ use data::chart::{
 };
 use data::layout::pane::VisualConfig;
 use data::panel::ladder;
-use data::panel::timeandsales::{StackedBar, StackedBarRatio};
+use data::panel::timeandsales::{StackedBar, StackedBarRatio, TimeFormat};
 use data::util::format_with_commas;
+
+/// UI-facing representation of `Option<Autoscale>` for pick_list display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoscaleMode {
+    FitToVisible,
+    CenterLatest,
+    FixedScale,
+}
+
+impl AutoscaleMode {
+    const ALL: [Self; 3] = [Self::FitToVisible, Self::CenterLatest, Self::FixedScale];
+
+    fn from_option(autoscale: Option<Autoscale>) -> Self {
+        match autoscale {
+            Some(Autoscale::FitToVisible) => Self::FitToVisible,
+            Some(Autoscale::CenterLatest) => Self::CenterLatest,
+            None => Self::FixedScale,
+        }
+    }
+
+    fn to_option(self) -> Option<Autoscale> {
+        match self {
+            Self::FitToVisible => Some(Autoscale::FitToVisible),
+            Self::CenterLatest => Some(Autoscale::CenterLatest),
+            Self::FixedScale => None,
+        }
+    }
+}
+
+impl std::fmt::Display for AutoscaleMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FitToVisible => write!(f, "Auto-fit"),
+            Self::CenterLatest => write!(f, "Center Latest"),
+            Self::FixedScale => write!(f, "Fixed Scale"),
+        }
+    }
+}
 
 use iced::widget::{checkbox, space};
 use iced::{
@@ -428,9 +469,26 @@ pub fn timesales_cfg_view<'a>(
             .into()
     };
 
+    let time_format_column = {
+        let time_format_picker =
+            pick_list(TimeFormat::ALL, Some(cfg.time_format), move |new_format| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::TimeAndSales(timeandsales::Config {
+                        time_format: new_format,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+        column![text("Time format").size(14), time_format_picker].spacing(8)
+    };
+
     let content = split_column![
         trade_size_column,
         history_column,
+        time_format_column,
         stacked_bar,
         row![space::horizontal(), sync_all_button(pane, VisualConfig::TimeAndSales(cfg))],
         ; spacing = 12, align_x = Alignment::Start
@@ -462,11 +520,150 @@ pub fn kline_cfg_view<'a>(
     kind: &'a KlineChartKind,
     pane: pane_grid::Pane,
     basis: data::chart::Basis,
+    autoscale: Option<Autoscale>,
+    include_forming: bool,
 ) -> Element<'a, Message> {
     let content = match kind {
-        KlineChartKind::Candles => column![text(
-            "This chart type doesn't have any configurations, WIP..."
-        )],
+        KlineChartKind::Candles => {
+            let session_toggle = checkbox(cfg.show_sessions)
+                .label("Session Lines (NY / LDN / TKY)")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            show_sessions: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+            column![
+                session_toggle,
+                row![
+                    space::horizontal(),
+                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                ]
+            ]
+            .spacing(12)
+        }
+        // Fork-specific: open deviation bar support
+        KlineChartKind::Odb => {
+            let period = cfg.ofi_ema_period;
+            let ema_slider = slider(3..=100, period as u32, move |new_val| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(data::chart::kline::Config {
+                        ofi_ema_period: new_val as usize,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+            let lookback = cfg.intensity_lookback;
+            let k_actual = data::chart::kline::adaptive_k(lookback);
+
+            let lookback_slider = slider(100u32..=7000, lookback as u32, move |new_val| {
+                Message::VisualConfigChanged(
+                    pane,
+                    VisualConfig::Kline(data::chart::kline::Config {
+                        intensity_lookback: new_val as usize,
+                        ..cfg
+                    }),
+                    false,
+                )
+            });
+
+            // Fork-specific: open deviation bar support
+            let thermal_wicks_toggle = checkbox(cfg.thermal_wicks)
+                .label("Thermal Wicks")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            thermal_wicks: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+            let anomaly_fence_toggle = checkbox(cfg.anomaly_fence)
+                .label("Anomaly Fence (Hubert 2008)")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            anomaly_fence: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+            let session_toggle = checkbox(cfg.show_sessions)
+                .label("Session Lines (NY / LDN / TKY)")
+                .on_toggle(move |value| {
+                    Message::VisualConfigChanged(
+                        pane,
+                        VisualConfig::Kline(data::chart::kline::Config {
+                            show_sessions: value,
+                            ..cfg
+                        }),
+                        false,
+                    )
+                });
+
+            let current_mode = AutoscaleMode::from_option(autoscale);
+            let autoscale_picker = pick_list(
+                AutoscaleMode::ALL.as_slice(),
+                Some(current_mode),
+                move |new_mode: AutoscaleMode| {
+                    Message::AutoscaleChanged(pane, new_mode.to_option())
+                },
+            );
+
+            let mut scaling_section =
+                column![text("Y-Axis Scaling").size(14), autoscale_picker,].spacing(8);
+
+            if matches!(autoscale, Some(Autoscale::FitToVisible)) {
+                scaling_section = scaling_section.push(
+                    checkbox(include_forming)
+                        .label("Include forming bar")
+                        .on_toggle(move |value| Message::IncludeFormingChanged(pane, value)),
+                );
+            }
+
+            split_column![
+                scaling_section,
+                column![
+                    text("OFI EMA Period").size(14),
+                    row![ema_slider, text(format!("{period}")).size(12)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                ]
+                .spacing(8),
+                column![
+                    text("Intensity Lookback").size(14),
+                    row![
+                        lookback_slider,
+                        text(format!("{lookback} bars  (K: {k_actual})")).size(12)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                    thermal_wicks_toggle,
+                    anomaly_fence_toggle,
+                    session_toggle,
+                ]
+                .spacing(8),
+                row![
+                    space::horizontal(),
+                    sync_all_button(pane, VisualConfig::Kline(cfg))
+                ],
+                ; spacing = 12, align_x = Alignment::Start
+            ]
+        }
         KlineChartKind::Footprint {
             clusters,
             scaling,
@@ -780,7 +977,7 @@ pub mod study {
         ) -> Element<'a, Message<Self>> {
             let interval_ms = match basis {
                 data::chart::Basis::Time(interval) => interval.to_milliseconds(),
-                data::chart::Basis::Tick(_) => {
+                data::chart::Basis::Tick(_) | data::chart::Basis::Odb(_) => {
                     return iced::widget::center(text(
                         "Heatmap studies are not supported for tick-based charts",
                     ))

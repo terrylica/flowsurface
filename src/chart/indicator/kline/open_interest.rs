@@ -56,7 +56,7 @@ impl OpenInterestIndicator {
                     return row![].into();
                 }
             }
-            Basis::Tick(_) => {
+            Basis::Tick(_) | Basis::Odb(_) => {
                 return center(text("WIP: Open Interest is not available for tick charts.")).into();
             }
         }
@@ -79,6 +79,9 @@ impl OpenInterestIndicator {
             .stroke_width(1.0)
             .show_points(true)
             .point_radius_factor(0.2)
+            // Open interest is snapshotted at candle open, not computed from close like regular indicators.
+            // Shift left by 1 so each OI value aligns with the equivalent candle close.
+            .shift(-1)
             .padding(0.08)
             .with_tooltip(tooltip);
 

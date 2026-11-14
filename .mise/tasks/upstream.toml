@@ -1,0 +1,21 @@
+# Upstream sync tasks for flowsurface fork
+# Upstream: https://github.com/flowsurface-rs/flowsurface
+
+["upstream:fetch"]
+description = "Fetch latest upstream changes"
+run = "git fetch upstream"
+
+["upstream:diff"]
+description = "Show commits on upstream/main not yet in our fork"
+depends = ["upstream:fetch"]
+run = "git log --oneline HEAD..upstream/main"
+
+["upstream:merge"]
+description = "Merge upstream/main into current branch"
+depends = ["upstream:fetch"]
+run = "git merge upstream/main --no-edit"
+
+["upstream:rebase"]
+description = "Rebase current branch onto upstream/main"
+depends = ["upstream:fetch"]
+run = "git rebase upstream/main"

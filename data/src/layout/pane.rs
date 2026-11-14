@@ -188,17 +188,19 @@ pub enum ContentKind {
     HeatmapChart,
     FootprintChart,
     CandlestickChart,
+    OdbChart,
     ComparisonChart,
     TimeAndSales,
     Ladder,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 7] = [
+    pub const ALL: [ContentKind; 8] = [
         ContentKind::Starter,
         ContentKind::HeatmapChart,
         ContentKind::FootprintChart,
         ContentKind::CandlestickChart,
+        ContentKind::OdbChart,
         ContentKind::ComparisonChart,
         ContentKind::TimeAndSales,
         ContentKind::Ladder,
@@ -212,6 +214,7 @@ impl std::fmt::Display for ContentKind {
             ContentKind::HeatmapChart => "Heatmap Chart",
             ContentKind::FootprintChart => "Footprint Chart",
             ContentKind::CandlestickChart => "Candlestick Chart",
+            ContentKind::OdbChart => "Open Deviation Bar Chart",
             ContentKind::ComparisonChart => "Comparison Chart",
             ContentKind::TimeAndSales => "Time&Sales",
             ContentKind::Ladder => "DOM/Ladder",
@@ -252,7 +255,6 @@ impl PaneSetup {
                         Basis::Time(tf) if exchange.supports_heatmap_timeframe(tf) => Some(b),
                         _ => None,
                     });
-
                     Some(current.unwrap_or_else(|| Basis::default_heatmap_time(Some(base_ticker))))
                 }
                 ContentKind::Ladder => Some(
@@ -264,7 +266,6 @@ impl PaneSetup {
                         Basis::Tick(_) => Some(b),
                         _ => None,
                     });
-
                     Some(current.unwrap_or_else(|| {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M5)
                     }))
@@ -274,11 +275,11 @@ impl PaneSetup {
                         Basis::Time(tf) if exchange.supports_kline_timeframe(tf) => Some(b),
                         _ => None,
                     });
-
                     Some(current.unwrap_or_else(|| {
                         Basis::default_kline_time(Some(base_ticker), Timeframe::M15)
                     }))
                 }
+                ContentKind::OdbChart => Some(current_basis.unwrap_or(Basis::Odb(100))),
                 ContentKind::Starter | ContentKind::TimeAndSales => None,
             };
 
@@ -299,6 +300,7 @@ impl PaneSetup {
                 Some(current_tick_multiplier.unwrap_or(TickMultiplier(50)))
             }
             ContentKind::CandlestickChart
+            | ContentKind::OdbChart
             | ContentKind::ComparisonChart
             | ContentKind::TimeAndSales
             | ContentKind::Starter => current_tick_multiplier,

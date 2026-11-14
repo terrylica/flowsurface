@@ -1,9 +1,14 @@
 pub mod adapter;
+pub mod config;
 pub mod connect;
 pub mod depth;
+mod error;
+pub mod health;
 mod limiter;
 pub mod proxy;
+pub mod resilience;
 mod serde_util;
+pub mod telegram;
 pub mod unit;
 
 pub use adapter::Event;
@@ -274,7 +279,6 @@ impl Ticker {
         display_symbol: Option<&str>,
     ) -> Self {
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
-        assert!(ticker.is_ascii(), "Ticker must be ASCII");
         assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
         let mut bytes = [0u8; Self::MAX_LEN as usize];
@@ -286,7 +290,6 @@ impl Ticker {
                 display.len() <= Self::MAX_LEN as usize,
                 "Display symbol too long"
             );
-            assert!(display.is_ascii(), "Display symbol must be ASCII");
             // Display symbol cannot contain '|' as it's used as delimiter
             assert!(!display.contains('|'), "Display symbol cannot contain '|'");
             display_bytes[..display.len()].copy_from_slice(display.as_bytes());
@@ -344,19 +347,11 @@ impl Ticker {
         let market_kind = self.market_type();
 
         let result = if self.has_display_symbol {
-            // Use the custom display symbol (e.g., "HYPEUSDC" for Hyperliquid spot)
+            // Use the custom display symbol (e.g., "HYPEUSDC" for Hyperliquid spot,
+            // or quote-asset-suffixed Hyperliquid perps — see create_perp_ticker)
             self.display_as_str().to_owned()
         } else {
-            let mut result = self.as_str().to_owned();
-            // Transform Hyperliquid symbols to standardized display format
-            if matches!(self.exchange, Exchange::HyperliquidLinear)
-                && market_kind == MarketKind::LinearPerps
-            {
-                // For Hyperliquid Linear Perps, append USDT to match other exchanges' format
-                // The "P" suffix will be added later in compute_display_data for all perpetual contracts
-                result.push_str("USDT");
-            }
-            result
+            self.as_str().to_owned()
         };
 
         (result, market_kind)
@@ -541,9 +536,15 @@ pub struct Trade {
     pub is_sell: bool,
     pub price: Price,
     pub qty: Qty,
+    /// Binance aggregate trade ID. Used for gap-fill dedup fence.
+    /// `None` for non-Binance exchanges.
+    #[serde(default)]
+    pub agg_trade_id: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy)]
+// Serialize: ODB forensic telemetry NDJSON artifacts (--features telemetry)
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/telemetry
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Kline {
     pub time: u64,
     pub open: Price,
@@ -574,7 +575,7 @@ impl Kline {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub enum Volume {
     TotalOnly(Qty),
     BuySell(Qty, Qty),

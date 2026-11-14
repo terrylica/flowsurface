@@ -1,3 +1,5 @@
+// FILE-SIZE-OK: upstream structure, not our code to refactor
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/90
 pub mod pane;
 pub mod panel;
 pub mod sidebar;
@@ -7,10 +9,10 @@ pub use sidebar::Sidebar;
 
 use super::DashboardError;
 use crate::{
-    chart,
+    chart::{self, kline::GapFillProgress},
     connector::{
         ResolvedStream,
-        fetcher::{self, FetchedData, InfoKind},
+        fetcher::{self, FetchRange, FetchedData, InfoKind, catchup_sip},
     },
     screen::dashboard::tickers_table::TickersTable,
     style,
@@ -24,19 +26,24 @@ use data::{
 };
 use exchange::{
     Kline, PushFrequency, StreamPairKind, TickerInfo, Trade,
-    adapter::{StreamConfig, StreamKind, StreamTicksize, UniqueStreams},
+    adapter::{
+        self, AdapterError, Exchange, StreamConfig, StreamKind, StreamTicksize, UniqueStreams,
+    },
     connect::{MAX_KLINE_STREAMS_PER_STREAM, MAX_TRADE_TICKERS_PER_STREAM},
     depth::Depth,
+    health::ConnectionHealth,
 };
 
+use enum_map::EnumMap;
 use iced::{
-    Element, Length, Subscription, Task, Vector,
+    Element, Length, Subscription, Task, Vector, keyboard,
+    task::{Straw, sipper},
     widget::{
         PaneGrid, center, container,
         pane_grid::{self, Configuration},
     },
 };
-use std::{collections::HashMap, time::Instant, vec};
+use std::{collections::HashMap, path::PathBuf, time::Instant, vec};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -52,6 +59,16 @@ pub enum Message {
         data: FetchedData,
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
+    /// NOTE(fork): App-level keyboard navigation for chart panning without canvas focus.
+    /// Fork-specific: open deviation bar support
+    ChartKeyNav(keyboard::Event),
+    /// NOTE(fork): Trigger ODB gap-fill via sidecar /catchup endpoint.
+    TriggerOdbGapFill {
+        pane_id: uuid::Uuid,
+        layout_id: uuid::Uuid,
+        symbol: String,
+        threshold_dbps: u32,
+    },
 }
 
 pub struct Dashboard {
@@ -59,6 +76,7 @@ pub struct Dashboard {
     pub focus: Option<(window::Id, pane_grid::Pane)>,
     pub popout: HashMap<window::Id, (pane_grid::State<pane::State>, WindowSpec)>,
     pub streams: UniqueStreams,
+    pub connection_health: EnumMap<Exchange, ConnectionHealth>,
     layout_id: uuid::Uuid,
 }
 
@@ -69,6 +87,7 @@ impl Default for Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout: HashMap::new(),
+            connection_health: EnumMap::default(),
             layout_id: uuid::Uuid::new_v4(),
         }
     }
@@ -135,6 +154,7 @@ impl Dashboard {
             focus: None,
             streams: UniqueStreams::default(),
             popout,
+            connection_health: EnumMap::default(),
             layout_id,
         }
     }
@@ -186,20 +206,49 @@ impl Dashboard {
                     }
                 }
             }
-            Message::ErrorOccurred(pane_id, err) => match pane_id {
-                Some(id) => {
-                    if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
+            Message::ErrorOccurred(pane_id, err) => {
+                let err_str = err.to_string();
+
+                // Telegram alert for pane errors (fire-and-forget)
+                let tg_task: Task<Message> = if exchange::telegram::is_configured() {
+                    let detail = err_str.clone();
+                    Task::perform(
+                        async move {
+                            exchange::telegram::alert(
+                                exchange::telegram::Severity::Warning,
+                                "pane error",
+                                &detail,
+                            )
+                            .await;
+                        },
+                        |_| Message::SavePopoutSpecs(HashMap::new()),
+                    )
+                } else {
+                    Task::none()
+                };
+
+                match pane_id {
+                    Some(id) => {
+                        if let Some(state) = self.get_mut_pane_state_by_uuid(main_window.id, id) {
+                            // Finalize gap-fill on error too — otherwise fetching_trades
+                            // stays true permanently, blocking WS→RBP and buffering SSE bars.
+                            if let pane::Content::Kline { chart: Some(c), .. } = &mut state.content
+                            {
+                                c.finalize_gap_fill();
+                            }
+                            state.status = pane::Status::Ready;
+                            state.notifications.push(Toast::error(err_str));
+                        }
+                        return (tg_task, None);
+                    }
+                    _ => {
+                        return (
+                            Task::done(Message::Notification(Toast::error(err_str))).chain(tg_task),
+                            None,
+                        );
                     }
                 }
-                _ => {
-                    return (
-                        Task::done(Message::Notification(Toast::error(err.to_string()))),
-                        None,
-                    );
-                }
-            },
+            }
             Message::Pane(window, message) => match message {
                 pane::Message::PaneClicked(pane) => {
                     self.focus = Some((window, pane));
@@ -303,6 +352,42 @@ impl Dashboard {
                         state.content.change_visual_config(cfg);
                     }
                 }
+                pane::Message::AutoscaleChanged(pane, autoscale) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        match &mut state.content {
+                            pane::Content::Kline {
+                                chart: Some(c),
+                                layout,
+                                ..
+                            } => {
+                                c.set_autoscale(autoscale);
+                                layout.autoscale = autoscale;
+                            }
+                            pane::Content::Kline { layout, .. } => {
+                                layout.autoscale = autoscale;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                pane::Message::IncludeFormingChanged(pane, include) => {
+                    if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
+                        match &mut state.content {
+                            pane::Content::Kline {
+                                chart: Some(c),
+                                layout,
+                                ..
+                            } => {
+                                c.set_include_forming(include);
+                                layout.include_forming = include;
+                            }
+                            pane::Content::Kline { layout, .. } => {
+                                layout.include_forming = include;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 pane::Message::SwitchLinkGroup(pane, group) => {
                     if group.is_none() {
                         if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
@@ -337,7 +422,10 @@ impl Dashboard {
                             self.streams.extend(streams.iter());
 
                             for stream in &streams {
-                                if let StreamKind::Kline { .. } = stream {
+                                if matches!(
+                                    stream,
+                                    StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                                ) {
                                     return (
                                         fetcher::kline_fetch_task(
                                             *layout_id, pane_id, *stream, None, None,
@@ -402,6 +490,13 @@ impl Dashboard {
             },
             Message::ChangePaneStatus(pane_id, status) => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    // When gap-fill sip completes, finalize: set dedup fence,
+                    // flush buffered CH bars, clear fetching_trades, invalidate.
+                    if matches!(status, pane::Status::Ready)
+                        && let pane::Content::Kline { chart: Some(c), .. } = &mut pane_state.content
+                    {
+                        c.finalize_gap_fill();
+                    }
                     pane_state.status = status;
                 }
             }
@@ -429,6 +524,40 @@ impl Dashboard {
             }
             Message::Notification(toast) => {
                 return (Task::none(), Some(Event::Notification(toast)));
+            }
+            // NOTE(fork): Fork-specific: open deviation bar support
+            Message::ChartKeyNav(event) => {
+                if let Some((window, pane)) = self.focus
+                    && let Some(state) = self.get_mut_pane(main_window.id, window, pane)
+                {
+                    state.apply_keyboard_nav(&event);
+                }
+            }
+            Message::TriggerOdbGapFill {
+                pane_id,
+                layout_id,
+                symbol,
+                threshold_dbps,
+            } => {
+                if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window.id, pane_id) {
+                    log::info!("[catchup] ODB pane={pane_id}: {symbol}@{threshold_dbps}");
+                    pane_state.status =
+                        pane::Status::Stale("Fetching trades to fill gap...".into());
+                    let req_id = uuid::Uuid::new_v4();
+                    return (
+                        request_fetch(
+                            pane_state,
+                            layout_id,
+                            req_id,
+                            FetchRange::OdbCatchup {
+                                symbol,
+                                threshold_dbps,
+                            },
+                            None,
+                        ),
+                        None,
+                    );
+                }
             }
         }
 
@@ -489,6 +618,64 @@ impl Dashboard {
         }
 
         Task::none()
+    }
+
+    // NOTE(fork): auto-open helpers — a second forex pane (XAUUSD) is opened
+    // at startup next to the auto EURUSD pane. See Message::AutoOpenForexPane
+    // in main.rs.
+
+    /// True if any pane (main grid or popouts) already streams `ticker`.
+    /// Used to make auto-open idempotent against saved-state layouts.
+    pub fn has_ticker_pane(&self, main_window: window::Id, ticker: &exchange::Ticker) -> bool {
+        self.iter_all_panes(main_window)
+            .any(|(_, _, state)| state.stream_pair().is_some_and(|ti| ti.ticker == *ticker))
+    }
+
+    /// True if the pane `init_focused_pane` would target already hosts
+    /// content (mirrors its focus-defaulting for the fresh single-pane case).
+    pub fn focused_pane_occupied(&self, main_window: window::Id) -> bool {
+        let focus = self.focus.or_else(|| {
+            if self.panes.len() == 1 {
+                self.panes
+                    .iter()
+                    .next()
+                    .map(|(pane, _)| (main_window, *pane))
+            } else {
+                None
+            }
+        });
+        focus
+            .and_then(|(window, pane)| self.get_pane(main_window, window, pane))
+            .and_then(pane::State::stream_pair)
+            .is_some()
+    }
+
+    /// Split the focused (or sole) main-window pane and focus the new empty
+    /// pane, so a subsequent `init_focused_pane` lands in it.
+    pub fn split_focused_for_auto_open(&mut self, main_window_id: window::Id) -> Task<Message> {
+        let target = match self.focus {
+            Some((window, pane)) if window == main_window_id => Some(pane),
+            None => self.panes.iter().next().map(|(pane, _)| *pane),
+            _ => None,
+        };
+        if let Some(pane) = target
+            && let Some((new_pane, _)) =
+                self.panes
+                    .split(pane_grid::Axis::Vertical, pane, pane::State::new())
+        {
+            return self.focus_pane(main_window_id, new_pane);
+        }
+        Task::none()
+    }
+
+    /// Preselect an ODB threshold on the focused pane BEFORE content init —
+    /// `stream_setup` derives the threshold from `settings.selected_basis`.
+    pub fn preset_focused_odb_threshold(&mut self, main_window: window::Id, dbps: u32) {
+        if let Some((window, pane)) = self.focus
+            && let Some(state) = self.get_mut_pane(main_window, window, pane)
+        {
+            state.settings.selected_basis = Some(data::chart::Basis::Odb(dbps));
+        }
     }
 
     fn popout_pane(&mut self, main_window: &Window) -> Task<Message> {
@@ -614,6 +801,7 @@ impl Dashboard {
                 main_window,
                 timezone,
                 tickers_table,
+                &self.connection_health,
             )
         })
         .min_size(240)
@@ -647,6 +835,7 @@ impl Dashboard {
                         main_window,
                         timezone,
                         tickers_table,
+                        &self.connection_health,
                     )
                 })
                 .on_click(pane::Message::PaneClicked),
@@ -711,9 +900,11 @@ impl Dashboard {
             self.streams.extend(streams.iter());
 
             for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(self.layout_id, pane_id, *stream, None, None)
-                        .map(Message::from);
+                if matches!(
+                    stream,
+                    StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                ) {
+                    return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
         }
@@ -748,9 +939,11 @@ impl Dashboard {
             self.streams.extend(streams.iter());
 
             for stream in &streams {
-                if let StreamKind::Kline { .. } = stream {
-                    return fetcher::kline_fetch_task(self.layout_id, pane_id, *stream, None, None)
-                        .map(Message::from);
+                if matches!(
+                    stream,
+                    StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                ) {
+                    return kline_fetch_task(self.layout_id, pane_id, *stream, None, None);
                 }
             }
             return Task::none();
@@ -814,6 +1007,35 @@ impl Dashboard {
         }
     }
 
+    pub fn switch_all_panes_to_ticker(
+        &mut self,
+        main_window: window::Id,
+        ticker_info: TickerInfo,
+    ) -> Task<Message> {
+        let pane_infos: Vec<(window::Id, pane_grid::Pane, ContentKind)> = self
+            .iter_all_panes_mut(main_window)
+            .filter_map(|(window, pane, state)| match state.content.kind() {
+                ContentKind::Starter => None,
+                kind => Some((window, pane, kind)),
+            })
+            .collect();
+
+        if pane_infos.is_empty() {
+            return Task::done(Message::Notification(Toast::warn(
+                "No active panels to sync".to_string(),
+            )));
+        }
+
+        let tasks: Vec<Task<Message>> = pane_infos
+            .iter()
+            .map(|(window, pane, content_kind)| {
+                self.init_pane(main_window, *window, *pane, ticker_info, *content_kind)
+            })
+            .collect();
+
+        Task::batch(tasks)
+    }
+
     pub fn toggle_trade_fetch(&mut self, is_enabled: bool, main_window: &Window) {
         fetcher::toggle_trade_fetch(is_enabled);
 
@@ -835,6 +1057,7 @@ impl Dashboard {
     pub fn distribute_fetched_data(
         &mut self,
         main_window: window::Id,
+        layout_id: uuid::Uuid,
         pane_id: uuid::Uuid,
         data: FetchedData,
         stream_type: StreamKind,
@@ -844,9 +1067,12 @@ impl Dashboard {
                 let last_trade_time = batch.last().map_or(0, |trade| trade.time);
 
                 if last_trade_time < until_time {
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &batch, false)
-                    {
+                    if let Err(reason) = self.insert_fetched_trades(
+                        main_window,
+                        pane_id,
+                        &batch,
+                        GapFillProgress::Streaming,
+                    ) {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
                 } else {
@@ -856,23 +1082,65 @@ impl Dashboard {
                         .copied()
                         .collect::<Vec<_>>();
 
-                    if let Err(reason) =
-                        self.insert_fetched_trades(main_window, pane_id, &filtered_batch, true)
-                    {
+                    if let Err(reason) = self.insert_fetched_trades(
+                        main_window,
+                        pane_id,
+                        &filtered_batch,
+                        GapFillProgress::Complete,
+                    ) {
                         return self.handle_error(Some(pane_id), &reason, main_window);
                     }
                 }
             }
-            FetchedData::Klines { data, req_id } => {
+            FetchedData::Klines {
+                data,
+                req_id,
+                microstructure,
+                agg_trade_id_ranges,
+                open_time_ms_list,
+            } => {
                 if let Some(pane_state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
                     pane_state.status = pane::Status::Ready;
 
-                    if let StreamKind::Kline {
-                        timeframe,
-                        ticker_info,
-                    } = stream_type
-                    {
-                        pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
+                    match stream_type {
+                        StreamKind::Kline {
+                            timeframe,
+                            ticker_info,
+                        } => {
+                            pane_state.insert_hist_klines(req_id, timeframe, ticker_info, &data);
+                        }
+                        StreamKind::OdbKline {
+                            ticker_info,
+                            threshold_dbps,
+                        } => {
+                            pane_state.insert_odb_klines(
+                                req_id,
+                                ticker_info,
+                                &data,
+                                microstructure.as_deref(),
+                                agg_trade_id_ranges.as_deref(),
+                                open_time_ms_list.as_deref(),
+                            );
+
+                            // Gap-fill via ODB sidecar /catchup endpoint (v12.62.0+).
+                            // Sidecar handles CH lookup + paginated Parquet+REST internally.
+                            // Only fire once per pane lifecycle.
+                            if !pane_state.staleness_checked
+                                && !matches!(pane_state.status, pane::Status::Stale(_))
+                            {
+                                pane_state.staleness_checked = true;
+
+                                let symbol = adapter::clickhouse::bare_symbol(&ticker_info);
+
+                                return Task::done(Message::TriggerOdbGapFill {
+                                    pane_id,
+                                    layout_id,
+                                    symbol,
+                                    threshold_dbps,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -895,7 +1163,7 @@ impl Dashboard {
         main_window: window::Id,
         pane_id: uuid::Uuid,
         trades: &[Trade],
-        is_batches_done: bool,
+        progress: GapFillProgress,
     ) -> Result<(), DashboardError> {
         let pane_state = self
             .get_mut_pane_state_by_uuid(main_window, pane_id)
@@ -917,9 +1185,9 @@ impl Dashboard {
         match &mut pane_state.content {
             pane::Content::Kline { chart, .. } => {
                 if let Some(c) = chart {
-                    c.insert_raw_trades(trades.to_owned(), is_batches_done);
+                    c.insert_raw_trades(trades.to_owned(), progress);
 
-                    if is_batches_done {
+                    if progress == GapFillProgress::Complete {
                         pane_state.status = pane::Status::Ready;
                     }
                     Ok(())
@@ -939,22 +1207,78 @@ impl Dashboard {
         &mut self,
         stream: &StreamKind,
         kline: &Kline,
+        #[cfg(feature = "telemetry")] raw_f64: Option<[f64; 6]>,
+        #[cfg(not(feature = "telemetry"))] _raw_f64: Option<[f64; 6]>,
+        bar_agg_id_range: Option<(u64, u64)>,
+        micro: Option<exchange::adapter::clickhouse::ChMicrostructure>,
+        bar_open_time_ms: Option<u64>,
         main_window: window::Id,
     ) -> Task<Message> {
+        #[cfg(feature = "telemetry")]
+        if let StreamKind::OdbKline {
+            ticker_info,
+            threshold_dbps,
+        } = stream
+        {
+            use data::telemetry::{self, ChKlineRaw, KlineSnapshot, TelemetryEvent};
+            telemetry::emit(TelemetryEvent::ChPollBar {
+                ts_ms: telemetry::now_ms(),
+                symbol: ticker_info.ticker.to_string(),
+                threshold_dbps: *threshold_dbps,
+                kline: KlineSnapshot::from_kline(kline),
+                raw_f64: raw_f64.map(ChKlineRaw::from_array),
+            });
+        }
+
         let mut found_match = false;
 
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
+                if matches!(stream, StreamKind::OdbKline { .. }) {
+                    let matched = pane_state.matches_stream(stream);
+                    let content_tag = match &pane_state.content {
+                        pane::Content::Kline { chart: Some(_), .. } => "Kline(Some)",
+                        pane::Content::Kline { chart: None, .. } => "Kline(None)",
+                        pane::Content::Heatmap { .. } => "Heatmap",
+                        pane::Content::Comparison(_) => "Comparison",
+                        pane::Content::TimeAndSales(_) => "TimeAndSales",
+                        pane::Content::Ladder(_) => "Ladder",
+                        pane::Content::Starter => "Starter",
+                    };
+                    log::debug!(
+                        "[kline-dispatch] stream={:?} matched={} content={} pane_streams={:?}",
+                        stream,
+                        matched,
+                        content_tag,
+                        pane_state.streams,
+                    );
+                }
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
-                            c.update_latest_kline(kline);
+                            c.update_latest_kline(kline, bar_agg_id_range, micro, bar_open_time_ms);
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);
                         }
                         _ => {}
                     }
+
+                    // Fork-specific: open deviation bar support
+                    // Clear stale status when fresh data arrives via polling
+                    if matches!(pane_state.status, pane::Status::Stale(_))
+                        && matches!(stream, StreamKind::OdbKline { .. })
+                    {
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        let gap_hours = (now_ms.saturating_sub(kline.time)) as f64 / 3_600_000.0;
+                        if gap_hours <= 24.0 {
+                            pane_state.status = pane::Status::Ready;
+                        }
+                    }
+
                     found_match = true;
                 }
             });
@@ -980,19 +1304,13 @@ impl Dashboard {
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_depth(depth, depth_update_t);
-                            }
+                        pane::Content::Heatmap { chart: Some(c), .. } => {
+                            c.insert_depth(depth, depth_update_t);
                         }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(panel) = panel {
-                                panel.insert_depth(depth, depth_update_t);
-                            }
+                        pane::Content::Ladder(Some(panel)) => {
+                            panel.insert_depth(depth, depth_update_t);
                         }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
-                        }
+                        _ => {}
                     }
                     found_match = true;
                 }
@@ -1013,42 +1331,44 @@ impl Dashboard {
         main_window: window::Id,
     ) -> Task<Message> {
         let mut found_match = false;
+        let layout_id = self.layout_id;
+        let mut gap_fill_tasks: Vec<Task<Message>> = vec![];
 
         self.iter_all_panes_mut(main_window)
             .for_each(|(_, _, pane_state)| {
                 if pane_state.matches_stream(stream) {
                     match &mut pane_state.content {
-                        pane::Content::Heatmap { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer, update_t);
+                        pane::Content::Heatmap { chart: Some(c), .. } => {
+                            c.insert_trades(buffer, update_t);
+                        }
+                        pane::Content::Kline { chart: Some(c), .. } => {
+                            if let Some(gap_req) = c.insert_trades(buffer) {
+                                gap_fill_tasks.push(Task::done(Message::TriggerOdbGapFill {
+                                    pane_id: pane_state.unique_id(),
+                                    layout_id,
+                                    symbol: gap_req.symbol,
+                                    threshold_dbps: gap_req.threshold_dbps,
+                                }));
                             }
                         }
-                        pane::Content::Kline { chart, .. } => {
-                            if let Some(c) = chart {
-                                c.insert_trades(buffer);
-                            }
+                        pane::Content::TimeAndSales(Some(p)) => {
+                            p.insert_buffer(buffer);
                         }
-                        pane::Content::TimeAndSales(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_buffer(buffer);
-                            }
+                        pane::Content::Ladder(Some(p)) => {
+                            p.insert_trades(buffer);
                         }
-                        pane::Content::Ladder(panel) => {
-                            if let Some(p) = panel {
-                                p.insert_trades(buffer);
-                            }
-                        }
-                        _ => {
-                            log::error!("No chart found for the stream: {stream:?}");
-                        }
+                        _ => {}
                     }
                     found_match = true;
                 }
             });
 
-        if found_match {
+        if !gap_fill_tasks.is_empty() {
+            Task::batch(gap_fill_tasks)
+        } else if found_match {
             Task::none()
         } else {
+            log::trace!("No matching pane found for the stream: {stream:?}");
             self.refresh_streams(main_window)
         }
     }
@@ -1060,61 +1380,50 @@ impl Dashboard {
             });
     }
 
-    pub fn tick(&mut self, now: Instant, main_window: window::Id) -> Task<Message> {
+    pub fn tick(
+        &mut self,
+        now: Instant,
+        timezone: UserTimezone,
+        main_window: window::Id,
+    ) -> Task<Message> {
         let mut tasks = vec![];
         let layout_id = self.layout_id;
 
         self.iter_all_panes_mut(main_window)
-            .for_each(|(_window_id, _pane, state)| match state.tick(now) {
-                Some(pane::Action::Chart(action)) => match action {
-                    chart::Action::ErrorOccurred(err) => {
-                        state.status = pane::Status::Ready;
-                        state.notifications.push(Toast::error(err.to_string()));
+            .for_each(
+                |(_window_id, _pane, state)| match state.tick(now, timezone) {
+                    Some(pane::Action::Chart(action)) => match action {
+                        chart::Action::ErrorOccurred(err) => {
+                            state.status = pane::Status::Ready;
+                            state.notifications.push(Toast::error(err.to_string()));
+                        }
+                        chart::Action::RequestFetch(reqs) => {
+                            tasks.push(request_fetch_many(
+                                state,
+                                layout_id,
+                                reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
+                            ));
+                        }
+                    },
+                    Some(pane::Action::Panel(_action)) => {}
+                    Some(pane::Action::ResolveStreams(streams)) => {
+                        tasks.push(Task::done(Message::ResolveStreams(
+                            state.unique_id(),
+                            streams,
+                        )));
                     }
-                    chart::Action::RequestFetch(reqs) => {
-                        let pane_id = state.unique_id();
-                        let ready_streams = state
-                            .streams
-                            .ready_iter()
-                            .map(|iter| iter.copied().collect::<Vec<_>>())
-                            .unwrap_or_default();
-
-                        let fetch_tasks = fetcher::request_fetch_many(
-                            pane_id,
-                            &ready_streams,
-                            layout_id,
-                            reqs.into_iter().map(|r| (r.req_id, r.fetch, r.stream)),
-                            |handle| {
-                                if let pane::Content::Kline { chart, .. } = &mut state.content
-                                    && let Some(c) = chart
-                                {
-                                    c.set_handle(handle);
-                                }
-                            },
-                        )
-                        .map(Message::from);
-
-                        tasks.push(fetch_tasks);
-                    }
-                },
-                Some(pane::Action::Panel(_action)) => {}
-                Some(pane::Action::ResolveStreams(streams)) => {
-                    tasks.push(Task::done(Message::ResolveStreams(
-                        state.unique_id(),
-                        streams,
-                    )));
-                }
-                Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
-                    Some(StreamPairKind::MultiSource(tickers)) => {
-                        state.set_content_and_streams(tickers, state.content.kind());
-                    }
-                    Some(StreamPairKind::SingleSource(ticker)) => {
-                        state.set_content_and_streams(vec![ticker], state.content.kind());
-                    }
+                    Some(pane::Action::ResolveContent) => match state.stream_pair_kind() {
+                        Some(StreamPairKind::MultiSource(tickers)) => {
+                            state.set_content_and_streams(tickers, state.content.kind());
+                        }
+                        Some(StreamPairKind::SingleSource(ticker)) => {
+                            state.set_content_and_streams(vec![ticker], state.content.kind());
+                        }
+                        None => {}
+                    },
                     None => {}
                 },
-                None => {}
-            });
+            );
 
         Task::batch(tasks)
     }
@@ -1125,6 +1434,19 @@ impl Dashboard {
         pane_id: uuid::Uuid,
         streams: Vec<StreamKind>,
     ) -> Task<Message> {
+        // Fork-specific: open deviation bar support
+        let rb_streams: Vec<_> = streams
+            .iter()
+            .filter(|s| matches!(s, StreamKind::OdbKline { .. }))
+            .collect();
+        if !rb_streams.is_empty() {
+            log::info!(
+                "[SUBS] resolve_streams pane {}: {} total streams, {} odb_kline",
+                pane_id,
+                streams.len(),
+                rb_streams.len()
+            );
+        }
         if let Some(state) = self.get_mut_pane_state_by_uuid(main_window, pane_id) {
             state.streams = ResolvedStream::Ready(streams.clone());
         }
@@ -1206,6 +1528,14 @@ impl Dashboard {
                     }
                 }
 
+                // ClickHouse polling: fetch completed bars periodically.
+                // In-process OpenDeviationBarProcessor builds live bars from WebSocket trades,
+                // but ClickHouse provides authoritative completed bars and fills gaps
+                // (e.g., after sleep/disconnect when trades were missed).
+                for (ticker_info, threshold_dbps) in &specs.odb_kline {
+                    subs.push(odb_kline_subscription(*ticker_info, *threshold_dbps));
+                }
+
                 subs
             })
             .collect::<Vec<Subscription<exchange::Event>>>();
@@ -1213,11 +1543,24 @@ impl Dashboard {
         Subscription::batch(unique_streams)
     }
 
-    fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {
+    pub(crate) fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {
         let all_pane_streams = self
             .iter_all_panes(main_window)
             .flat_map(|(_, _, pane_state)| pane_state.streams.ready_iter().into_iter().flatten());
         self.streams = UniqueStreams::from(all_pane_streams);
+
+        // Fork-specific: open deviation bar support
+        let rb_count: usize = self
+            .streams
+            .combined_used()
+            .map(|(_, specs)| specs.odb_kline.len())
+            .sum();
+        if rb_count > 0 {
+            log::info!(
+                "[SUBS] refresh_streams: {} odb_kline in UniqueStreams",
+                rb_count
+            );
+        }
 
         Task::none()
     }
@@ -1239,15 +1582,395 @@ impl From<fetcher::FetchUpdate> for Message {
                 pane_id,
                 stream,
                 data,
-            } => Message::DistributeFetchedData {
-                layout_id,
-                pane_id,
-                stream,
-                data,
-            },
+            } => {
+                // Convert connector::fetcher::FetchedData to exchange::fetcher::FetchedData
+                let data = match data {
+                    fetcher::FetchedData::Trades { batch, until_time } => {
+                        FetchedData::Trades { batch, until_time }
+                    }
+                    fetcher::FetchedData::Klines {
+                        data,
+                        req_id,
+                        microstructure,
+                        agg_trade_id_ranges,
+                        open_time_ms_list,
+                    } => FetchedData::Klines {
+                        data,
+                        req_id,
+                        microstructure,
+                        agg_trade_id_ranges,
+                        open_time_ms_list,
+                    },
+                    fetcher::FetchedData::OI { data, req_id } => FetchedData::OI { data, req_id },
+                };
+                Message::DistributeFetchedData {
+                    layout_id,
+                    pane_id,
+                    stream,
+                    data,
+                }
+            }
             fetcher::FetchUpdate::Error { pane_id, error } => {
                 Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(error))
             }
         }
     }
+}
+
+fn request_fetch(
+    state: &mut pane::State,
+    layout_id: uuid::Uuid,
+    req_id: uuid::Uuid,
+    fetch: FetchRange,
+    stream: Option<StreamKind>,
+) -> Task<Message> {
+    let pane_id = state.unique_id();
+
+    match fetch {
+        FetchRange::Kline(from, to) => {
+            let kline_stream = {
+                if let Some(s) = stream {
+                    Some((s, pane_id))
+                } else {
+                    state.streams.find_ready_map(|stream| {
+                        if matches!(
+                            stream,
+                            StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                        ) {
+                            Some((*stream, pane_id))
+                        } else {
+                            None
+                        }
+                    })
+                }
+            };
+
+            if let Some((stream, pane_uid)) = kline_stream {
+                return kline_fetch_task(
+                    layout_id,
+                    pane_uid,
+                    stream,
+                    Some(req_id),
+                    Some((from, to)),
+                );
+            }
+        }
+        FetchRange::OpenInterest(from, to) => {
+            let kline_stream = {
+                if let Some(s) = stream {
+                    Some((s, pane_id))
+                } else {
+                    state.streams.find_ready_map(|stream| {
+                        if matches!(
+                            stream,
+                            StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                        ) {
+                            Some((*stream, pane_id))
+                        } else {
+                            None
+                        }
+                    })
+                }
+            };
+
+            if let Some((stream, pane_uid)) = kline_stream {
+                return oi_fetch_task(layout_id, pane_uid, stream, Some(req_id), Some((from, to)));
+            }
+        }
+        FetchRange::Trades(from_time, to_time) => {
+            let trade_info = state.streams.find_ready_map(|stream| {
+                if let StreamKind::Trades { ticker_info } = stream {
+                    Some((*ticker_info, pane_id, *stream))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((ticker_info, pane_id, stream)) = trade_info {
+                let is_binance = matches!(
+                    ticker_info.exchange(),
+                    Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
+                );
+
+                if is_binance {
+                    let data_path = data::data_path(Some("market_data/binance/"));
+
+                    let (task, handle) = Task::sip(
+                        fetch_trades_batched(ticker_info, from_time, to_time, data_path),
+                        move |batch| {
+                            let data = FetchedData::Trades {
+                                batch,
+                                until_time: to_time,
+                            };
+                            Message::DistributeFetchedData {
+                                layout_id,
+                                pane_id,
+                                data,
+                                stream,
+                            }
+                        },
+                        move |result| match result {
+                            Ok(()) => Message::ChangePaneStatus(pane_id, pane::Status::Ready),
+                            Err(err) => Message::ErrorOccurred(
+                                Some(pane_id),
+                                DashboardError::Fetch(err.to_string()),
+                            ),
+                        },
+                    )
+                    .abortable();
+
+                    if let pane::Content::Kline { chart, .. } = &mut state.content
+                        && let Some(c) = chart
+                    {
+                        c.set_handle(handle.abort_on_drop());
+                    }
+
+                    return task;
+                }
+            }
+        }
+        FetchRange::OdbCatchup {
+            symbol,
+            threshold_dbps,
+        } => {
+            let trade_info = state.streams.find_ready_map(|stream| {
+                if let StreamKind::Trades { ticker_info } = stream {
+                    Some((*ticker_info, pane_id, *stream))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((_ticker_info, pane_id, stream)) = trade_info {
+                // Set fetching_trades flag so CH bar buffering and WS trade
+                // blocking activate during catchup.
+                if let pane::Content::Kline { chart, .. } = &mut state.content
+                    && let Some(c) = chart
+                {
+                    c.set_fetching_trades(true);
+                }
+
+                let (task, handle) = Task::sip(
+                    catchup_sip(symbol, threshold_dbps),
+                    move |batch| {
+                        let data = FetchedData::Trades {
+                            batch,
+                            until_time: u64::MAX,
+                        };
+                        Message::DistributeFetchedData {
+                            layout_id,
+                            pane_id,
+                            data,
+                            stream,
+                        }
+                    },
+                    move |result| match result {
+                        Ok(()) => Message::ChangePaneStatus(pane_id, pane::Status::Ready),
+                        Err(err) => Message::ErrorOccurred(
+                            Some(pane_id),
+                            DashboardError::Fetch(err.to_string()),
+                        ),
+                    },
+                )
+                .abortable();
+
+                if let pane::Content::Kline { chart, .. } = &mut state.content
+                    && let Some(c) = chart
+                {
+                    c.set_handle(handle.abort_on_drop());
+                }
+
+                return task;
+            }
+        }
+    }
+
+    Task::none()
+}
+
+fn request_fetch_many(
+    state: &mut pane::State,
+    layout_id: uuid::Uuid,
+    reqs: impl IntoIterator<Item = (uuid::Uuid, FetchRange, Option<StreamKind>)>,
+) -> Task<Message> {
+    let tasks = reqs
+        .into_iter()
+        .map(|(req_id, fetch, stream)| request_fetch(state, layout_id, req_id, fetch, stream))
+        .collect::<Vec<_>>();
+    Task::batch(tasks)
+}
+
+fn oi_fetch_task(
+    layout_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    stream: StreamKind,
+    req_id: Option<uuid::Uuid>,
+    range: Option<(u64, u64)>,
+) -> Task<Message> {
+    let update_status = Task::done(Message::ChangePaneStatus(
+        pane_id,
+        pane::Status::Loading(InfoKind::FetchingOI),
+    ));
+
+    let fetch_task = match stream {
+        StreamKind::Kline {
+            ticker_info,
+            timeframe,
+        } => Task::perform(
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_open_interest(ticker_info, timeframe, range),
+                |err| format!("{err}"),
+            ),
+            move |result| match result {
+                Ok(oi) => {
+                    let data = FetchedData::OI { data: oi, req_id };
+                    Message::DistributeFetchedData {
+                        layout_id,
+                        pane_id,
+                        data,
+                        stream,
+                    }
+                }
+                Err(err) => Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(err)),
+            },
+        ),
+        _ => Task::none(),
+    };
+
+    update_status.chain(fetch_task)
+}
+
+fn kline_fetch_task(
+    layout_id: uuid::Uuid,
+    pane_id: uuid::Uuid,
+    stream: StreamKind,
+    req_id: Option<uuid::Uuid>,
+    range: Option<(u64, u64)>,
+) -> Task<Message> {
+    let update_status = Task::done(Message::ChangePaneStatus(
+        pane_id,
+        pane::Status::Loading(InfoKind::FetchingKlines),
+    ));
+
+    let fetch_task = match stream {
+        StreamKind::Kline {
+            ticker_info,
+            timeframe,
+        } => Task::perform(
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_klines(ticker_info, timeframe, range),
+                |err| format!("{err}"),
+            ),
+            move |result| match result {
+                Ok(klines) => {
+                    let data = FetchedData::Klines {
+                        data: klines,
+                        req_id,
+                        microstructure: None,
+                        agg_trade_id_ranges: None,
+                        open_time_ms_list: None,
+                    };
+                    Message::DistributeFetchedData {
+                        layout_id,
+                        pane_id,
+                        data,
+                        stream,
+                    }
+                }
+                Err(err) => {
+                    Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(err.to_string()))
+                }
+            },
+        ),
+        StreamKind::OdbKline {
+            ticker_info,
+            threshold_dbps,
+        } => Task::perform(
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_odb_klines_with_microstructure(ticker_info, threshold_dbps, range),
+                |err: AdapterError| format!("{err}"),
+            ),
+            move |result| match result {
+                Ok((klines, micro, agg_ids, open_time_ms_list)) => {
+                    let data = FetchedData::Klines {
+                        data: klines,
+                        req_id,
+                        microstructure: Some(micro),
+                        agg_trade_id_ranges: Some(agg_ids),
+                        open_time_ms_list: Some(open_time_ms_list),
+                    };
+                    Message::DistributeFetchedData {
+                        layout_id,
+                        pane_id,
+                        data,
+                        stream,
+                    }
+                }
+                Err(err) => {
+                    Message::ErrorOccurred(Some(pane_id), DashboardError::Fetch(err.to_string()))
+                }
+            },
+        ),
+        _ => Task::none(),
+    };
+
+    update_status.chain(fetch_task)
+}
+
+pub fn fetch_trades_batched(
+    ticker_info: TickerInfo,
+    from_time: u64,
+    to_time: u64,
+    data_path: PathBuf,
+) -> impl Straw<(), Vec<Trade>, AdapterError> {
+    sipper(async move |mut progress| {
+        let mut latest_trade_t = from_time;
+
+        while latest_trade_t < to_time {
+            match adapter::binance::fetch_trades(ticker_info, latest_trade_t, data_path.clone())
+                .await
+            {
+                Ok(batch) => {
+                    if batch.is_empty() {
+                        break;
+                    }
+
+                    latest_trade_t = batch.last().map_or(latest_trade_t, |trade| trade.time);
+
+                    let () = progress.send(batch).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(())
+    })
+}
+
+pub fn odb_kline_subscription(
+    ticker_info: TickerInfo,
+    threshold_dbps: u32,
+) -> Subscription<exchange::Event> {
+    let exchange = ticker_info.exchange();
+    let config = StreamConfig::new(
+        (ticker_info, threshold_dbps),
+        exchange,
+        None,
+        PushFrequency::ServerDefault,
+    );
+    let builder = |cfg: &StreamConfig<(TickerInfo, u32)>| {
+        use iced::futures::StreamExt;
+        // Forex lives in fxview_cache.forex_bars. the forex producer writes to
+        // ClickHouse directly but does NOT emit SSE events (SSE is served by
+        // the bar producer, which only knows crypto). So for forex, SSE
+        // would connect silently but deliver zero bars. Always use CH HTTP
+        // polling for forex regardless of the global SSE flag.
+        let is_forex = cfg.id.0.ticker.exchange.venue() == exchange::adapter::Venue::ClickHouse;
+        if adapter::clickhouse::sse_enabled() && !is_forex {
+            adapter::clickhouse::connect_sse_stream(cfg.id.0, cfg.id.1).boxed()
+        } else {
+            adapter::clickhouse::connect_kline_stream(cfg.id.0, cfg.id.1).boxed()
+        }
+    };
+    Subscription::run_with(config, builder)
 }

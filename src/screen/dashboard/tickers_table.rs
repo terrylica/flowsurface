@@ -1,3 +1,4 @@
+// GitHub Issue: https://github.com/flowsurface-rs/flowsurface/pull/90
 use crate::{
     modal::pane::mini_tickers_list::RowSelection,
     style::{self, Icon, icon_text},
@@ -55,8 +56,7 @@ const SORT_AND_FILTER_HEIGHT: f32 = 200.0;
 
 const COMPACT_ROW_HEIGHT: f32 = 28.0;
 
-const EXCHANGE_UNAVAILABLE_TOOLTIP: &str =
-    "Metadata unavailable for this session.\nRestart app to retry. Check logs for details.";
+const EXCHANGE_UNAVAILABLE_TOOLTIP: &str = "Metadata unavailable.\nCheck logs for details.";
 
 fn available_markets(venue: Venue) -> &'static [MarketKind] {
     match venue {
@@ -65,11 +65,14 @@ fn available_markets(venue: Venue) -> &'static [MarketKind] {
         // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
         // TODO: include after protobuf implementation and Mexc spot markets ready to stream
         Venue::Mexc => &[MarketKind::LinearPerps, MarketKind::InversePerps],
+        Venue::ClickHouse => &[MarketKind::Spot],
     }
 }
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     TickerSelected(TickerInfo, Option<ContentKind>),
+    SyncToAllPanes(TickerInfo),
     ErrorOccurred(data::InternalError),
     Fetch(Task<Message>),
     FocusWidget(iced::widget::Id),
@@ -81,6 +84,7 @@ pub enum Message {
     ChangeSortOption(SortOptions),
     ShowSortingOptions,
     TickerSelected(Ticker, Option<ContentKind>),
+    SyncToAllPanes(Ticker),
     ExpandTickerCard(Option<Ticker>),
     FavoriteTicker(Ticker),
     Scrolled(scrollable::Viewport),
@@ -92,6 +96,7 @@ pub enum Message {
     FetchStats,
     UpdateMetadata(Venue, HashMap<Ticker, Option<TickerInfo>>),
     UpdateStats(Venue, HashMap<Ticker, TickerStats>),
+    RetryMetadataFetch(Venue),
     MetadataFetchFailed(Venue, data::InternalError),
     StatsFetchFailed(Venue, data::InternalError),
 }
@@ -112,6 +117,7 @@ pub struct TickersTable {
     show_favorites: bool,
     show_sort_options: bool,
     row_index: FxHashMap<Ticker, usize>,
+    metadata_fetch_state: MetadataFetchState,
     stats_fetch_state: StatsFetchState,
 }
 
@@ -121,26 +127,23 @@ impl TickersTable {
     }
 
     pub fn new_with_settings(settings: &Settings) -> (Self, Task<Message>) {
-        let fetch_metadata = Venue::ALL
-            .iter()
-            .copied()
-            .map(|venue| {
-                let markets_to_fetch = available_markets(venue);
+        // Ensure new venues are enabled for existing saved states. This MUST
+        // happen before the fetch task list is built: an old saved-state.json
+        // without ClickHouse would otherwise show the venue as selected but
+        // never dispatch its metadata fetch — EURUSD TickerInfo never resolves
+        // and AutoOpenForexPane retries forever (root cause of the 1600+
+        // "ticker info not ready" log spam).
+        let selected_exchanges = {
+            let mut v = settings.selected_exchanges.to_vec();
+            if !v.contains(&Venue::ClickHouse) {
+                v.push(Venue::ClickHouse);
+            }
+            v
+        };
 
-                Task::perform(
-                    fetch_ticker_metadata(venue, markets_to_fetch),
-                    move |result| match result {
-                        Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
-                        Err(err) => {
-                            log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
-                            Message::MetadataFetchFailed(
-                                venue,
-                                InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
-                            )
-                        }
-                    },
-                )
-            })
+        let fetch_metadata = selected_exchanges
+            .iter()
+            .map(|venue: &Venue| fetch_metadata_task(*venue))
             .collect::<Vec<_>>();
 
         (
@@ -156,10 +159,11 @@ impl TickersTable {
                 is_shown: false,
                 tickers_info: FxHashMap::default(),
                 unavailable_exchanges: FxHashSet::default(),
-                selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
+                selected_exchanges: selected_exchanges.iter().cloned().collect(),
                 selected_markets: settings.selected_markets.iter().cloned().collect(),
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),
+                metadata_fetch_state: MetadataFetchState::with_pending(selected_exchanges),
                 stats_fetch_state: StatsFetchState::default(),
             },
             Task::batch(fetch_metadata),
@@ -176,6 +180,7 @@ impl TickersTable {
         }
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::UpdateSearchQuery(query) => {
@@ -216,11 +221,20 @@ impl TickersTable {
                 } else {
                     self.selected_exchanges.insert(exch);
 
+                    if !self.metadata_fetch_state.has_fetched(exch) {
+                        if self.metadata_fetch_state.begin_venue(exch) {
+                            return Some(Action::Fetch(fetch_metadata_task(exch)));
+                        }
+
+                        return None;
+                    }
+
                     self.stats_fetch_state
                         .on_exchange_enabled(exch, Instant::now());
                 }
             }
             Message::DebounceExchangeFetchTick => {
+                self.metadata_fetch_state.tick_loading_phase();
                 self.stats_fetch_state.tick_loading_phase();
 
                 if !self.stats_fetch_state.debounce_is_ready(Instant::now()) {
@@ -241,6 +255,18 @@ impl TickersTable {
 
                 if let Some(ticker_info) = ticker_info {
                     return Some(Action::TickerSelected(ticker_info, content));
+                } else {
+                    log::warn!(
+                        "Ticker info not found for {ticker:?} on {:?}",
+                        ticker.exchange
+                    );
+                }
+            }
+            Message::SyncToAllPanes(ticker) => {
+                let ticker_info = self.tickers_info.get(&ticker).cloned().flatten();
+
+                if let Some(ticker_info) = ticker_info {
+                    return Some(Action::SyncToAllPanes(ticker_info));
                 } else {
                     log::warn!(
                         "Ticker info not found for {ticker:?} on {:?}",
@@ -273,6 +299,14 @@ impl TickersTable {
                     return Some(Action::Fetch(task));
                 }
             }
+            Message::RetryMetadataFetch(venue) => {
+                if self.unavailable_exchanges.contains(&venue)
+                    && self.metadata_fetch_state.begin_venue(venue)
+                {
+                    self.selected_exchanges.insert(venue);
+                    return Some(Action::Fetch(fetch_metadata_task(venue)));
+                }
+            }
             Message::UpdateStats(venue, stats) => {
                 let can_sort = self.stats_fetch_state.complete_venue(venue);
                 self.update_ticker_rows(venue, stats);
@@ -291,10 +325,42 @@ impl TickersTable {
                 return Some(Action::ErrorOccurred(err));
             }
             Message::UpdateMetadata(venue, info) => {
+                self.metadata_fetch_state.complete_venue(venue);
+                self.metadata_fetch_state.mark_fetched(venue);
                 self.unavailable_exchanges.remove(&venue);
 
                 for (ticker, ticker_info) in info.into_iter() {
                     self.tickers_info.insert(ticker, ticker_info);
+
+                    // NOTE(fork): ClickHouse-only tickers have no live
+                    // stats feed — create rows directly from metadata.
+                    if venue == Venue::ClickHouse && !self.row_index.contains_key(&ticker) {
+                        let precision = ticker_info.as_ref().map(|ti| ti.min_ticksize);
+                        let stats = exchange::TickerStats {
+                            mark_price: exchange::unit::Price::from_f32(0.0),
+                            daily_price_chg: 0.0,
+                            daily_volume: exchange::unit::Qty::from(0.0),
+                        };
+                        let row = TickerRowData {
+                            exchange: ticker.exchange,
+                            ticker,
+                            stats,
+                            previous_stats: None,
+                            is_favorited: self.favorited_tickers.contains(&ticker),
+                        };
+                        self.ticker_rows.push(row);
+                        let idx = self.ticker_rows.len() - 1;
+                        self.row_index.insert(ticker, idx);
+                        self.display_cache.insert(
+                            ticker,
+                            compute_display_data(
+                                &ticker,
+                                &self.ticker_rows[idx].stats,
+                                None,
+                                precision,
+                            ),
+                        );
+                    }
                 }
 
                 if self.selected_exchanges.contains(&venue) {
@@ -305,8 +371,8 @@ impl TickersTable {
                 }
             }
             Message::MetadataFetchFailed(venue, err) => {
+                self.metadata_fetch_state.complete_venue(venue);
                 self.unavailable_exchanges.insert(venue);
-                self.selected_exchanges.remove(&venue);
                 self.stats_fetch_state.on_exchange_disabled(venue);
                 return Some(Action::ErrorOccurred(err));
             }
@@ -453,7 +519,7 @@ impl TickersTable {
 impl TickersTable {
     /// Full table view with search, sorting, and filtering options.
     pub fn view(&self, bounds: Size) -> Element<'_, Message> {
-        let (fav_rows, rest_rows) = self.filtered_rows(&self.search_query, None);
+        let (fav_rows, rest_rows) = self.filtered_rows_main();
         let fav_n = fav_rows.len();
         let rest_n = rest_rows.len();
         let has_any_favorites = !self.favorited_tickers.is_empty();
@@ -569,30 +635,32 @@ impl TickersTable {
     fn exchange_filter_btn<'a>(&'a self, venue: Venue) -> Element<'a, Message> {
         let unavailable = self.unavailable_exchanges.contains(&venue);
         let selected = self.selected_exchanges.contains(&venue);
-        let loading = self.stats_fetch_state.is_in_flight(venue);
+        let stats_loading = self.stats_fetch_state.is_in_flight(venue);
+        let metadata_loading = self.metadata_fetch_state.is_in_flight(venue);
 
         let mut content = row![
             icon_text(style::venue_icon(venue), 12).align_x(Alignment::Center),
-            text(venue.to_string())
+            text(venue.to_string()),
         ]
         .spacing(4)
         .width(Length::Fill)
         .align_y(Vertical::Center);
 
-        if loading {
+        if metadata_loading {
+            content = content.push(text(self.metadata_fetch_state.loading_dots()));
+        } else if stats_loading {
             content = content.push(text(self.stats_fetch_state.loading_dots()));
+        } else if unavailable {
+            let unavailable_mark = text("!").style(move |theme: &Theme| {
+                let palette = theme.extended_palette();
+                iced::widget::text::Style {
+                    color: Some(palette.danger.base.color),
+                }
+            });
+            content = content.push(unavailable_mark);
         }
 
-        if unavailable {
-            content = content
-                .push(space::horizontal())
-                .push(text("!").size(12).style(move |theme: &Theme| {
-                    let palette = theme.extended_palette();
-                    iced::widget::text::Style {
-                        color: Some(palette.danger.base.color),
-                    }
-                }));
-        } else if selected {
+        if selected && !unavailable {
             content = content
                 .push(space::horizontal())
                 .push(container(icon_text(Icon::Checkmark, 12)));
@@ -616,10 +684,33 @@ impl TickersTable {
                 None
             },
             iced::widget::tooltip::Position::Top,
-            Duration::from_millis(300),
+            Duration::from_millis(250),
         );
 
-        container(btn_with_tooltip)
+        let row_content: Element<'a, Message> = if unavailable {
+            let retry_btn = button(text("Retry"))
+                .style(move |theme, status| style::button::bordered_toggle(theme, status, false));
+
+            let retry_btn = if metadata_loading {
+                retry_btn
+            } else {
+                retry_btn.on_press(Message::RetryMetadataFetch(venue))
+            };
+
+            let controls = row![retry_btn]
+                .spacing(2)
+                .align_y(Vertical::Center)
+                .width(Length::Shrink);
+
+            row![container(btn_with_tooltip).width(Length::Fill), controls]
+                .spacing(4)
+                .align_y(Vertical::Center)
+                .into()
+        } else {
+            btn_with_tooltip
+        };
+
+        container(row_content)
             .padding(2)
             .style(style::dragger_row_container)
             .into()
@@ -834,68 +925,6 @@ impl TickersTable {
         .into()
     }
 
-    fn filtered_rows<'a>(
-        &'a self,
-        search_upper: &str,
-        excluded: Option<&FxHashSet<Ticker>>,
-    ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
-        let matches_market =
-            |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
-        let matches_exchange =
-            |row: &TickerRowData| self.selected_exchanges.contains(&row.exchange.venue());
-
-        // Collect fav_rows with search ranks
-        let mut fav_rows: Vec<_> = if self.show_favorites {
-            self.ticker_rows
-                .iter()
-                .filter(|row| {
-                    row.is_favorited
-                        && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
-                        && matches_market(row)
-                        && matches_exchange(row)
-                })
-                .filter_map(|row| {
-                    calc_search_rank(&row.ticker, search_upper).map(|rank| (row, rank))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // Sort by (match bucket/pos), then selected sort, then length as last resort
-        fav_rows.sort_by(|(a, ra), (b, rb)| {
-            (ra.bucket, ra.pos)
-                .cmp(&(rb.bucket, rb.pos))
-                .then_with(|| compare_ticker_rows_by_sort(a, b, self.selected_sort_option))
-                .then_with(|| ra.len.cmp(&rb.len))
-        });
-        let fav_rows: Vec<&TickerRowData> = fav_rows.into_iter().map(|(row, _)| row).collect();
-
-        // Collect rest_rows with search ranks
-        let mut rest_rows: Vec<_> = self
-            .ticker_rows
-            .iter()
-            .filter(|row| {
-                (!self.show_favorites || !row.is_favorited)
-                    && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
-                    && matches_market(row)
-                    && matches_exchange(row)
-            })
-            .filter_map(|row| calc_search_rank(&row.ticker, search_upper).map(|rank| (row, rank)))
-            .collect();
-
-        // Sort by (match bucket/pos), then selected sort, then length as last resort
-        rest_rows.sort_by(|(a, ra), (b, rb)| {
-            (ra.bucket, ra.pos)
-                .cmp(&(rb.bucket, rb.pos))
-                .then_with(|| compare_ticker_rows_by_sort(a, b, self.selected_sort_option))
-                .then_with(|| ra.len.cmp(&rb.len))
-        });
-        let rest_rows: Vec<&TickerRowData> = rest_rows.into_iter().map(|(row, _)| row).collect();
-
-        (fav_rows, rest_rows)
-    }
-
     fn ticker_card_container<'a>(
         &self,
         exchange: Exchange,
@@ -955,8 +984,9 @@ impl TickersTable {
 
         let icon = icon_text(style::venue_icon(ticker.exchange.venue()), 12);
         let display_ticker = {
-            if display_data.display_ticker.len() >= 11 {
-                format!("{}...", &display_data.display_ticker[..9])
+            if display_data.display_ticker.chars().count() >= 11 {
+                let truncated: String = display_data.display_ticker.chars().take(9).collect();
+                format!("{}...", truncated)
             } else {
                 format!(
                     "{}{}",
@@ -1101,6 +1131,7 @@ impl TickersTable {
         on_scroll: FScroll,
         selected_tickers: Option<&'a [TickerInfo]>,
         base_ticker: Option<TickerInfo>,
+        allowed_symbols: Option<&'a [String]>,
     ) -> Element<'a, M>
     where
         M: 'a + Clone,
@@ -1119,7 +1150,8 @@ impl TickersTable {
             selected_set.insert(bt.ticker);
         }
 
-        let (fav_rows, rest_rows) = self.filtered_rows_compact(&injected_q, &selected_set);
+        let (fav_rows, rest_rows) =
+            self.filtered_rows_compact(&injected_q, &selected_set, allowed_symbols);
 
         let base_ticker_id = base_ticker.map(|bt| bt.ticker);
         let selected_list: Vec<TickerInfo> = selected_tickers
@@ -1221,7 +1253,7 @@ impl TickersTable {
                 (info_opt.map(RowSelection::Switch), None)
             };
 
-            let row_el = Self::mini_ticker_card(
+            let row_el = mini_ticker_card(
                 row_ref.exchange,
                 label,
                 left_action,
@@ -1279,7 +1311,7 @@ impl TickersTable {
 
         if let Some(bt) = base_ticker {
             let label = self.label_with_suffix(bt.ticker);
-            col = col.push(Self::mini_ticker_card(
+            col = col.push(mini_ticker_card(
                 bt.ticker.exchange,
                 label,
                 None,
@@ -1301,7 +1333,7 @@ impl TickersTable {
                 (Some(RowSelection::Switch(info)), None)
             };
 
-            col = col.push(Self::mini_ticker_card(
+            col = col.push(mini_ticker_card(
                 info.ticker.exchange,
                 label,
                 left_action,
@@ -1315,23 +1347,128 @@ impl TickersTable {
     }
 
     fn label_with_suffix(&self, ticker: Ticker) -> String {
-        let mut s = if let Some(dd) = self.display_cache.get(&ticker) {
-            dd.display_ticker.clone()
-        } else {
-            let (s, _) = ticker.display_symbol_and_type();
-            s
-        };
-
+        let (sym, _) = ticker.display_symbol_and_type();
+        let mut s = sym;
         s.push_str(market_suffix(ticker.market_type()));
         s
+    }
+
+    fn filtered_rows<'a>(
+        &'a self,
+        search_upper: &str,
+        excluded: Option<&FxHashSet<Ticker>>,
+        allowed_symbols: Option<&[String]>,
+    ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
+        let matches_market =
+            |row: &TickerRowData| self.selected_markets.contains(&row.ticker.market_type());
+        let matches_exchange =
+            |row: &TickerRowData| self.selected_exchanges.contains(&row.exchange.venue());
+        let matches_allowlist = |row: &TickerRowData| {
+            allowed_symbols.is_none_or(|symbols| {
+                let sym = row.ticker.to_string();
+                symbols.iter().any(|s| s == &sym)
+            })
+        };
+
+        // Collect fav_rows with search ranks
+        let mut fav_rows: Vec<_> = if self.show_favorites {
+            self.ticker_rows
+                .iter()
+                .filter(|row| {
+                    row.is_favorited
+                        && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
+                        && matches_market(row)
+                        && matches_exchange(row)
+                        && matches_allowlist(row)
+                })
+                .filter_map(|row| {
+                    calc_search_rank(&row.ticker, search_upper).map(|rank| (row, rank))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Sort by (match bucket/pos), then selected sort, then length as last resort
+        fav_rows.sort_by(|(a, ra), (b, rb)| {
+            (ra.bucket, ra.pos)
+                .cmp(&(rb.bucket, rb.pos))
+                .then_with(|| match self.selected_sort_option {
+                    SortOptions::VolumeDesc => b
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&a.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::VolumeAsc => a
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&b.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::ChangeDesc => {
+                        b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
+                    }
+                    SortOptions::ChangeAsc => {
+                        a.stats.daily_price_chg.total_cmp(&b.stats.daily_price_chg)
+                    }
+                })
+                .then_with(|| ra.len.cmp(&rb.len))
+        });
+        let fav_rows: Vec<&TickerRowData> = fav_rows.into_iter().map(|(row, _)| row).collect();
+
+        // Collect rest_rows with search ranks
+        let mut rest_rows: Vec<_> = self
+            .ticker_rows
+            .iter()
+            .filter(|row| {
+                (!self.show_favorites || !row.is_favorited)
+                    && !excluded.is_some_and(|ex| ex.contains(&row.ticker))
+                    && matches_market(row)
+                    && matches_exchange(row)
+                    && matches_allowlist(row)
+            })
+            .filter_map(|row| calc_search_rank(&row.ticker, search_upper).map(|rank| (row, rank)))
+            .collect();
+
+        // Sort by (match bucket/pos), then selected sort, then length as last resort
+        rest_rows.sort_by(|(a, ra), (b, rb)| {
+            (ra.bucket, ra.pos)
+                .cmp(&(rb.bucket, rb.pos))
+                .then_with(|| match self.selected_sort_option {
+                    SortOptions::VolumeDesc => b
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&a.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::VolumeAsc => a
+                        .stats
+                        .daily_volume
+                        .partial_cmp(&b.stats.daily_volume)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    SortOptions::ChangeDesc => {
+                        b.stats.daily_price_chg.total_cmp(&a.stats.daily_price_chg)
+                    }
+                    SortOptions::ChangeAsc => {
+                        a.stats.daily_price_chg.total_cmp(&b.stats.daily_price_chg)
+                    }
+                })
+                .then_with(|| ra.len.cmp(&rb.len))
+        });
+        let rest_rows: Vec<&TickerRowData> = rest_rows.into_iter().map(|(row, _)| row).collect();
+
+        (fav_rows, rest_rows)
+    }
+
+    fn filtered_rows_main(&self) -> (Vec<&TickerRowData>, Vec<&TickerRowData>) {
+        self.filtered_rows(&self.search_query, None, None)
     }
 
     fn filtered_rows_compact<'a>(
         &'a self,
         injected_q: &str,
         excluded: &FxHashSet<Ticker>,
+        allowed_symbols: Option<&[String]>,
     ) -> (Vec<&'a TickerRowData>, Vec<&'a TickerRowData>) {
-        self.filtered_rows(injected_q, Some(excluded))
+        self.filtered_rows(injected_q, Some(excluded), allowed_symbols)
     }
 
     fn header_offset_compact(&self, selected_count: usize) -> f32 {
@@ -1354,78 +1491,78 @@ impl TickersTable {
                 0.0
             }
     }
+}
 
-    fn mini_ticker_card<'a, M, FSelect>(
-        exchange: Exchange,
-        label: String,
-        left_action: Option<RowSelection>,
-        right_label_and_action: Option<(&'static str, Option<RowSelection>)>,
-        chip_label: Option<&'static str>,
-        on_select: FSelect,
-    ) -> Element<'a, M>
-    where
-        M: 'a + Clone,
-        FSelect: 'static + Copy + Fn(RowSelection) -> M,
-    {
-        let icon = icon_text(style::venue_icon(exchange.venue()), 12);
+fn mini_ticker_card<'a, M, FSelect>(
+    exchange: Exchange,
+    label: String,
+    left_action: Option<RowSelection>,
+    right_label_and_action: Option<(&'static str, Option<RowSelection>)>,
+    chip_label: Option<&'static str>,
+    on_select: FSelect,
+) -> Element<'a, M>
+where
+    M: 'a + Clone,
+    FSelect: 'static + Copy + Fn(RowSelection) -> M,
+{
+    let icon = icon_text(style::venue_icon(exchange.venue()), 12);
 
-        let left_btn_base = button(
-            row![icon, text(label)]
-                .spacing(6)
+    let left_btn_base = button(
+        row![icon, text(label)]
+            .spacing(6)
+            .align_y(alignment::Vertical::Center)
+            .height(Length::Fill),
+    )
+    .style(|theme, status| style::button::transparent(theme, status, false))
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    let left_btn = if let Some(sel) = left_action {
+        left_btn_base.on_press(on_select(sel))
+    } else {
+        left_btn_base
+    };
+
+    let right_el: Option<Element<'a, M>> = right_label_and_action.map(|(lbl, action)| {
+        let btn_base = button(
+            row![text(lbl).size(11)]
                 .align_y(alignment::Vertical::Center)
                 .height(Length::Fill),
         )
         .style(|theme, status| style::button::transparent(theme, status, false))
-        .width(Length::Fill)
         .height(Length::Fill);
 
-        let left_btn = if let Some(sel) = left_action {
-            left_btn_base.on_press(on_select(sel))
+        let btn = if let Some(act) = action {
+            btn_base.on_press(on_select(act))
         } else {
-            left_btn_base
+            btn_base
         };
 
-        let right_el: Option<Element<'a, M>> = right_label_and_action.map(|(lbl, action)| {
-            let btn_base = button(
-                row![text(lbl).size(11)]
-                    .align_y(alignment::Vertical::Center)
-                    .height(Length::Fill),
-            )
-            .style(|theme, status| style::button::transparent(theme, status, false))
-            .height(Length::Fill);
+        btn.into()
+    });
 
-            let btn = if let Some(act) = action {
-                btn_base.on_press(on_select(act))
-            } else {
-                btn_base
-            };
-
-            btn.into()
-        });
-
-        let chip_el: Option<Element<'a, M>> = chip_label.map(|lbl| {
-            container(text(lbl).size(11))
-                .padding([2, 6])
-                .style(style::dragger_row_container)
-                .into()
-        });
-
-        let mut row_content = row![left_btn].align_y(alignment::Vertical::Center);
-
-        if let Some(chip) = chip_el {
-            row_content = row_content.push(chip);
-        }
-        if let Some(right) = right_el {
-            row_content = row_content.push(iced::widget::rule::vertical(1.0));
-            row_content = row_content.push(right);
-        }
-
-        container(row_content)
-            .style(style::ticker_card)
-            .height(Length::Fixed(COMPACT_ROW_HEIGHT))
-            .width(Length::Fill)
+    let chip_el: Option<Element<'a, M>> = chip_label.map(|lbl| {
+        container(text(lbl).size(11))
+            .padding([2, 6])
+            .style(style::dragger_row_container)
             .into()
+    });
+
+    let mut row_content = row![left_btn].align_y(alignment::Vertical::Center);
+
+    if let Some(chip) = chip_el {
+        row_content = row_content.push(chip);
     }
+    if let Some(right) = right_el {
+        row_content = row_content.push(iced::widget::rule::vertical(1.0));
+        row_content = row_content.push(right);
+    }
+
+    container(row_content)
+        .style(style::ticker_card)
+        .height(Length::Fixed(COMPACT_ROW_HEIGHT))
+        .width(Length::Fill)
+        .into()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1540,6 +1677,63 @@ enum DebounceState {
     Waiting { deadline: Instant },
 }
 
+#[derive(Debug, Default)]
+struct MetadataFetchState {
+    in_flight_venues: FxHashSet<Venue>,
+    fetched_venues: FxHashSet<Venue>,
+    loading_phase: u8,
+}
+
+impl MetadataFetchState {
+    fn with_pending(venues: impl IntoIterator<Item = Venue>) -> Self {
+        Self {
+            in_flight_venues: venues.into_iter().collect(),
+            fetched_venues: FxHashSet::default(),
+            loading_phase: 0,
+        }
+    }
+
+    fn begin_venue(&mut self, venue: Venue) -> bool {
+        self.in_flight_venues.insert(venue)
+    }
+
+    fn mark_fetched(&mut self, venue: Venue) {
+        self.fetched_venues.insert(venue);
+    }
+
+    fn has_fetched(&self, venue: Venue) -> bool {
+        self.fetched_venues.contains(&venue)
+    }
+
+    fn complete_venue(&mut self, venue: Venue) {
+        self.in_flight_venues.remove(&venue);
+        if self.in_flight_venues.is_empty() {
+            self.loading_phase = 0;
+        }
+    }
+
+    fn is_in_flight(&self, venue: Venue) -> bool {
+        self.in_flight_venues.contains(&venue)
+    }
+
+    fn tick_loading_phase(&mut self) {
+        if self.in_flight_venues.is_empty() {
+            self.loading_phase = 0;
+            return;
+        }
+
+        self.loading_phase = (self.loading_phase + 1) % 3;
+    }
+
+    fn loading_dots(&self) -> &'static str {
+        match self.loading_phase {
+            0 => ".",
+            1 => "..",
+            _ => "...",
+        }
+    }
+}
+
 fn fetch_ticker_stats_task(
     venue: Venue,
     tickers_info: &FxHashMap<Ticker, Option<TickerInfo>>,
@@ -1565,6 +1759,24 @@ fn fetch_ticker_stats_task(
             Err(err) => {
                 log::error!("Ticker stats fetch failed for {venue:?}: {err}");
                 Message::StatsFetchFailed(
+                    venue,
+                    InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
+                )
+            }
+        },
+    )
+}
+
+fn fetch_metadata_task(venue: Venue) -> Task<Message> {
+    let markets_to_fetch = available_markets(venue);
+
+    Task::perform(
+        fetch_ticker_metadata(venue, markets_to_fetch),
+        move |result| match result {
+            Ok(ticker_info) => Message::UpdateMetadata(venue, ticker_info),
+            Err(err) => {
+                log::error!("Ticker metadata fetch failed for {venue:?}: {err}");
+                Message::MetadataFetchFailed(
                     venue,
                     InternalError::Fetch(format!("{venue:?}: {}", err.ui_message())),
                 )

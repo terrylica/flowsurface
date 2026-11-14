@@ -1,6 +1,7 @@
 use crate::connector::{runtime_proxy_cfg, set_runtime_proxy_cfg};
 use crate::modal::layout_manager::LayoutManager;
 use crate::screen::dashboard::{Dashboard, pane};
+use data::stream::{PersistDepth, PersistStreamKind};
 use data::{
     UserTimezone,
     layout::{WindowSpec, pane::Axis},
@@ -216,11 +217,42 @@ pub fn configuration(pane: data::Pane) -> Configuration<pane::State> {
         data::Pane::KlineChart {
             layout,
             kind,
-            stream_type,
+            mut stream_type,
             settings,
             indicators,
             link_group,
         } => {
+            // Fork-specific: open deviation bar support
+            // Ensure ODB charts have a DepthAndTrades stream for live price line.
+            // Older persisted layouts may only have OdbKline without DepthAndTrades.
+            if kind == data::chart::KlineChartKind::Odb {
+                // NOTE(fork): ClickHouse-only symbols (forex) have no
+                // WebSocket streams — skip DepthAndTrades injection.
+                let is_ch_only = stream_type.iter().any(|s| match s {
+                    PersistStreamKind::RangeBarKline { ticker, .. } => {
+                        ticker.exchange == exchange::adapter::Exchange::ClickhouseSpot
+                    }
+                    _ => false,
+                });
+                let has_depth = stream_type
+                    .iter()
+                    .any(|s| matches!(s, PersistStreamKind::DepthAndTrades(_)));
+                if !has_depth
+                    && !is_ch_only
+                    && let Some(ticker) = stream_type.iter().find_map(|s| match s {
+                        PersistStreamKind::Kline { ticker, .. }
+                        | PersistStreamKind::RangeBarKline { ticker, .. } => Some(*ticker),
+                        _ => None,
+                    })
+                {
+                    stream_type.push(PersistStreamKind::DepthAndTrades(PersistDepth {
+                        ticker,
+                        depth_aggr: Default::default(),
+                        push_freq: Default::default(),
+                    }));
+                }
+            }
+
             let content = pane::Content::Kline {
                 chart: None,
                 indicators: indicators.clone(),
@@ -361,6 +393,11 @@ pub fn load_saved_state() -> SavedState {
             log::error!(
                 "Failed to load/find layout state: {}. Starting with a new layout.",
                 e
+            );
+            exchange::tg_alert!(
+                exchange::telegram::Severity::Info,
+                "layout",
+                "Layout state load failed — using defaults"
             );
 
             SavedState::default()

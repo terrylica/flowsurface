@@ -3,6 +3,7 @@ pub mod plot;
 
 use super::scale::linear;
 use super::{Interaction, Message};
+// Fork-specific: open deviation bar support
 use crate::chart::{
     Caches, TEXT_SIZE, ViewState,
     indicator::plot::{AnySeries, ChartCanvas, Plot},
@@ -31,8 +32,74 @@ pub fn indicator_row<'a, P, Y>(
 where
     P: Plot<AnySeries<'a, Y>> + 'a,
 {
-    let series = AnySeries::for_basis(main_chart.basis, datapoints);
+    indicator_row_impl(
+        main_chart,
+        cache,
+        None,
+        plot,
+        AnySeries::for_basis(main_chart.basis, datapoints),
+        visible_range,
+    )
+}
 
+/// Like `indicator_row` but backed by a `&[Y]` slice (forward-indexed: 0 = oldest).
+/// Use for Odb/Tick indicators that store data in `Vec<Y>` for O(1) push on rebuild,
+/// eliminating the O(N log N) BTreeMap insert cost that causes UI freezes at large bar counts.
+pub fn indicator_row_slice<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    plot: P,
+    datapoints: &'a [Y],
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
+    indicator_row_impl(
+        main_chart,
+        cache,
+        None,
+        plot,
+        AnySeries::for_basis_slice(datapoints),
+        visible_range,
+    )
+}
+
+/// Like [`indicator_row_slice`] but activates a persistent legend overlay via
+/// `Plot::draw_panel_legend`. Pass `&cache.watermark` (unused in indicator panels) as
+/// the legend cache — it is cleared by `Caches::clear_all` along with the other caches.
+pub fn indicator_row_slice_with_legend<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    legend_cache: &'a Cache,
+    plot: P,
+    datapoints: &'a [Y],
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
+    indicator_row_impl(
+        main_chart,
+        cache,
+        Some(legend_cache),
+        plot,
+        AnySeries::for_basis_slice(datapoints),
+        visible_range,
+    )
+}
+
+fn indicator_row_impl<'a, P, Y>(
+    main_chart: &'a ViewState,
+    cache: &'a Caches,
+    legend_cache: Option<&'a Cache>,
+    plot: P,
+    series: AnySeries<'a, Y>,
+    visible_range: RangeInclusive<u64>,
+) -> Element<'a, Message>
+where
+    P: Plot<AnySeries<'a, Y>> + 'a,
+{
     let (min, max) = plot
         .y_extents(&series, visible_range)
         .map(|(min, max)| plot.adjust_extents(min, max))
@@ -41,6 +108,7 @@ where
     let canvas = Canvas::new(ChartCanvas::<P, AnySeries<'a, Y>> {
         indicator_cache: &cache.main,
         crosshair_cache: &cache.crosshair,
+        legend_cache,
         ctx: main_chart,
         plot,
         series,

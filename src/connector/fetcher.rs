@@ -28,6 +28,9 @@ pub enum FetchedData {
     Klines {
         data: Vec<Kline>,
         req_id: Option<uuid::Uuid>,
+        microstructure: Option<Vec<Option<exchange::adapter::clickhouse::ChMicrostructure>>>,
+        agg_trade_id_ranges: Option<Vec<Option<(u64, u64)>>>,
+        open_time_ms_list: Option<Vec<Option<u64>>>,
     },
     OI {
         data: Vec<OpenInterest>,
@@ -100,15 +103,26 @@ impl RequestHandler {
             request.status = RequestStatus::Failed(error);
         } else {
             log::warn!("Request not found: {:?}", id);
+            exchange::tg_alert!(
+                exchange::telegram::Severity::Info,
+                "fetcher",
+                "Request not found for error"
+            );
         }
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum FetchRange {
     Kline(u64, u64),
     OpenInterest(u64, u64),
     Trades(u64, u64),
+    /// ODB gap-fill via sidecar `/catchup` endpoint (v12.62.0+).
+    /// Sidecar handles CH lookup + paginated Parquet+REST internally.
+    OdbCatchup {
+        symbol: String,
+        threshold_dbps: u32,
+    },
 }
 
 #[derive(PartialEq, Debug)]
@@ -166,7 +180,7 @@ impl Clone for FetchSpec {
     fn clone(&self) -> Self {
         FetchSpec {
             req_id: self.req_id,
-            fetch: self.fetch,
+            fetch: self.fetch.clone(),
             stream: self.stream,
         }
     }
@@ -218,7 +232,10 @@ pub fn request_fetch(
                 Some((s, pane_id))
             } else {
                 ready_streams.iter().find_map(|stream| {
-                    if let StreamKind::Kline { .. } = stream {
+                    if matches!(
+                        stream,
+                        StreamKind::Kline { .. } | StreamKind::OdbKline { .. }
+                    ) {
                         Some((*stream, pane_id))
                     } else {
                         None
@@ -308,9 +325,63 @@ pub fn request_fetch(
                 }
             }
         }
+        FetchRange::OdbCatchup {
+            symbol,
+            threshold_dbps,
+        } => {
+            let trade_info = ready_streams.iter().find_map(|stream| {
+                if let StreamKind::Trades { ticker_info } = stream {
+                    Some((*ticker_info, pane_id, *stream))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((_ticker_info, pane_id, stream)) = trade_info {
+                let (task, handle) = Task::sip(
+                    catchup_sip(symbol, threshold_dbps),
+                    move |batch| FetchUpdate::Data {
+                        layout_id,
+                        pane_id,
+                        data: FetchedData::Trades {
+                            batch,
+                            until_time: u64::MAX,
+                        },
+                        stream,
+                    },
+                    move |result| match result {
+                        Ok(()) => FetchUpdate::Status {
+                            pane_id,
+                            status: FetchTaskStatus::Completed,
+                        },
+                        Err(err) => FetchUpdate::Error {
+                            pane_id,
+                            error: err.to_string(),
+                        },
+                    },
+                )
+                .abortable();
+
+                on_trade_handle(handle.abort_on_drop());
+                return task;
+            }
+        }
     }
 
     Task::none()
+}
+
+pub fn catchup_sip(
+    symbol: String,
+    threshold_dbps: u32,
+) -> impl Straw<(), Vec<exchange::Trade>, adapter::AdapterError> {
+    sipper(async move |mut progress| {
+        let result = adapter::clickhouse::fetch_catchup(&symbol, threshold_dbps).await?;
+        if !result.trades.is_empty() {
+            let () = progress.send(result.trades).await;
+        }
+        Ok(())
+    })
 }
 
 pub fn request_fetch_many(
@@ -412,6 +483,42 @@ pub fn kline_fetch_task(
                     let data = FetchedData::Klines {
                         data: klines,
                         req_id,
+                        microstructure: None,
+                        agg_trade_id_ranges: None,
+                        open_time_ms_list: None,
+                    };
+                    FetchUpdate::Data {
+                        layout_id,
+                        pane_id,
+                        data,
+                        stream,
+                    }
+                }
+                Err(err) => FetchUpdate::Error {
+                    pane_id,
+                    error: err,
+                },
+            },
+        ),
+        StreamKind::OdbKline {
+            ticker_info,
+            threshold_dbps,
+        } => Task::perform(
+            iced::futures::TryFutureExt::map_err(
+                adapter::fetch_odb_klines_with_microstructure(ticker_info, threshold_dbps, range),
+                |err: adapter::AdapterError| {
+                    log::error!("ODB kline fetch failed: {err}");
+                    format!("{err}")
+                },
+            ),
+            move |result| match result {
+                Ok((klines, micro, agg_ids, open_time_ms_list)) => {
+                    let data = FetchedData::Klines {
+                        data: klines,
+                        req_id,
+                        microstructure: Some(micro),
+                        agg_trade_id_ranges: Some(agg_ids),
+                        open_time_ms_list: Some(open_time_ms_list),
                     };
                     FetchUpdate::Data {
                         layout_id,

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 const NUMERIC_INPUT_BUF_SIZE: usize = 5; // Max 5 digits for u16 (65535)
 
 const TICK_COUNT_MIN: u16 = 4;
-const TICK_COUNT_MAX: u16 = 1000;
+const TICK_COUNT_MAX: u16 = 10000;
 
 const TICK_MULTIPLIER_MIN: u16 = 1;
 const TICK_MULTIPLIER_MAX: u16 = 2000;
@@ -28,6 +28,7 @@ const TICK_MULTIPLIER_MAX: u16 = 2000;
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 pub enum ModifierKind {
     Candlestick(Basis),
+    OdbChart(Basis),
     Footprint(Basis, TickMultiplier),
     Heatmap(Basis, TickMultiplier),
     Orderbook(Basis, TickMultiplier),
@@ -123,6 +124,7 @@ pub enum SelectedTab {
         parsed_input: Option<data::aggr::TickCount>,
         is_input_valid: bool,
     },
+    Odb,
 }
 
 pub enum Action {
@@ -210,6 +212,9 @@ impl Modifier {
             ModifierKind::Orderbook(_, ticksize) => {
                 self.kind = ModifierKind::Orderbook(basis, ticksize);
             }
+            ModifierKind::OdbChart(_) => {
+                self.kind = ModifierKind::OdbChart(basis);
+            }
         }
     }
 
@@ -230,7 +235,7 @@ impl Modifier {
         match message {
             Message::TabSelected(tab) => Some(Action::TabSelected(tab)),
             Message::BasisSelected(basis) => match basis {
-                Basis::Time(_) => Some(Action::BasisSelected(basis)),
+                Basis::Time(_) | Basis::Odb(_) => Some(Action::BasisSelected(basis)),
                 Basis::Tick(new_tc) => {
                     if let SelectedTab::TickCount {
                         raw_input_buf,
@@ -333,9 +338,9 @@ impl Modifier {
         let kind = self.kind;
 
         let (selected_basis, selected_ticksize) = match kind {
-            ModifierKind::Candlestick(basis) | ModifierKind::Comparison(basis) => {
-                (Some(basis), None)
-            }
+            ModifierKind::Candlestick(basis)
+            | ModifierKind::OdbChart(basis)
+            | ModifierKind::Comparison(basis) => (Some(basis), None),
             ModifierKind::Footprint(basis, ticksize)
             | ModifierKind::Heatmap(basis, ticksize)
             | ModifierKind::Orderbook(basis, ticksize) => (Some(basis), Some(ticksize)),
@@ -362,21 +367,33 @@ impl Modifier {
 
                 let allows_tick_basis = match kind {
                     ModifierKind::Candlestick(_) | ModifierKind::Footprint(_, _) => true,
-                    ModifierKind::Heatmap(_, _)
+                    ModifierKind::OdbChart(_)
+                    | ModifierKind::Heatmap(_, _)
                     | ModifierKind::Orderbook(_, _)
                     | ModifierKind::Comparison(_) => false,
                 };
 
+                let allows_odb_basis = matches!(
+                    kind,
+                    ModifierKind::Candlestick(_) | ModifierKind::OdbChart(_)
+                );
+
                 if selected_basis.is_some() {
-                    let (timeframe_tab_is_selected, tick_count_tab_is_selected) = match self.tab {
-                        SelectedTab::Timeframe => (true, false),
-                        SelectedTab::TickCount { .. } => (false, true),
+                    let (
+                        timeframe_tab_is_selected,
+                        tick_count_tab_is_selected,
+                        odb_tab_is_selected,
+                    ) = match self.tab {
+                        SelectedTab::Timeframe => (true, false, false),
+                        SelectedTab::TickCount { .. } => (false, true, false),
+                        SelectedTab::Odb => (false, false, true),
                     };
 
                     let tabs_row = {
                         if allows_tick_basis {
                             let is_timeframe_selected =
                                 matches!(selected_basis, Some(Basis::Time(_)));
+                            let is_odb_selected = matches!(selected_basis, Some(Basis::Odb(_)));
 
                             let tab_button =
                                 |content: iced::widget::text::Text<'a>,
@@ -405,7 +422,7 @@ impl Modifier {
                                     }
                                 };
 
-                            row![
+                            let mut tabs = row![
                                 tab_button(
                                     text("Timeframe"),
                                     if timeframe_tab_is_selected {
@@ -440,10 +457,25 @@ impl Modifier {
                                         Some(Message::TabSelected(tick_count_tab))
                                     },
                                     !tick_count_tab_is_selected,
-                                    !is_timeframe_selected,
+                                    !is_timeframe_selected && !is_odb_selected,
                                 ),
                             ]
-                            .spacing(4)
+                            .spacing(4);
+
+                            if allows_odb_basis {
+                                tabs = tabs.push(tab_button(
+                                    text("Range"),
+                                    if odb_tab_is_selected {
+                                        None
+                                    } else {
+                                        Some(Message::TabSelected(SelectedTab::Odb))
+                                    },
+                                    !odb_tab_is_selected,
+                                    is_odb_selected,
+                                ));
+                            }
+
+                            tabs
                         } else {
                             let text_content = match kind {
                                 ModifierKind::Comparison(_) => "Timeframe",
@@ -512,6 +544,33 @@ impl Modifier {
                         };
                         basis_selection_column = basis_selection_column.push(custom_input);
                         basis_selection_column = basis_selection_column.push(tick_count_grid);
+                    }
+                    SelectedTab::Odb => {
+                        let selected_threshold = match selected_basis {
+                            Some(Basis::Odb(t)) => Some(t),
+                            _ => None,
+                        };
+
+                        let venue = stream_pair.as_ref().map(|sp| match sp {
+                            exchange::StreamPairKind::SingleSource(ti) => {
+                                ti.ticker.exchange.venue()
+                            }
+                            exchange::StreamPairKind::MultiSource(tis) => tis
+                                .first()
+                                .map(|ti| ti.ticker.exchange.venue())
+                                .unwrap_or(exchange::adapter::Venue::Binance),
+                        });
+                        let options = data::chart::Basis::odb_options_for_venue(
+                            venue.unwrap_or(exchange::adapter::Venue::Binance),
+                        );
+                        let odb_grid = modifiers_grid(
+                            &options,
+                            selected_threshold.map(Basis::Odb),
+                            Message::BasisSelected,
+                            &create_button,
+                            2,
+                        );
+                        basis_selection_column = basis_selection_column.push(odb_grid);
                     }
                 }
 
@@ -639,7 +698,7 @@ fn timeframe_grid_config(
         | ModifierKind::Footprint(_, _)
         | ModifierKind::Comparison(_) => Some((supported_kline_timeframes(stream_pair), 3)),
         ModifierKind::Heatmap(_, _) => Some((supported_heatmap_timeframes(stream_pair)?, 2)),
-        ModifierKind::Orderbook(_, _) => None,
+        ModifierKind::OdbChart(_) | ModifierKind::Orderbook(_, _) => None,
     }
 }
 
@@ -742,11 +801,13 @@ impl From<&ModifierKind> for SelectedTab {
     fn from(kind: &ModifierKind) -> Self {
         match kind {
             ModifierKind::Candlestick(basis)
+            | ModifierKind::OdbChart(basis)
             | ModifierKind::Footprint(basis, _)
             | ModifierKind::Heatmap(basis, _)
             | ModifierKind::Orderbook(basis, _)
             | ModifierKind::Comparison(basis) => match basis {
                 Basis::Time(_) => SelectedTab::Timeframe,
+                Basis::Odb(_) => SelectedTab::Odb,
                 Basis::Tick(tc) => SelectedTab::TickCount {
                     raw_input_buf: if tc.is_custom() {
                         NumericInput::from_tick_count(*tc)

@@ -46,10 +46,32 @@ impl<D: DataPoint> PlotData<D> {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ViewConfig {
     pub splits: Vec<f32>,
     pub autoscale: Option<Autoscale>,
+    #[serde(default = "default_true")]
+    pub include_forming: bool,
+    /// When true, freeze the viewport so new bars do not push the visible window.
+    /// The chart translation is auto-compensated by `cell_width` per new bar
+    /// appended, keeping user-visible bars at a stable screen position.
+    #[serde(default)]
+    pub frozen: bool,
+}
+
+impl Default for ViewConfig {
+    fn default() -> Self {
+        Self {
+            splits: Vec::new(),
+            autoscale: None,
+            include_forming: true,
+            frozen: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq)]
@@ -69,11 +91,50 @@ pub enum Basis {
     ///
     /// The u16 value represents the number of trades per aggregation unit.
     Tick(aggr::TickCount),
+
+    /// Open deviation bar aggregation where each bar closes when price moves
+    /// by a fixed percentage from the bar's open.
+    ///
+    /// The u32 value is `threshold_decimal_bps` (e.g., 250 = 25 basis points = 0.25%).
+    /// Uses index-based rendering (like Tick) since bars have non-uniform time spacing.
+    #[serde(alias = "RangeBar")]
+    Odb(u32),
 }
+
+pub const ODB_THRESHOLDS: [u32; 4] = [100, 250, 500, 750];
+/// Forex thresholds (dbps): 5/10/25/50 matches fxview-backfiller partitions in
+/// `fxview_cache.forex_bars`. Finer than crypto because forex intraday ranges
+/// are 1-2 orders of magnitude tighter.
+pub const ODB_THRESHOLDS_FOREX: [u32; 4] = [5, 10, 25, 50];
 
 impl Basis {
     pub fn is_time(&self) -> bool {
         matches!(self, Basis::Time(_))
+    }
+
+    pub fn is_odb(&self) -> bool {
+        matches!(self, Basis::Odb(_))
+    }
+
+    pub fn odb_options() -> [Basis; 4] {
+        [
+            Basis::Odb(100),
+            Basis::Odb(250),
+            Basis::Odb(500),
+            Basis::Odb(750),
+        ]
+    }
+
+    /// ODB threshold options for a given venue.
+    /// Forex uses finer thresholds (5/10/25 dbps) than crypto (100-750).
+    pub fn odb_options_for_venue(venue: exchange::adapter::Venue) -> Vec<Basis> {
+        match venue {
+            exchange::adapter::Venue::ClickHouse => ODB_THRESHOLDS_FOREX
+                .iter()
+                .map(|&t| Basis::Odb(t))
+                .collect(),
+            _ => ODB_THRESHOLDS.iter().map(|&t| Basis::Odb(t)).collect(),
+        }
     }
 
     pub fn default_kline_time(
@@ -118,6 +179,13 @@ impl std::fmt::Display for Basis {
         match self {
             Basis::Time(timeframe) => write!(f, "{timeframe}"),
             Basis::Tick(count) => write!(f, "{count}"),
+            Basis::Odb(dbps) => {
+                if dbps % 10 == 0 {
+                    write!(f, "BPR{}", dbps / 10)
+                } else {
+                    write!(f, "BPR{:.1}", *dbps as f64 / 10.0)
+                }
+            }
         }
     }
 }

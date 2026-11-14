@@ -5,9 +5,28 @@ use data::chart::PlotData;
 use data::chart::indicator::KlineIndicator;
 use data::chart::kline::KlineDataPoint;
 use exchange::{Kline, Timeframe, Trade};
+use iced::Color;
 
+pub mod delta;
+pub mod ofi;
+pub mod ofi_cumulative_ema;
 pub mod open_interest;
+pub mod trade_count;
+pub mod trade_intensity;
+// Fork-specific: open deviation bar support
+pub mod trade_intensity_heatmap;
 pub mod volume;
+// Fork-specific: open deviation bar support
+pub mod rsi;
+pub mod zigzag;
+// NOTE(fork): Tier 5 microstructure indicators
+pub mod duration;
+pub mod liquidation_cascade;
+pub mod turnover_imbalance;
+pub mod vwap;
+pub mod vwap_close_deviation;
+// NOTE(fork): issue #35 — forex quote-native spread
+pub mod spread;
 
 pub trait KlineIndicatorImpl {
     /// Clear all caches for a full redraw
@@ -47,6 +66,39 @@ pub trait KlineIndicatorImpl {
     fn on_basis_change(&mut self, _source: &PlotData<KlineDataPoint>) {}
 
     fn on_open_interest(&mut self, _pairs: &[exchange::OpenInterest]) {}
+
+    /// Return a thermal body colour for the candle at `storage_idx` (oldest-first index).
+    /// Default: `None` (normal green/red palette colours used).
+    /// Only overridden by `TradeIntensityHeatmap` which colours candle bodies, not a subplot.
+    fn thermal_body_color(&self, _storage_idx: u64) -> Option<Color> {
+        None
+    }
+
+    /// Return the number of processed datapoints in this indicator's internal storage.
+    /// Used for divergence detection between indicator state and data source.
+    fn data_len(&self) -> usize {
+        0
+    }
+
+    /// Draw overlay graphics on the main candle pane.
+    /// Default: no-op. Overridden by overlay indicators (e.g. ZigZag).
+    fn draw_overlay(
+        &self,
+        _frame: &mut iced::widget::canvas::Frame,
+        _total_len: usize,
+        _earliest_visual: usize,
+        _latest_visual: usize,
+        _price_to_y: &dyn Fn(exchange::unit::Price) -> f32,
+        _interval_to_x: &dyn Fn(u64) -> f32,
+        _palette: &iced::theme::palette::Extended,
+    ) {
+    }
+
+    /// Draw a screen-space legend onto the main chart canvas.
+    /// Frame is **untransformed** (no translate/scale applied) — coordinates are
+    /// relative to the canvas widget's top-left corner.
+    /// Default: no-op. Overridden by `TradeIntensityHeatmap`.
+    fn draw_screen_legend(&self, _frame: &mut iced::widget::canvas::Frame) {}
 }
 
 pub struct FetchCtx<'a> {
@@ -57,11 +109,58 @@ pub struct FetchCtx<'a> {
     pub prefetch_earliest: u64,
 }
 
-pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
+/// Create an indicator with configuration-aware params.
+///
+/// OFI-family indicators use `ofi_ema_period`; `TradeIntensityHeatmap` uses
+/// `intensity_lookback` + `anomaly_fence`. All others use default construction.
+pub fn make_indicator(
+    which: KlineIndicator,
+    cfg: &data::chart::kline::Config,
+) -> Box<dyn KlineIndicatorImpl> {
     match which {
         KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
+        KlineIndicator::Delta => Box::new(super::kline::delta::DeltaIndicator::new()),
+        KlineIndicator::TradeCount => {
+            Box::new(super::kline::trade_count::TradeCountIndicator::new())
+        }
+        KlineIndicator::OFI => Box::new(super::kline::ofi::OFIIndicator::with_ema_period(
+            cfg.ofi_ema_period,
+        )),
+        // Fork-specific: open deviation bar support
+        KlineIndicator::OFICumulativeEma => Box::new(
+            super::kline::ofi_cumulative_ema::OFICumulativeEmaIndicator::with_ema_period(
+                cfg.ofi_ema_period,
+            ),
+        ),
+        KlineIndicator::TradeIntensity => {
+            Box::new(super::kline::trade_intensity::TradeIntensityIndicator::new())
+        }
+        // Fork-specific: open deviation bar support
+        KlineIndicator::TradeIntensityHeatmap => Box::new(
+            super::kline::trade_intensity_heatmap::TradeIntensityHeatmapIndicator::with_config(
+                cfg.intensity_lookback,
+                cfg.anomaly_fence,
+            ),
+        ),
+        // Fork-specific: open deviation bar support
+        KlineIndicator::ZigZag => Box::new(super::kline::zigzag::ZigZagOverlayIndicator::new()),
+        KlineIndicator::RSI => Box::new(super::kline::rsi::RsiIndicator::new()),
+        // NOTE(fork): Tier 5 microstructure indicators
+        KlineIndicator::Vwap => Box::new(super::kline::vwap::VwapOverlayIndicator::new()),
+        KlineIndicator::Duration => Box::new(super::kline::duration::DurationIndicator::new()),
+        KlineIndicator::LiquidationCascade => {
+            Box::new(super::kline::liquidation_cascade::LiquidationCascadeIndicator::new())
+        }
+        KlineIndicator::VwapCloseDeviation => {
+            Box::new(super::kline::vwap_close_deviation::VwapCloseDeviationIndicator::new())
+        }
+        KlineIndicator::TurnoverImbalance => {
+            Box::new(super::kline::turnover_imbalance::TurnoverImbalanceIndicator::new())
+        }
+        // NOTE(fork): issue #35 — forex quote-native spread
+        KlineIndicator::Spread => Box::new(super::kline::spread::SpreadIndicator::new()),
     }
 }

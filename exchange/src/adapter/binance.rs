@@ -3,15 +3,16 @@ use super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, Qty, StreamKind, Ticker,
         TickerInfo, TickerStats, Timeframe, Trade, Volume,
         adapter::{StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
-        connect::{State, channel, connect_ws},
+        connect::{self, State, channel, connect_ws},
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        serde_util,
+        resilience, serde_util,
         serde_util::de_string_to_number,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
+use crate::tg_alert;
 
 use csv::ReaderBuilder;
 use fastwebsockets::OpCode;
@@ -23,7 +24,7 @@ use tokio::sync::Mutex;
 
 use std::{collections::HashMap, io::BufReader, path::PathBuf, sync::LazyLock, time::Duration};
 
-const SPOT_DOMAIN: &str = "https://api.binance.com";
+const SPOT_DOMAIN: &str = "https://api1.binance.com";
 const LINEAR_PERP_DOMAIN: &str = "https://fapi.binance.com";
 const INVERSE_PERP_DOMAIN: &str = "https://dapi.binance.com";
 
@@ -100,6 +101,23 @@ fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
     }
 }
 
+// NOTE(fork): ported from upstream 0b2c6ec — Binance split perp WS routes into
+// `/public/stream` (depth) and `/market/stream` (kline/aggTrade)
+enum WsTrafficKind {
+    Public,
+    Market,
+}
+
+fn ws_stream_path(market: MarketKind, traffic_kind: WsTrafficKind) -> &'static str {
+    match market {
+        MarketKind::Spot => "stream",
+        MarketKind::LinearPerps | MarketKind::InversePerps => match traffic_kind {
+            WsTrafficKind::Public => "public/stream",
+            WsTrafficKind::Market => "market/stream",
+        },
+    }
+}
+
 fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
@@ -159,6 +177,8 @@ struct SonicKlineWrap {
 
 #[derive(Deserialize, Debug)]
 struct SonicTrade {
+    #[serde(rename = "a")]
+    agg_trade_id: u64,
     #[serde(rename = "T")]
     time: u64,
     #[serde(rename = "p", deserialize_with = "de_string_to_number")]
@@ -290,6 +310,11 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
                 }
                 _ => {
                     log::error!("Unknown stream type");
+                    tg_alert!(
+                        crate::telegram::Severity::Warning,
+                        "binance",
+                        "Unknown stream type"
+                    );
                 }
             }
         } else {
@@ -359,6 +384,7 @@ pub fn connect_depth_stream(
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let ticker = ticker_info.ticker;
 
@@ -381,7 +407,8 @@ pub fn connect_depth_stream(
                     let stream = format!("{}@depth@100ms", symbol_str.to_lowercase());
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Public);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -400,6 +427,7 @@ pub fn connect_depth_stream(
                                 prev_id = 0;
 
                                 state = State::Connected(websocket);
+                                backoff = resilience::reconnect_backoff();
 
                                 let _ = output.send(Event::Connected(exchange)).await;
                             }
@@ -421,7 +449,9 @@ pub fn connect_depth_stream(
                             }
                         }
                     } else {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
 
                         let _ = output
                             .send(Event::Disconnected(
@@ -432,8 +462,8 @@ pub fn connect_depth_stream(
                     }
                 }
                 State::Connected(ws) => {
-                    match ws.read_frame().await {
-                        Ok(msg) => match msg.opcode {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
                             OpCode::Text => {
                                 if let Ok(StreamData::Depth(depth_type)) =
                                     feed_de(&msg.payload[..], market)
@@ -459,6 +489,11 @@ pub fn connect_depth_stream(
                                             {
                                                 log::warn!(
                                                     "Out of sync at first event. Trying to resync...\n"
+                                                );
+                                                tg_alert!(
+                                                    crate::telegram::Severity::Info,
+                                                    "binance",
+                                                    "Depth out of sync — resyncing"
                                                 );
 
                                                 try_resync(
@@ -576,12 +611,22 @@ pub fn connect_depth_stream(
                             }
                             _ => {}
                         },
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
                                     "Error reading frame: ".to_string() + &e.to_string(),
+                                ))
+                                .await;
+                        }
+                        Err(_elapsed) => {
+                            log::warn!("[Binance] read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
                                 ))
                                 .await;
                         }
@@ -620,6 +665,7 @@ pub fn connect_trade_stream(
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
+        let mut backoff = resilience::reconnect_backoff();
 
         loop {
             match &mut state {
@@ -640,15 +686,19 @@ pub fn connect_trade_stream(
                         .join("/");
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Market);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         state = State::Connected(websocket);
+                        backoff = resilience::reconnect_backoff();
                         last_flush = tokio::time::Instant::now();
 
                         let _ = output.send(Event::Connected(exchange)).await;
                     } else {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
 
                         let _ = output
                             .send(Event::Disconnected(
@@ -659,8 +709,8 @@ pub fn connect_trade_stream(
                     }
                 }
                 State::Connected(ws) => {
-                    match ws.read_frame().await {
-                        Ok(msg) => match msg.opcode {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
                             OpCode::Text => {
                                 if let Ok(StreamData::Trade(ticker, de_trade)) =
                                     feed_de(&msg.payload[..], market)
@@ -678,11 +728,17 @@ pub fn connect_trade_stream(
                                             price,
                                             qty: qty_norm
                                                 .normalize_qty(de_trade.qty, de_trade.price),
+                                            agg_trade_id: Some(de_trade.agg_trade_id),
                                         };
 
                                         trades_buffer_map.entry(ticker).or_default().push(trade);
                                     } else {
                                         log::error!("Ticker info not found for ticker: {}", ticker);
+                                        tg_alert!(
+                                            crate::telegram::Severity::Warning,
+                                            "binance",
+                                            "Ticker not found: {ticker}"
+                                        );
                                     }
                                 }
 
@@ -714,7 +770,7 @@ pub fn connect_trade_stream(
                             }
                             _ => {}
                         },
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             flush_trade_buffers(
                                 &mut output,
                                 &ticker_info_map,
@@ -727,6 +783,23 @@ pub fn connect_trade_stream(
                                 .send(Event::Disconnected(
                                     exchange,
                                     "Error reading frame: ".to_string() + &e.to_string(),
+                                ))
+                                .await;
+                        }
+                        Err(_elapsed) => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
+                            .await;
+
+                            log::warn!("[Binance] trade stream read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
                                 ))
                                 .await;
                         }
@@ -743,6 +816,7 @@ pub fn connect_kline_stream(
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
         let exchange = exchange_from_market_type(market);
 
         let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;
@@ -781,13 +855,17 @@ pub fn connect_kline_stream(
                         .join("/");
 
                     let domain = ws_domain_from_market_type(market);
-                    let url = format!("wss://{domain}/stream?streams={stream_str}");
+                    let stream_path = ws_stream_path(market, WsTrafficKind::Market);
+                    let url = format!("wss://{domain}/{stream_path}?streams={stream_str}");
 
                     if let Ok(websocket) = connect_ws(domain, &url).await {
                         state = State::Connected(websocket);
+                        backoff = resilience::reconnect_backoff();
                         let _ = output.send(Event::Connected(exchange)).await;
                     } else {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        if let Some(delay) = backoff.next() {
+                            tokio::time::sleep(delay).await;
+                        }
 
                         let _ = output
                             .send(Event::Disconnected(
@@ -797,81 +875,100 @@ pub fn connect_kline_stream(
                             .await;
                     }
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Kline(ticker, de_kline)) =
-                                feed_de(&msg.payload[..], market)
-                            {
-                                let (buy_volume, sell_volume) = {
-                                    let buy_volume = de_kline.taker_buy_base_asset_volume;
-                                    let sell_volume = de_kline.volume - buy_volume;
-                                    (buy_volume, sell_volume)
-                                };
-
-                                if let Some((_, tf)) = streams
-                                    .iter()
-                                    .find(|(_, tf)| tf.to_string() == de_kline.interval)
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Kline(ticker, de_kline)) =
+                                    feed_de(&msg.payload[..], market)
                                 {
-                                    if let Some((ticker_info, qty_norm)) =
-                                        ticker_info_map.get(&ticker)
+                                    let (buy_volume, sell_volume) = {
+                                        let buy_volume = de_kline.taker_buy_base_asset_volume;
+                                        let sell_volume = de_kline.volume - buy_volume;
+                                        (buy_volume, sell_volume)
+                                    };
+
+                                    if let Some((_, tf)) = streams
+                                        .iter()
+                                        .find(|(_, tf)| tf.to_string() == de_kline.interval)
                                     {
-                                        let ticker_info = *ticker_info;
-                                        let timeframe = *tf;
+                                        if let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(&ticker)
+                                        {
+                                            let ticker_info = *ticker_info;
+                                            let timeframe = *tf;
 
-                                        let buy_volume =
-                                            qty_norm.normalize_qty(buy_volume, de_kline.close);
-                                        let sell_volume =
-                                            qty_norm.normalize_qty(sell_volume, de_kline.close);
+                                            let buy_volume =
+                                                qty_norm.normalize_qty(buy_volume, de_kline.close);
+                                            let sell_volume =
+                                                qty_norm.normalize_qty(sell_volume, de_kline.close);
 
-                                        let volume = Volume::BuySell(buy_volume, sell_volume);
+                                            let volume = Volume::BuySell(buy_volume, sell_volume);
 
-                                        let kline = Kline::new(
-                                            de_kline.time,
-                                            de_kline.open,
-                                            de_kline.high,
-                                            de_kline.low,
-                                            de_kline.close,
-                                            volume,
-                                            ticker_info.min_ticksize,
-                                        );
+                                            let kline = Kline::new(
+                                                de_kline.time,
+                                                de_kline.open,
+                                                de_kline.high,
+                                                de_kline.low,
+                                                de_kline.close,
+                                                volume,
+                                                ticker_info.min_ticksize,
+                                            );
 
-                                        let _ = output
-                                            .send(Event::KlineReceived(
-                                                StreamKind::Kline {
-                                                    ticker_info,
-                                                    timeframe,
-                                                },
-                                                kline,
-                                            ))
-                                            .await;
-                                    } else {
-                                        log::error!("Ticker info not found for ticker: {}", ticker);
+                                            let _ = output
+                                                .send(Event::KlineReceived(
+                                                    StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe,
+                                                    },
+                                                    kline,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                ))
+                                                .await;
+                                        } else {
+                                            log::error!(
+                                                "Ticker info not found for ticker: {}",
+                                                ticker
+                                            );
+                                        }
                                     }
                                 }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                        Err(_elapsed) => {
+                            log::warn!("[Binance] kline read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                },
+                }
             }
         }
     })
@@ -1160,6 +1257,7 @@ pub async fn fetch_ticker_metadata(
         }
         if let Some(quote_asset) = item["quoteAsset"].as_str()
             && quote_asset != "USDT"
+            && quote_asset != "USDC"
             && quote_asset != "USD"
         {
             continue;
@@ -1246,17 +1344,17 @@ pub async fn fetch_ticker_stats(
                 AdapterError::ParseError("Price change percent not found".to_string())
             })?;
 
-        let volume = {
-            match market {
-                MarketKind::Spot | MarketKind::LinearPerps => {
-                    serde_util::value_as_f32(&item["quoteVolume"]).ok_or_else(|| {
-                        AdapterError::ParseError("Quote volume not found".to_string())
-                    })?
-                }
-                MarketKind::InversePerps => serde_util::value_as_f32(&item["volume"])
-                    .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?,
+        // NOTE(fork): ported from upstream b985a9f — Binance is merging linear/inverse
+        // APIs and pushes inverse tickers into linear metadata endpoints; fall back to
+        // `volume` when `quoteVolume` is absent instead of failing the whole fetch
+        let volume = match market {
+            MarketKind::Spot | MarketKind::LinearPerps => {
+                serde_util::value_as_f32(&item["quoteVolume"])
+                    .or_else(|| serde_util::value_as_f32(&item["volume"]))
             }
-        };
+            _ => serde_util::value_as_f32(&item["volume"]),
+        }
+        .ok_or_else(|| AdapterError::ParseError("Volume not found".to_string()))?;
 
         let daily_volume = match market {
             MarketKind::Spot | MarketKind::LinearPerps => Qty::from_f32(volume),
@@ -1425,6 +1523,11 @@ pub async fn fetch_trades(
                 "Historical trades fetch failed: {}, falling back to intraday fetch",
                 e
             );
+            tg_alert!(
+                crate::telegram::Severity::Info,
+                "binance",
+                "Historical trades fallback to intraday"
+            );
             fetch_intraday_trades(ticker_info, from_time).await
         }
     }
@@ -1465,6 +1568,7 @@ pub async fn fetch_intraday_trades(
                 is_sell: de_trade.is_sell,
                 price: Price::from_f32(de_trade.price).round_to_min_tick(ticker_info.min_ticksize),
                 qty: qty_norm.normalize_qty(de_trade.qty, de_trade.price),
+                agg_trade_id: Some(de_trade.agg_trade_id),
             })
             .collect()
     };
@@ -1565,6 +1669,7 @@ pub async fn get_hist_trades(
                             is_sell,
                             price,
                             qty,
+                            agg_trade_id: None,
                         })
                     })
                 }));
@@ -1577,6 +1682,11 @@ pub async fn get_hist_trades(
                     }
                     Err(e) => {
                         log::error!("Failed to fetch intraday trades: {}", e);
+                        tg_alert!(
+                            crate::telegram::Severity::Warning,
+                            "binance",
+                            "Intraday trades fetch failed"
+                        );
                     }
                 }
             }

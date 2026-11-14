@@ -13,6 +13,7 @@ use std::time::Instant;
 const SERIES_MAX_POINTS: usize = 5000;
 const DEFAULT_PAN_POINTS: f32 = 8.0;
 
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     SeriesColorChanged(TickerInfo, iced::Color),
     SeriesNameChanged(TickerInfo, String),
@@ -45,7 +46,9 @@ impl ComparisonChart {
     pub fn new(basis: Basis, tickers: &[TickerInfo], config: Option<Config>) -> Self {
         let timeframe = match basis {
             Basis::Time(tf) => tf,
-            Basis::Tick(_) => todo!("WIP: ComparisonChart does not support tick basis"),
+            Basis::Tick(_) | Basis::Odb(_) => {
+                todo!("WIP: ComparisonChart does not support tick/ODB basis")
+            }
         };
 
         let cfg = config.unwrap_or_default();
@@ -87,6 +90,7 @@ impl ComparisonChart {
         }
     }
 
+    #[must_use = "returned Action must be dispatched"]
     pub fn update(&mut self, message: Message) -> Option<Action> {
         match message {
             Message::Chart(event) => match event {
@@ -289,10 +293,11 @@ impl ComparisonChart {
         out: &mut Vec<(uuid::Uuid, FetchRange, Option<StreamKind>)>,
     ) {
         let handler = self.request_handler.entry(ticker).or_default();
+        let range_clone = range.clone();
         if let Ok(Some(req_id)) = handler.add_request(range) {
             out.push((
                 req_id,
-                range,
+                range_clone,
                 Some(StreamKind::Kline {
                     ticker_info: ticker,
                     timeframe: self.timeframe,
@@ -308,7 +313,7 @@ impl ComparisonChart {
         let mut reqs = Vec::new();
         for (range, tickers) in batches {
             for ticker in tickers {
-                self.queue_kline_fetch(ticker, range, &mut reqs);
+                self.queue_kline_fetch(ticker, range.clone(), &mut reqs);
             }
         }
         reqs
@@ -378,7 +383,7 @@ impl ComparisonChart {
                 let reqs = self.collect_fetch_reqs(self.desired_fetch_batches(self.pan));
                 self.fetch_action(reqs)
             }
-            Basis::Tick(_) => unimplemented!(),
+            Basis::Tick(_) | Basis::Odb(_) => unimplemented!(),
         }
     }
 

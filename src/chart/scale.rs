@@ -1,9 +1,12 @@
+// FILE-SIZE-OK: 834 lines — multi-axis scale logic (linear + timeseries + ODB)
+// GitHub Issue: https://github.com/terrylica/flowsurface/issues/1 (upstream-merge: Option<String> crosshair API)
 pub mod linear;
 pub mod timeseries;
 
 use crate::{chart::TEXT_SIZE, style::AZERET_MONO};
 
 use super::{Basis, Interaction, Message};
+use chrono::{TimeZone, Utc};
 use data::chart::Autoscale;
 use data::config::timezone::TimeLabelKind;
 use data::util::round_to_tick;
@@ -296,6 +299,58 @@ impl AxisLabelsX<'_> {
                     }
                 }
             }
+            Basis::Odb(_) => {
+                let Some(interval_keys) = &self.interval_keys else {
+                    return None;
+                };
+
+                let (crosshair_pos, _, cell_index) = self.calc_crosshair_pos(cursor_pos, region);
+
+                let chart_x_min = region.x;
+                let chart_x_max = region.x + region.width;
+
+                let snapped_position = (crosshair_pos / self.cell_width).round() * self.cell_width;
+                let snap_ratio = (snapped_position - chart_x_min) / (chart_x_max - chart_x_min);
+                let snap_x = snap_ratio * bounds.width;
+
+                if snap_x.is_nan() || snap_x < 0.0 || snap_x > bounds.width {
+                    return None;
+                }
+
+                let last_index = interval_keys.len() - 1;
+                let offset = i64::from(-cell_index) as usize;
+                if offset > last_index {
+                    return None;
+                }
+
+                let array_index = last_index - offset;
+
+                if let Some(timestamp) = interval_keys.get(array_index) {
+                    // Estimate bar duration from an adjacent timestamp.
+                    // checked_sub avoids the usize underflow guard; abs_diff is
+                    // order-independent (saturating_sub would silently return 0 if
+                    // the adjacent bar happened to have a smaller timestamp).
+                    let bar_duration_ms = array_index
+                        .checked_sub(1)
+                        .and_then(|prev| interval_keys.get(prev))
+                        .or_else(|| interval_keys.get(array_index + 1))
+                        .map(|&adj| timestamp.abs_diff(adj))
+                        .unwrap_or(1_000);
+
+                    let text_content = self.timezone.format_with_kind(
+                        *timestamp as i64,
+                        if bar_duration_ms < 1_000 {
+                            TimeLabelKind::Custom("%a %b %-d %H:%M:%S.%3f")
+                        } else {
+                            TimeLabelKind::Custom("%a %b %-d %H:%M:%S")
+                        },
+                    );
+
+                    if let Some(content) = text_content {
+                        return Some(AxisLabel::new_x(snap_x, content, bounds, true, palette));
+                    }
+                }
+            }
             Basis::Time(timeframe) => {
                 let (_, crosshair_ratio, _) = self.calc_crosshair_pos(cursor_pos, region);
 
@@ -367,7 +422,7 @@ impl AxisLabelsX<'_> {
                     self.max.saturating_add(diff)
                 }
             }
-            Basis::Tick(_) => {
+            Basis::Tick(_) | Basis::Odb(_) => {
                 let tick = -(x / self.cell_width);
                 tick.round() as u64
             }
@@ -474,9 +529,13 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
             let mut labels: Vec<AxisLabel> = Vec::with_capacity(label_count + 1); // +1 for crosshair
 
             match self.basis {
-                Basis::Tick(_) => {
+                Basis::Tick(_) | Basis::Odb(_) => {
                     if let Some(interval_keys) = &self.interval_keys {
                         let last_idx = interval_keys.len() - 1;
+                        let is_odb = matches!(self.basis, Basis::Odb(_));
+
+                        // First pass: collect visible label positions and timestamps
+                        let mut visible_labels: Vec<(f32, u64)> = Vec::new();
                         let mut last_x: Option<f32> = None;
                         for (i, timestamp) in interval_keys.iter().enumerate() {
                             let cell_index = -(last_idx as i32) + i as i32;
@@ -492,21 +551,38 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
                             let snap_x = snap_ratio * bounds.width;
 
                             if last_x.is_none_or(|lx| (snap_x - lx).abs() >= target_spacing) {
-                                let label_content = self.timezone.format_with_kind(
-                                    *timestamp as i64,
-                                    TimeLabelKind::Axis {
-                                        timeframe: exchange::Timeframe::MS100,
-                                    },
-                                );
-
-                                if let Some(content) = label_content {
-                                    labels.push(AxisLabel::new_x(
-                                        snap_x, content, bounds, false, palette,
-                                    ));
-
-                                    last_x = Some(snap_x);
-                                }
+                                visible_labels.push((snap_x, *timestamp));
+                                last_x = Some(snap_x);
                             }
+                        }
+
+                        // Compute label_span_ms from visible labels only
+                        let label_span_ms = if visible_labels.len() >= 2 {
+                            let first = visible_labels.first().unwrap().1;
+                            let last = visible_labels.last().unwrap().1;
+                            let span = last.saturating_sub(first);
+                            span / (visible_labels.len() as u64).max(1)
+                        } else {
+                            60_000
+                        };
+
+                        // Second pass: format and emit labels
+                        for (snap_x, timestamp) in visible_labels {
+                            let label_text = if is_odb {
+                                self.timezone
+                                    .format_odb_label((timestamp / 1000) as i64, label_span_ms)
+                            } else {
+                                self.timezone
+                                    .format_with_kind(
+                                        (timestamp / 1000) as i64,
+                                        TimeLabelKind::Axis {
+                                            timeframe: exchange::Timeframe::MS100,
+                                        },
+                                    )
+                                    .unwrap_or_default()
+                            };
+                            labels
+                                .push(AxisLabel::new_x(snap_x, label_text, bounds, false, palette));
                         }
                     }
                 }
@@ -564,6 +640,7 @@ pub struct AxisLabelsY<'a> {
     pub scaling: f32,
     pub min: f32,
     pub last_price: Option<linear::PriceInfoLabel>,
+    pub last_trade_time: Option<u64>,
     pub tick_size: f32,
     pub decimals: usize,
     pub cell_height: f32,
@@ -730,6 +807,21 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
                         }
                     }
                     Basis::Tick(_) => None,
+                    Basis::Odb(_) => self.last_trade_time.and_then(|ms| {
+                        let secs = (ms / 1000) as i64;
+                        let millis = (ms % 1000) as u32;
+                        let u = Utc.timestamp_opt(secs, millis * 1_000_000).single()?;
+                        Some(LabelContent {
+                            content: format!("{}.{:03} UTC", u.format("%H:%M:%S"), millis,),
+                            background_color: Some(palette.background.strong.color),
+                            text_color: if palette.is_dark {
+                                Color::BLACK.scale_alpha(0.8)
+                            } else {
+                                Color::WHITE.scale_alpha(0.8)
+                            },
+                            text_size: 11.0,
+                        })
+                    }),
                 };
 
                 let (price, color) = label.get_with_color(palette);

@@ -1,11 +1,12 @@
 use crate::{
     Event, TickerInfo, Timeframe,
-    adapter::{self, AdapterError, StreamConfig, Venue},
+    adapter::{self, StreamConfig, Venue},
+    error::AdapterError,
 };
 
 use bytes::Bytes;
 use fastwebsockets::FragmentCollector;
-use futures::{StreamExt, stream::BoxStream};
+use futures::{Stream as FuturesStream, StreamExt, channel::mpsc, stream::BoxStream};
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -13,7 +14,13 @@ use hyper::{
     upgrade::Upgraded,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use std::{future::Future, sync::LazyLock, time::Duration};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::LazyLock,
+    task::{Context, Poll},
+    time::Duration,
+};
 use tokio_rustls::{
     TlsConnector,
     rustls::{ClientConfig, OwnedTrustAnchor},
@@ -23,6 +30,12 @@ use url::Url;
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum idle time before considering a WebSocket connection dead.
+/// Binance pings every 3 min, Bybit heartbeats every 20s, OKX pings every 30s.
+/// BTCUSDT trades arrive multiple times per second. 45s detects half-open TCP
+/// (e.g. after Mac sleep) within one minute without false positives on quiet markets.
+pub const WS_READ_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub static TLS_CONNECTOR: LazyLock<TlsConnector> =
     LazyLock::new(|| tls_connector().expect("failed to create TLS connector"));
@@ -44,6 +57,7 @@ pub fn depth_stream(config: &StreamConfig<TickerInfo>) -> BoxStream<'static, Eve
         }
         Venue::Okex => adapter::okex::connect_depth_stream(ticker, push_freq).boxed(),
         Venue::Mexc => adapter::mexc::connect_depth_stream(ticker, push_freq).boxed(),
+        Venue::ClickHouse => futures::stream::empty().boxed(),
     }
 }
 
@@ -59,6 +73,10 @@ pub fn trade_stream(config: &StreamConfig<Vec<TickerInfo>>) -> BoxStream<'static
         }
         Venue::Okex => adapter::okex::connect_trade_stream(tickers, market_kind).boxed(),
         Venue::Mexc => adapter::mexc::connect_trade_stream(tickers, market_kind).boxed(),
+        // FXView: live tick SSE stream from the forex producer (per-tick push,
+        // no WebSocket/orderbook). Feeds the last-price label so the chart
+        // jitters between bar closes. Contract: REPLY-FROM-MQL5-SSE-LIVE-ENDPOINT.md
+        Venue::ClickHouse => adapter::clickhouse::connect_tick_stream(tickers).boxed(),
     }
 }
 
@@ -76,6 +94,7 @@ pub fn kline_stream(
         }
         Venue::Okex => adapter::okex::connect_kline_stream(streams, market_kind).boxed(),
         Venue::Mexc => adapter::mexc::connect_kline_stream(streams, market_kind).boxed(),
+        Venue::ClickHouse => futures::stream::empty().boxed(),
     }
 }
 
@@ -103,17 +122,37 @@ pub enum State {
     Connected(FragmentCollector<TokioIo<Upgraded>>),
 }
 
+struct ChannelStream<T> {
+    receiver: mpsc::Receiver<T>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl<T> FuturesStream for ChannelStream<T> {
+    type Item = T;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.receiver).poll_next(cx)
+    }
+}
+
+impl<T> Drop for ChannelStream<T> {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub fn channel<T, Fut, F>(buffer: usize, f: F) -> impl futures::Stream<Item = T>
 where
     T: Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
-    F: FnOnce(futures::channel::mpsc::Sender<T>) -> Fut + Send + 'static,
+    F: FnOnce(mpsc::Sender<T>) -> Fut + Send + 'static,
 {
-    let (sender, receiver) = futures::channel::mpsc::channel(buffer);
-    tokio::spawn(async move {
+    let (sender, receiver) = mpsc::channel(buffer);
+    let task = tokio::spawn(async move {
         f(sender).await;
     });
-    receiver
+
+    ChannelStream { receiver, task }
 }
 
 pub async fn connect_ws(

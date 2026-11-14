@@ -167,6 +167,8 @@ impl<D: DataPoint> TimeSeries<D> {
         None
     }
 
+    /// Check kline integrity, limited to the visible range for performance.
+    /// Upstream: 46624c0 — avoids scanning the full dataset on every frame.
     pub fn check_kline_integrity(&self, earliest: u64, latest: u64) -> Option<Vec<u64>> {
         if self.datapoints.is_empty() {
             return None;
@@ -199,6 +201,20 @@ impl TimeSeries<KlineDataPoint> {
         let mut timeseries = Self {
             datapoints: BTreeMap::new(),
             interval,
+            tick_size,
+        };
+
+        timeseries.insert_klines(klines);
+        timeseries
+    }
+
+    /// Create a TimeSeries for open deviation bars (no fixed time interval).
+    /// Uses M1 as placeholder interval — never used for coordinate math since
+    /// ODBs use index-based rendering like Tick charts.
+    pub fn new_odb(tick_size: PriceStep, klines: &[Kline]) -> Self {
+        let mut timeseries = Self {
+            datapoints: BTreeMap::new(),
+            interval: Timeframe::M1,
             tick_size,
         };
 
@@ -417,7 +433,7 @@ impl TimeSeries<HeatmapDataPoint> {
     pub fn new(basis: Basis, tick_size: PriceStep) -> Self {
         let timeframe = match basis {
             Basis::Time(interval) => interval,
-            Basis::Tick(_) => unimplemented!(),
+            Basis::Tick(_) | Basis::Odb(_) => unimplemented!(),
         };
 
         Self {

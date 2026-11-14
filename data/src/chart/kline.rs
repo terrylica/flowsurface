@@ -247,6 +247,8 @@ impl KlineTrades {
 pub enum KlineChartKind {
     #[default]
     Candles,
+    #[serde(alias = "RangeBar")]
+    Odb,
     Footprint {
         clusters: ClusterKind,
         #[serde(default)]
@@ -259,49 +261,49 @@ impl KlineChartKind {
     pub fn min_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 0.4,
-            KlineChartKind::Candles => 0.6,
+            KlineChartKind::Candles | KlineChartKind::Odb => 0.6,
         }
     }
 
     pub fn max_scaling(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 1.2,
-            KlineChartKind::Candles => 2.5,
+            KlineChartKind::Candles | KlineChartKind::Odb => 2.5,
         }
     }
 
     pub fn max_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 360.0,
-            KlineChartKind::Candles => 16.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 1024.0,
         }
     }
 
     pub fn min_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles => 1.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 0.5,
         }
     }
 
     pub fn max_cell_height(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 90.0,
-            KlineChartKind::Candles => 8.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 24.0,
         }
     }
 
     pub fn min_cell_height(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 1.0,
-            KlineChartKind::Candles => 0.001,
+            KlineChartKind::Candles | KlineChartKind::Odb => 0.001,
         }
     }
 
     pub fn default_cell_width(&self) -> f32 {
         match self {
             KlineChartKind::Footprint { .. } => 80.0,
-            KlineChartKind::Candles => 4.0,
+            KlineChartKind::Candles | KlineChartKind::Odb => 4.0,
         }
     }
 }
@@ -332,8 +334,61 @@ impl std::fmt::Display for ClusterKind {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
-pub struct Config {}
+// Fork-specific: open deviation bar support
+fn default_ofi_ema_period() -> usize {
+    20
+}
+fn default_intensity_lookback() -> usize {
+    2000
+}
+fn default_thermal_wicks() -> bool {
+    true
+}
+fn default_show_sessions() -> bool {
+    false
+}
+fn default_anomaly_fence() -> bool {
+    true
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Config {
+    #[serde(default = "default_ofi_ema_period")]
+    pub ofi_ema_period: usize,
+    /// Rolling lookback window size for intensity heatmap binning.
+    #[serde(default = "default_intensity_lookback")]
+    pub intensity_lookback: usize,
+    /// When true (default), wicks use the same thermal colour as the candle body.
+    /// When false, wicks show candle direction: green (bullish) / red (bearish).
+    #[serde(default = "default_thermal_wicks")]
+    pub thermal_wicks: bool,
+    /// Overlay NY/London/Tokyo session boundary lines on the chart.
+    #[serde(default = "default_show_sessions")]
+    pub show_sessions: bool,
+    /// Enable Adjusted Boxplot (Hubert 2008) outlier fence for intensity heatmap.
+    /// Flags bars with anomalously low trade intensity using a Medcouple-adapted
+    /// IQR fence that accounts for the right-skewed intensity distribution.
+    #[serde(default = "default_anomaly_fence")]
+    pub anomaly_fence: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ofi_ema_period: default_ofi_ema_period(),
+            intensity_lookback: default_intensity_lookback(),
+            thermal_wicks: default_thermal_wicks(),
+            show_sessions: default_show_sessions(),
+            anomaly_fence: default_anomaly_fence(),
+        }
+    }
+}
+
+/// Compute adaptive K for intensity heatmap binning (cube-root rule).
+/// Returns max(round(cbrt(n)), 5) — fully adaptive, no cap.
+pub fn adaptive_k(n: usize) -> u8 {
+    ((n as f32).cbrt().round() as u8).max(5)
+}
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
 pub enum ClusterScaling {

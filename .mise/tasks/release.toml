@@ -1,0 +1,68 @@
+# Release and packaging tasks for flowsurface
+
+["release:macos"]
+description = "Build universal macOS binary (x86_64 + aarch64 fat binary via lipo)"
+run = "bash scripts/build-macos.sh universal"
+
+["release:macos-arm64"]
+description = "Build macOS aarch64-only release binary"
+run = "bash scripts/build-macos.sh aarch64"
+
+["release:macos-x86"]
+description = "Build macOS x86_64-only release binary"
+run = "bash scripts/build-macos.sh x86_64"
+
+["sign:app"]
+description = "Ad-hoc codesign the Flowsurface.app bundle"
+run = """
+echo "→ Signing Flowsurface.app..."
+codesign --deep --force --sign - Flowsurface.app
+echo "✓ Ad-hoc signature applied"
+"""
+
+["release:app-bundle"]
+description = "Build release binary, update .app bundle, sign, register icon, validate git state"
+depends = ["release:macos-arm64"]
+run = """
+cp target/aarch64-apple-darwin/release/flowsurface Flowsurface.app/Contents/MacOS/flowsurface.bin
+cat > Flowsurface.app/Contents/MacOS/flowsurface << 'LAUNCHER'
+#!/bin/bash
+export FLOWSURFACE_CH_HOST="${FLOWSURFACE_CH_HOST:-localhost}"
+export FLOWSURFACE_CH_PORT="${FLOWSURFACE_CH_PORT:-18123}"
+export FLOWSURFACE_SSE_ENABLED="${FLOWSURFACE_SSE_ENABLED:-true}"
+export FLOWSURFACE_SSE_HOST="${FLOWSURFACE_SSE_HOST:-localhost}"
+export FLOWSURFACE_SSE_PORT="${FLOWSURFACE_SSE_PORT:-18081}"
+export FLOWSURFACE_FXVIEW_SSE_URL="${FLOWSURFACE_FXVIEW_SSE_URL:-http://localhost:18082/forex/ticks/stream}"
+export FLOWSURFACE_OUROBOROS_MODE="${FLOWSURFACE_OUROBOROS_MODE:-aion}"
+export FLOWSURFACE_ALWAYS_ON_TOP="${FLOWSURFACE_ALWAYS_ON_TOP:-1}"
+# Auto-start SSH tunnel to <clickhouse-host> if not running (CH + crypto SSE + forex tick SSE)
+if ! lsof -ti:18123 >/dev/null 2>&1; then
+  ssh -fNL 18123:localhost:8123 -L 18081:localhost:8081 -L 18082:localhost:8082 "${CH_SSH_HOST:?set CH_SSH_HOST to the SSH name of the ClickHouse host}" 2>/dev/null
+fi
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/flowsurface.bin" "$@"
+LAUNCHER
+chmod +x Flowsurface.app/Contents/MacOS/flowsurface
+codesign --deep --force --sign - Flowsurface.app
+/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f Flowsurface.app
+
+# Reset lockfile drift — cargo build during release:macos-arm64 may re-dirty Cargo.lock
+if git diff --name-only | grep -qE '^Cargo\\.lock$'; then
+  git checkout -- Cargo.lock
+fi
+echo "✓ Flowsurface.app signed and registered"
+"""
+
+["icon:generate"]
+description = "Generate 1024x1024 app icon PNG using Pillow"
+run = "python3 assets/generate_icon.py"
+
+["icon:convert"]
+description = "Convert icon PNG to macOS .icns and update .app bundle"
+depends = ["icon:generate"]
+run = """
+"${PNG_TO_ICNS:-png_to_icns.sh}" -i assets/icon_1024.png
+mv icon.icns assets/flowsurface.icns
+cp assets/flowsurface.icns Flowsurface.app/Contents/Resources/flowsurface.icns
+echo "Icon updated: assets/flowsurface.icns"
+"""

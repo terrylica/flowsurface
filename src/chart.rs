@@ -1,63 +1,36 @@
 pub mod comparison;
 pub mod heatmap;
 pub mod indicator;
+pub(crate) mod interaction;
+pub mod keyboard_nav; // NOTE(fork): issue#100 — keyboard chart navigation
 pub mod kline;
-mod scale;
+pub(crate) mod legend;
+pub(crate) mod scale;
+pub(crate) mod session;
+pub(crate) mod view_state;
+
+// Re-export all public types so downstream `use super::*` and
+// `use crate::chart::{...}` continue to work unchanged.
+pub(crate) use interaction::canvas_interaction;
+pub use interaction::{AxisScaleClicked, Interaction, Message};
+pub(crate) use interaction::{TEXT_SIZE, ZOOM_RATE, ZOOM_SENSITIVITY};
+pub(crate) use legend::draw_volume_bar;
+pub use legend::draw_watermark;
+pub use view_state::{Caches, PlotConstants, ViewState};
 
 use crate::connector::fetcher::{FetchRange, FetchSpec, RequestHandler};
 use crate::style;
-use crate::widget::multi_split::{DRAG_SIZE, MultiSplit};
+use crate::widget::multi_split::MultiSplit;
 use crate::widget::tooltip;
-use data::chart::{Autoscale, Basis, PlotData, ViewConfig, indicator::Indicator};
-use exchange::TickerInfo;
-use exchange::unit::{Price, PriceStep};
-use scale::linear::PriceInfoLabel;
+use data::chart::{Autoscale, Basis, PlotData, indicator::Indicator};
+
 use scale::{AxisLabelsX, AxisLabelsY};
 
-use iced::theme::palette::Extended;
-use iced::widget::canvas::{self, Cache, Canvas, Event, Frame, LineDash, Path, Stroke};
+use iced::widget::canvas::{self, Canvas};
 use iced::{
-    Alignment, Element, Length, Point, Rectangle, Size, Theme, Vector, keyboard, mouse, padding,
+    Alignment, Element, Length, Theme, Vector, padding,
     widget::{button, center, column, container, mouse_area, row, rule, text},
 };
-
-const ZOOM_SENSITIVITY: f32 = 30.0;
-const TEXT_SIZE: f32 = 12.0;
-
-#[derive(Default, Debug, Clone, Copy)]
-pub enum Interaction {
-    #[default]
-    None,
-    Zoomin {
-        last_position: Point,
-    },
-    Panning {
-        translation: Vector,
-        start: Point,
-    },
-    Ruler {
-        start: Option<Point>,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum AxisScaleClicked {
-    X,
-    Y,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Message {
-    Translated(Vector),
-    Scaled(f32, Vector),
-    AutoscaleToggled,
-    CrosshairMoved,
-    YScaling(f32, f32, bool),
-    XScaling(f32, f32, bool),
-    BoundsChanged(Rectangle),
-    SplitDragged(usize, f32),
-    DoubleClick(AxisScaleClicked),
-}
 
 pub trait Chart: PlotConstants + canvas::Program<Message> {
     type IndicatorKind: Indicator;
@@ -83,196 +56,7 @@ pub trait Chart: PlotConstants + canvas::Program<Message> {
     fn is_empty(&self) -> bool;
 }
 
-fn canvas_interaction<T: Chart>(
-    chart: &T,
-    interaction: &mut Interaction,
-    event: &Event,
-    bounds: Rectangle,
-    cursor: mouse::Cursor,
-) -> Option<canvas::Action<Message>> {
-    if chart.state().bounds != bounds {
-        return Some(canvas::Action::publish(Message::BoundsChanged(bounds)));
-    }
-
-    let shrunken_bounds = bounds.shrink(DRAG_SIZE * 4.0);
-    let cursor_position = cursor.position_in(shrunken_bounds);
-
-    if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
-        match interaction {
-            Interaction::Panning { .. } | Interaction::Zoomin { .. } => {
-                *interaction = Interaction::None;
-            }
-            _ => {}
-        }
-    }
-
-    if let Interaction::Ruler { .. } = interaction
-        && cursor_position.is_none()
-    {
-        *interaction = Interaction::None;
-    }
-
-    match event {
-        Event::Mouse(mouse_event) => {
-            let state = chart.state();
-
-            match mouse_event {
-                mouse::Event::ButtonPressed(button) => {
-                    let cursor_in_bounds = cursor_position?;
-
-                    if let mouse::Button::Left = button {
-                        match interaction {
-                            Interaction::None
-                            | Interaction::Panning { .. }
-                            | Interaction::Zoomin { .. } => {
-                                *interaction = Interaction::Panning {
-                                    translation: state.translation,
-                                    start: cursor_in_bounds,
-                                };
-                            }
-                            Interaction::Ruler { start } if start.is_none() => {
-                                *interaction = Interaction::Ruler {
-                                    start: Some(cursor_in_bounds),
-                                };
-                            }
-                            Interaction::Ruler { .. } => {
-                                *interaction = Interaction::None;
-                            }
-                        }
-                    }
-                    Some(canvas::Action::request_redraw().and_capture())
-                }
-                mouse::Event::CursorMoved { .. } => match *interaction {
-                    Interaction::Panning { translation, start } => {
-                        let cursor_in_bounds = cursor_position?;
-                        let msg = Message::Translated(
-                            translation + (cursor_in_bounds - start) * (1.0 / state.scaling),
-                        );
-                        Some(canvas::Action::publish(msg).and_capture())
-                    }
-                    Interaction::None | Interaction::Ruler { .. } => {
-                        Some(canvas::Action::publish(Message::CrosshairMoved))
-                    }
-                    _ => None,
-                },
-                mouse::Event::WheelScrolled { delta } => {
-                    cursor_position?;
-
-                    let default_cell_width = T::default_cell_width(chart);
-                    let min_cell_width = T::min_cell_width(chart);
-                    let max_cell_width = T::max_cell_width(chart);
-                    let max_scaling = T::max_scaling(chart);
-                    let min_scaling = T::min_scaling(chart);
-
-                    if matches!(interaction, Interaction::Panning { .. }) {
-                        return Some(canvas::Action::capture());
-                    }
-
-                    let cursor_to_center = cursor.position_from(bounds.center())?;
-                    let y = match delta {
-                        mouse::ScrollDelta::Lines { y, .. }
-                        | mouse::ScrollDelta::Pixels { y, .. } => y,
-                    };
-
-                    if let Some(Autoscale::FitToVisible) = state.layout.autoscale {
-                        return Some(
-                            canvas::Action::publish(Message::XScaling(
-                                y / 2.0,
-                                cursor_to_center.x,
-                                false,
-                            ))
-                            .and_capture(),
-                        );
-                    }
-
-                    let should_adjust_cell_width = match (y.signum(), state.scaling) {
-                        (-1.0, scaling)
-                            if scaling == max_scaling && state.cell_width > default_cell_width =>
-                        {
-                            true
-                        }
-                        (1.0, scaling)
-                            if scaling == min_scaling && state.cell_width < default_cell_width =>
-                        {
-                            true
-                        }
-                        (1.0, scaling)
-                            if scaling == max_scaling && state.cell_width < max_cell_width =>
-                        {
-                            true
-                        }
-                        (-1.0, scaling)
-                            if scaling == min_scaling && state.cell_width > min_cell_width =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    };
-
-                    if should_adjust_cell_width {
-                        return Some(
-                            canvas::Action::publish(Message::XScaling(
-                                y / 2.0,
-                                cursor_to_center.x,
-                                true,
-                            ))
-                            .and_capture(),
-                        );
-                    }
-
-                    // normal scaling cases
-                    if (*y < 0.0 && state.scaling > min_scaling)
-                        || (*y > 0.0 && state.scaling < max_scaling)
-                    {
-                        let old_scaling = state.scaling;
-                        let scaling = (state.scaling * (1.0 + y / ZOOM_SENSITIVITY))
-                            .clamp(min_scaling, max_scaling);
-
-                        let denominator = old_scaling * scaling;
-                        let vector_diff = if denominator.abs() > 0.0001 {
-                            let factor = scaling - old_scaling;
-                            Vector::new(
-                                cursor_to_center.x * factor / denominator,
-                                cursor_to_center.y * factor / denominator,
-                            )
-                        } else {
-                            Vector::default()
-                        };
-
-                        let translation = state.translation - vector_diff;
-
-                        return Some(
-                            canvas::Action::publish(Message::Scaled(scaling, translation))
-                                .and_capture(),
-                        );
-                    }
-
-                    Some(canvas::Action::capture())
-                }
-                _ => None,
-            }
-        }
-        Event::Keyboard(keyboard_event) => {
-            cursor_position?;
-            match keyboard_event {
-                iced::keyboard::Event::KeyPressed { key, .. } => match key.as_ref() {
-                    keyboard::Key::Named(keyboard::key::Named::Shift) => {
-                        *interaction = Interaction::Ruler { start: None };
-                        Some(canvas::Action::request_redraw().and_capture())
-                    }
-                    keyboard::Key::Named(keyboard::key::Named::Escape) => {
-                        *interaction = Interaction::None;
-                        Some(canvas::Action::request_redraw().and_capture())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
+#[must_use = "Action must be handled by the caller"]
 pub enum Action {
     ErrorOccurred(data::InternalError),
     RequestFetch(Vec<FetchSpec>),
@@ -296,6 +80,11 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
                     if supports_fit_autoscaling {
                         state.layout.autoscale = Some(Autoscale::FitToVisible);
                         state.scaling = 1.0;
+                        // Reset translation.y so FitToVisible starts from a clean state.
+                        // Without this, deep manual zoom leaves cell_height/translation.y
+                        // at extreme values and the first FitToVisible frame computes a
+                        // tiny visible_region that doesn't cover enough bars.
+                        state.translation.y = 0.0;
                     } else {
                         state.layout.autoscale = Some(Autoscale::CenterLatest);
                     }
@@ -318,6 +107,17 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
             state.translation = *translation;
 
             state.layout.autoscale = None;
+        }
+        Message::FreezeToggled => {
+            let state = chart.mut_state();
+            state.layout.frozen = !state.layout.frozen;
+            // Disable autoscale-to-latest when freezing so the two modes don't
+            // fight each other (autoscale would pull us back to the live edge,
+            // defeating the freeze). User can re-enable autoscale via its own
+            // button after unfreezing.
+            if state.layout.frozen {
+                state.layout.autoscale = None;
+            }
         }
         Message::AutoscaleToggled => {
             let supports_fit_autoscaling = chart.supports_fit_autoscaling();
@@ -357,15 +157,14 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
             let is_fit_to_visible_zoom =
                 !is_wheel_scroll && matches!(state.layout.autoscale, Some(Autoscale::FitToVisible));
 
-            let zoom_factor = if is_fit_to_visible_zoom {
-                ZOOM_SENSITIVITY / 1.5
-            } else if *is_wheel_scroll {
-                ZOOM_SENSITIVITY
+            // Multiplicative zoom (d3 formula): perceptually uniform at every level.
+            // Keyboard (is_wheel_scroll=false, !FitToVisible) uses 3× rate for larger steps.
+            let rate = if !is_wheel_scroll && !is_fit_to_visible_zoom {
+                ZOOM_RATE * 3.0
             } else {
-                ZOOM_SENSITIVITY * 3.0
+                ZOOM_RATE
             };
-
-            let new_width = (state.cell_width * (1.0 + delta / zoom_factor))
+            let new_width = (state.cell_width * 2.0f32.powf(*delta * rate))
                 .clamp(min_cell_width, max_cell_width);
 
             if is_fit_to_visible_zoom {
@@ -408,7 +207,7 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
 
                         state.interval_to_x(cursor_time)
                     }
-                    Basis::Tick(_) => {
+                    Basis::Tick(_) | Basis::Odb(_) => {
                         let tick_index = cursor_chart_x / state.cell_width;
                         state.cell_width = new_width;
 
@@ -485,9 +284,39 @@ pub fn update<T: Chart>(chart: &mut T, message: &Message) {
                 *split = (size * 100.0).round() / 100.0;
             }
         }
-        Message::CrosshairMoved => return chart.invalidate_crosshair(),
+        Message::CrosshairMoved => {
+            // Flush any pending zoom redraw on cursor move (trailing edge).
+            let state = chart.mut_state();
+            if state.zoom_pending_redraw {
+                state.zoom_pending_redraw = false;
+                state.last_zoom_invalidation = std::time::Instant::now();
+                chart.invalidate_all();
+            }
+            return chart.invalidate_crosshair();
+        }
     }
-    chart.invalidate_all();
+
+    // Frame-budget adaptive throttle: interval = last measured render time.
+    // Self-tunes to hardware + data: deep zoom (2ms render) → fast updates,
+    // heavy overview (25ms render) → automatic throttle. Zero hardcoded timing.
+    let is_zoom_message = matches!(
+        message,
+        Message::Scaled(..) | Message::XScaling(..) | Message::YScaling(..)
+    );
+    if is_zoom_message {
+        let state = chart.mut_state();
+        let now = std::time::Instant::now();
+        let budget = std::time::Duration::from_micros(state.frame_budget_us.get() as u64);
+        if now.duration_since(state.last_zoom_invalidation) >= budget {
+            state.last_zoom_invalidation = now;
+            state.zoom_pending_redraw = false;
+            chart.invalidate_all();
+        } else {
+            state.zoom_pending_redraw = true;
+        }
+    } else {
+        chart.invalidate_all();
+    }
 }
 
 pub fn view<'a, T: Chart>(
@@ -500,6 +329,8 @@ pub fn view<'a, T: Chart>(
     }
 
     let state = chart.state();
+    // Propagate timezone into ViewState so canvas::Program::draw can read it.
+    state.timezone.set(timezone);
 
     let axis_labels_x = Canvas::new(AxisLabelsX {
         labels_cache: &state.cache.x_labels,
@@ -534,8 +365,32 @@ pub fn view<'a, T: Chart>(
         .on_press(Message::AutoscaleToggled)
         .style(move |theme: &Theme, status| style::button::transparent(theme, status, is_active));
 
+        // Freeze-viewport toggle — locks the visible window so new bars do not
+        // push it. Label: "❚❚" when frozen (lock engaged), "▶" when live.
+        let frozen = state.layout.frozen;
+        let freeze_btn_label = if frozen { text("❚❚") } else { text("▶") };
+        let freeze_btn_tooltip = if frozen {
+            Some("Unfreeze viewport (live)")
+        } else {
+            Some("Freeze viewport (pause auto-shift on new bars)")
+        };
+        let freeze_button = button(
+            freeze_btn_label
+                .size(10)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .height(Length::Fill)
+        .on_press(Message::FreezeToggled)
+        .style(move |theme: &Theme, status| style::button::transparent(theme, status, frozen));
+
         row![
             iced::widget::space::horizontal(),
+            tooltip(
+                freeze_button,
+                freeze_btn_tooltip,
+                iced::widget::tooltip::Position::Top
+            ),
             tooltip(
                 autoscale_button,
                 autoscale_btn_tooltip,
@@ -555,6 +410,7 @@ pub fn view<'a, T: Chart>(
             decimals: state.decimals,
             min: state.base_price_y.to_f32_lossy(),
             last_price: state.last_price,
+            last_trade_time: state.last_trade_time,
             tick_size: state.tick_size.to_f32_lossy(),
             cell_height: state.cell_height,
             basis: state.basis,
@@ -586,7 +442,12 @@ pub fn view<'a, T: Chart>(
                 .chain(indicators)
                 .collect::<Vec<_>>();
 
-            MultiSplit::new(panels, &state.layout.splits, |index, position| {
+            // Safety net: clamp splits to exactly panels.len()-1 so a stale
+            // saved state (more splits than current subplots) never panics.
+            let n = panels.len() - 1;
+            let splits = &state.layout.splits[..n.min(state.layout.splits.len())];
+
+            MultiSplit::new(panels, splits, |index, position| {
                 Message::SplitDragged(index, position)
             })
             .into()
@@ -611,600 +472,22 @@ pub fn view<'a, T: Chart>(
     .into()
 }
 
-pub trait PlotConstants {
-    fn min_scaling(&self) -> f32;
-    fn max_scaling(&self) -> f32;
-    fn max_cell_width(&self) -> f32;
-    fn min_cell_width(&self) -> f32;
-    fn max_cell_height(&self) -> f32;
-    fn min_cell_height(&self) -> f32;
-    fn default_cell_width(&self) -> f32;
-}
-
-#[derive(Default)]
-pub struct Caches {
-    main: Cache,
-    x_labels: Cache,
-    y_labels: Cache,
-    crosshair: Cache,
-}
-
-impl Caches {
-    fn clear_all(&self) {
-        self.main.clear();
-        self.x_labels.clear();
-        self.y_labels.clear();
-        self.crosshair.clear();
-    }
-
-    fn clear_crosshair(&self) {
-        self.crosshair.clear();
-        self.y_labels.clear();
-        self.x_labels.clear();
-    }
-}
-
-pub struct ViewState {
-    cache: Caches,
-    bounds: Rectangle,
-    translation: Vector,
-    scaling: f32,
-    cell_width: f32,
-    cell_height: f32,
-    basis: Basis,
-    last_price: Option<PriceInfoLabel>,
-    base_price_y: Price,
-    latest_x: u64,
-    tick_size: PriceStep,
-    decimals: usize,
-    ticker_info: TickerInfo,
-    layout: ViewConfig,
-}
-
-impl ViewState {
-    pub fn new(
-        basis: Basis,
-        tick_size: PriceStep,
-        decimals: usize,
-        ticker_info: TickerInfo,
-        layout: ViewConfig,
-        cell_width: f32,
-        cell_height: f32,
-    ) -> Self {
-        ViewState {
-            cache: Caches::default(),
-            bounds: Rectangle::default(),
-            translation: Vector::default(),
-            scaling: 1.0,
-            cell_width,
-            cell_height,
-            basis,
-            last_price: None,
-            base_price_y: Price::from_f32_lossy(0.0),
-            latest_x: 0,
-            tick_size,
-            decimals,
-            ticker_info,
-            layout,
-        }
-    }
-
-    fn effective_tick_units(&self) -> i64 {
-        if self.tick_size.units > 0 {
-            self.tick_size.units
-        } else {
-            let min_step: PriceStep = self.ticker_info.min_ticksize.into();
-            min_step.units.max(1)
-        }
-    }
-
-    fn visible_region(&self, size: Size) -> Rectangle {
-        let width = size.width / self.scaling;
-        let height = size.height / self.scaling;
-
-        Rectangle {
-            x: -self.translation.x - width / 2.0,
-            y: -self.translation.y - height / 2.0,
-            width,
-            height,
-        }
-    }
-
-    fn is_interval_x_visible(&self, interval_x: f32) -> bool {
-        let region = self.visible_region(self.bounds.size());
-
-        interval_x >= region.x && interval_x <= region.x + region.width
-    }
-
-    fn interval_range(&self, region: &Rectangle) -> (u64, u64) {
-        match self.basis {
-            Basis::Tick(_) => (
-                self.x_to_interval(region.x + region.width),
-                self.x_to_interval(region.x),
-            ),
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds();
-                (
-                    self.x_to_interval(region.x).saturating_sub(interval / 2),
-                    self.x_to_interval(region.x + region.width)
-                        .saturating_add(interval / 2),
-                )
-            }
-        }
-    }
-
-    fn price_range(&self, region: &Rectangle) -> (Price, Price) {
-        let highest = self.y_to_price(region.y);
-        let lowest = self.y_to_price(region.y + region.height);
-
-        (highest, lowest)
-    }
-
-    fn interval_to_x(&self, value: u64) -> f32 {
-        match self.basis {
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds() as f64;
-                let cell_width = f64::from(self.cell_width);
-
-                let diff = value as f64 - self.latest_x as f64;
-                (diff / interval * cell_width) as f32
-            }
-            Basis::Tick(_) => -((value as f32) * self.cell_width),
-        }
-    }
-
-    fn x_to_interval(&self, x: f32) -> u64 {
-        match self.basis {
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds();
-
-                if x <= 0.0 {
-                    let diff = (-x / self.cell_width * interval as f32) as u64;
-                    self.latest_x.saturating_sub(diff)
-                } else {
-                    let diff = (x / self.cell_width * interval as f32) as u64;
-                    self.latest_x.saturating_add(diff)
-                }
-            }
-            Basis::Tick(_) => {
-                let tick = -(x / self.cell_width);
-                tick.round() as u64
-            }
-        }
-    }
-
-    fn price_to_y(&self, price: Price) -> f32 {
-        let delta_units = self.base_price_y.units - price.units;
-        let ticks = (delta_units as f32) / (self.effective_tick_units() as f32);
-        ticks * self.cell_height
-    }
-
-    fn y_to_price(&self, y: f32) -> Price {
-        let ticks = y / self.cell_height;
-        let delta_units = (ticks * self.effective_tick_units() as f32).round() as i64;
-        Price::from_units(self.base_price_y.units - delta_units)
-    }
-
-    fn draw_crosshair(
-        &self,
-        frame: &mut Frame,
-        theme: &Theme,
-        bounds: Size,
-        cursor_position: Point,
-        interaction: &Interaction,
-    ) -> (f32, u64) {
-        let region = self.visible_region(bounds);
-        let dashed_line = style::dashed_line(theme);
-
-        let highest_p: Price = self.y_to_price(region.y);
-        let lowest_p: Price = self.y_to_price(region.y + region.height);
-        let highest: f32 = highest_p.to_f32_lossy();
-        let lowest: f32 = lowest_p.to_f32_lossy();
-
-        let effective_step = if self.tick_size.units > 0 {
-            self.tick_size
-        } else {
-            self.ticker_info.min_ticksize.into()
-        };
-
-        if let Interaction::Ruler { start: Some(start) } = interaction {
-            let p1 = *start;
-            let p2 = cursor_position;
-
-            let snap_y = |y: f32| {
-                let ratio = y / bounds.height;
-                let price = highest + ratio * (lowest - highest);
-
-                let p = Price::from_f32_lossy(price);
-                let tick_units = effective_step.units;
-                let tick_index = p.units.div_euclid(tick_units);
-                let rounded_price_p = Price::from_units(tick_index * tick_units);
-                let rounded_price = rounded_price_p.to_f32_lossy();
-                let snap_ratio = (rounded_price - highest) / (lowest - highest);
-                snap_ratio * bounds.height
-            };
-
-            let snap_x = |x: f32| {
-                let (_, snap_ratio) = self.snap_x_to_index(x, bounds, region);
-                snap_ratio * bounds.width
-            };
-
-            let snapped_p1_x = snap_x(p1.x);
-            let snapped_p1_y = snap_y(p1.y);
-            let snapped_p2_x = snap_x(p2.x);
-            let snapped_p2_y = snap_y(p2.y);
-
-            let price1 = self.y_to_price(snapped_p1_y);
-            let price2 = self.y_to_price(snapped_p2_y);
-
-            let pct = if price1.to_f32_lossy() == 0.0 {
-                0.0
-            } else {
-                ((price2.to_f32_lossy() - price1.to_f32_lossy()) / price1.to_f32_lossy()) * 100.0
-            };
-            let pct_text = format!("{:.2}%", pct);
-
-            let interval_diff: String = match self.basis {
-                Basis::Time(_) => {
-                    let (timestamp1, _) = self.snap_x_to_index(p1.x, bounds, region);
-                    let (timestamp2, _) = self.snap_x_to_index(p2.x, bounds, region);
-
-                    let diff_ms: u64 = timestamp1.abs_diff(timestamp2);
-                    data::util::format_duration_ms(diff_ms)
-                }
-                Basis::Tick(_) => {
-                    let (tick1, _) = self.snap_x_to_index(p1.x, bounds, region);
-                    let (tick2, _) = self.snap_x_to_index(p2.x, bounds, region);
-
-                    let tick_diff = tick1.abs_diff(tick2);
-                    format!("{} ticks", tick_diff)
-                }
-            };
-
-            let rect_x = snapped_p1_x.min(snapped_p2_x);
-            let rect_y = snapped_p1_y.min(snapped_p2_y);
-            let rect_w = (snapped_p1_x - snapped_p2_x).abs();
-            let rect_h = (snapped_p1_y - snapped_p2_y).abs();
-
-            let palette = theme.extended_palette();
-
-            frame.fill_rectangle(
-                Point::new(rect_x, rect_y),
-                Size::new(rect_w, rect_h),
-                palette.primary.base.color.scale_alpha(0.08),
-            );
-            let corners = [
-                Point::new(rect_x, rect_y),
-                Point::new(rect_x + rect_w, rect_y),
-                Point::new(rect_x, rect_y + rect_h),
-                Point::new(rect_x + rect_w, rect_y + rect_h),
-            ];
-
-            let (text_corner, idx) = corners
-                .iter()
-                .enumerate()
-                .min_by(|(_, a), (_, b)| {
-                    let da = (a.x - p2.x).hypot(a.y - p2.y);
-                    let db = (b.x - p2.x).hypot(b.y - p2.y);
-                    da.partial_cmp(&db).unwrap()
-                })
-                .map(|(i, &c)| (c, i))
-                .unwrap();
-
-            let text_padding = 8.0;
-            let text_pos = match idx {
-                0 => Point::new(text_corner.x + text_padding, text_corner.y + text_padding),
-                1 => Point::new(text_corner.x - text_padding, text_corner.y + text_padding),
-                2 => Point::new(text_corner.x + text_padding, text_corner.y - text_padding),
-                3 => Point::new(text_corner.x - text_padding, text_corner.y - text_padding),
-                _ => text_corner,
-            };
-
-            let datapoints_text = match self.basis {
-                Basis::Time(timeframe) => {
-                    let interval_ms = timeframe.to_milliseconds();
-                    let (timestamp1, _) = self.snap_x_to_index(p1.x, bounds, region);
-                    let (timestamp2, _) = self.snap_x_to_index(p2.x, bounds, region);
-
-                    let diff_ms = timestamp1.abs_diff(timestamp2);
-                    let datapoints = (diff_ms / interval_ms).max(1);
-                    format!("{} bars", datapoints)
-                }
-                Basis::Tick(aggregation) => {
-                    let (tick1, _) = self.snap_x_to_index(p1.x, bounds, region);
-                    let (tick2, _) = self.snap_x_to_index(p2.x, bounds, region);
-
-                    let tick_diff = tick1.abs_diff(tick2);
-                    let datapoints = (tick_diff / u64::from(aggregation.0)).max(1);
-                    format!("{} bars", datapoints)
-                }
-            };
-
-            let label_text = format!("{}, {} | {}", datapoints_text, interval_diff, pct_text);
-
-            let text_width = (label_text.len() as f32) * TEXT_SIZE * 0.6;
-            let text_height = TEXT_SIZE * 1.2;
-            let rect_padding = 4.0;
-
-            let (bg_x, bg_y) = match idx {
-                0 => (text_pos.x - rect_padding, text_pos.y - rect_padding),
-                1 => (
-                    text_pos.x - text_width - rect_padding,
-                    text_pos.y - rect_padding,
-                ),
-                2 => (
-                    text_pos.x - rect_padding,
-                    text_pos.y - text_height - rect_padding,
-                ),
-                3 => (
-                    text_pos.x - text_width - rect_padding,
-                    text_pos.y - text_height - rect_padding,
-                ),
-                _ => (
-                    text_pos.x - text_width / 2.0 - rect_padding,
-                    text_pos.y - text_height / 2.0 - rect_padding,
-                ),
-            };
-
-            frame.fill_rectangle(
-                Point::new(bg_x, bg_y),
-                Size::new(
-                    text_width + rect_padding * 2.0,
-                    text_height + rect_padding * 2.0,
-                ),
-                palette.background.weakest.color.scale_alpha(0.9),
-            );
-
-            frame.fill_text(iced::widget::canvas::Text {
-                content: label_text,
-                position: text_pos,
-                color: palette.background.base.text,
-                size: iced::Pixels(11.0),
-                align_x: match idx {
-                    0 | 2 => Alignment::Start.into(),
-                    1 | 3 => Alignment::End.into(),
-                    _ => Alignment::Center.into(),
-                },
-                align_y: match idx {
-                    0 | 1 => Alignment::Start.into(),
-                    2 | 3 => Alignment::End.into(),
-                    _ => Alignment::Center.into(),
-                },
-                font: style::AZERET_MONO,
-                ..Default::default()
-            });
-        }
-
-        // Horizontal price line
-        let crosshair_ratio = cursor_position.y / bounds.height;
-        let crosshair_price = highest + crosshair_ratio * (lowest - highest);
-
-        let rounded_price = Price::from_f32_lossy(crosshair_price)
-            .round_to_step(effective_step)
-            .to_f32_lossy();
-        let snap_ratio = (rounded_price - highest) / (lowest - highest);
-
-        frame.stroke(
-            &Path::line(
-                Point::new(0.0, snap_ratio * bounds.height),
-                Point::new(bounds.width, snap_ratio * bounds.height),
-            ),
-            dashed_line,
-        );
-
-        // Vertical time/tick line
-        match self.basis {
-            Basis::Time(_) => {
-                let (rounded_timestamp, snap_ratio) =
-                    self.snap_x_to_index(cursor_position.x, bounds, region);
-
-                frame.stroke(
-                    &Path::line(
-                        Point::new(snap_ratio * bounds.width, 0.0),
-                        Point::new(snap_ratio * bounds.width, bounds.height),
-                    ),
-                    dashed_line,
-                );
-                (rounded_price, rounded_timestamp)
-            }
-            Basis::Tick(aggregation) => {
-                let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
-                let crosshair_pos = chart_x_min + (cursor_position.x / bounds.width) * region.width;
-
-                let cell_index = (crosshair_pos / self.cell_width).round();
-
-                let snapped_crosshair = cell_index * self.cell_width;
-                let snap_ratio = (snapped_crosshair - chart_x_min) / (chart_x_max - chart_x_min);
-
-                let rounded_tick = (-cell_index as u64) * (u64::from(aggregation.0));
-
-                frame.stroke(
-                    &Path::line(
-                        Point::new(snap_ratio * bounds.width, 0.0),
-                        Point::new(snap_ratio * bounds.width, bounds.height),
-                    ),
-                    dashed_line,
-                );
-                (rounded_price, rounded_tick)
-            }
-        }
-    }
-
-    fn draw_last_price_line(
-        &self,
-        frame: &mut canvas::Frame,
-        palette: &Extended,
-        region: Rectangle,
-    ) {
-        if let Some(price) = &self.last_price {
-            let (last_price, line_color) = price.get_with_color(palette);
-            let y_pos = self.price_to_y(last_price);
-
-            let marker_line = Stroke::with_color(
-                Stroke {
-                    width: 1.0,
-                    line_dash: LineDash {
-                        segments: &[2.0, 2.0],
-                        offset: 4,
-                    },
-                    ..Default::default()
-                },
-                line_color.scale_alpha(0.5),
-            );
-
-            frame.stroke(
-                &Path::line(
-                    Point::new(0.0, y_pos),
-                    Point::new(region.x + region.width, y_pos),
-                ),
-                marker_line,
-            );
-        }
-    }
-
-    fn layout(&self) -> ViewConfig {
-        let layout = &self.layout;
-        ViewConfig {
-            splits: layout.splits.clone(),
-            autoscale: layout.autoscale,
-        }
-    }
-
-    fn y_labels_width(&self) -> Length {
-        let precision = self.ticker_info.min_ticksize;
-
-        let value = self.base_price_y.to_string(precision);
-        let width = (value.len() as f32 * TEXT_SIZE * 0.8).max(72.0);
-
-        Length::Fixed(width.ceil())
-    }
-
-    fn snap_x_to_index(&self, x: f32, bounds: Size, region: Rectangle) -> (u64, f32) {
-        let x_ratio = x / bounds.width;
-
-        match self.basis {
-            Basis::Time(timeframe) => {
-                let interval = timeframe.to_milliseconds();
-                let earliest = self.x_to_interval(region.x) as f64;
-                let latest = self.x_to_interval(region.x + region.width) as f64;
-
-                let millis_at_x = earliest + f64::from(x_ratio) * (latest - earliest);
-
-                let rounded_timestamp = (millis_at_x / (interval as f64)).round() as u64 * interval;
-
-                let snap_ratio = if latest - earliest > 0.0 {
-                    ((rounded_timestamp as f64 - earliest) / (latest - earliest)) as f32
-                } else {
-                    0.5
-                };
-
-                (rounded_timestamp, snap_ratio)
-            }
-            Basis::Tick(aggregation) => {
-                let (chart_x_min, chart_x_max) = (region.x, region.x + region.width);
-                let chart_x = chart_x_min + x_ratio * (chart_x_max - chart_x_min);
-
-                let cell_index = (chart_x / self.cell_width).round();
-                let snapped_x = cell_index * self.cell_width;
-
-                let snap_ratio = if chart_x_max - chart_x_min > 0.0 {
-                    (snapped_x - chart_x_min) / (chart_x_max - chart_x_min)
-                } else {
-                    0.5
-                };
-
-                let rounded_tick = (-cell_index as u64) * u64::from(aggregation.0);
-
-                (rounded_tick, snap_ratio)
-            }
-        }
-    }
-}
-
-fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Action> {
+pub(crate) fn request_fetch(handler: &mut RequestHandler, range: FetchRange) -> Option<Action> {
+    let range_clone = range.clone();
     match handler.add_request(range) {
         Ok(Some(req_id)) => {
             let fetch_spec = FetchSpec {
                 req_id,
-                fetch: range,
+                fetch: range_clone,
                 stream: None,
             };
             Some(Action::RequestFetch(vec![fetch_spec]))
         }
         Ok(None) => None,
         Err(reason) => {
-            log::error!("Failed to request {:?}: {}", range, reason);
+            log::error!("Failed to request: {}", reason);
             // TODO: handle this more explicitly, maybe by returning Action::ErrorOccurred
             None
-        }
-    }
-}
-
-fn draw_volume_bar(
-    frame: &mut canvas::Frame,
-    start_x: f32,
-    start_y: f32,
-    buy_qty: f32,
-    sell_qty: f32,
-    max_qty: f32,
-    bar_length: f32,
-    thickness: f32,
-    buy_color: iced::Color,
-    sell_color: iced::Color,
-    bar_color_alpha: f32,
-    horizontal: bool,
-) {
-    let total_qty = buy_qty + sell_qty;
-    if total_qty <= 0.0 || max_qty <= 0.0 {
-        return;
-    }
-
-    let total_bar_length = (total_qty / max_qty) * bar_length;
-
-    let buy_proportion = buy_qty / total_qty;
-    let sell_proportion = sell_qty / total_qty;
-
-    let buy_bar_length = buy_proportion * total_bar_length;
-    let sell_bar_length = sell_proportion * total_bar_length;
-
-    if horizontal {
-        let start_y = start_y - (thickness / 2.0);
-
-        if sell_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(start_x, start_y),
-                Size::new(sell_bar_length, thickness),
-                sell_color.scale_alpha(bar_color_alpha),
-            );
-        }
-
-        if buy_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(start_x + sell_bar_length, start_y),
-                Size::new(buy_bar_length, thickness),
-                buy_color.scale_alpha(bar_color_alpha),
-            );
-        }
-    } else {
-        let start_x = start_x - (thickness / 2.0);
-
-        if sell_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(start_x, start_y + (bar_length - sell_bar_length)),
-                Size::new(thickness, sell_bar_length),
-                sell_color.scale_alpha(bar_color_alpha),
-            );
-        }
-
-        if buy_qty > 0.0 {
-            frame.fill_rectangle(
-                Point::new(
-                    start_x,
-                    start_y + (bar_length - sell_bar_length - buy_bar_length),
-                ),
-                Size::new(thickness, buy_bar_length),
-                buy_color.scale_alpha(bar_color_alpha),
-            );
         }
     }
 }

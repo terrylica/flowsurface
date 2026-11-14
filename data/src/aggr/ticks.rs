@@ -1,3 +1,4 @@
+// Fork-specific: open deviation bar support
 use crate::aggr;
 use crate::chart::kline::{ClusterKind, KlineTrades, NPoc};
 use exchange::unit::Qty;
@@ -6,11 +7,44 @@ use exchange::{Kline, Trade, Volume};
 
 use std::collections::BTreeMap;
 
+/// Microstructure data from precomputed open deviation bars (ClickHouse).
+/// Separate from Kline to avoid polluting the shared exchange type.
+/// Serialize: ODB forensic telemetry (--features telemetry)
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct OdbMicrostructure {
+    pub trade_count: u32,
+    pub ofi: f32,
+    pub trade_intensity: f32,
+    // Tier 5 microstructure (v13.70+)
+    pub vwap: Option<f32>,
+    pub duration_us: Option<i64>,
+    pub is_liquidation_cascade: bool,
+    pub vwap_close_deviation: Option<f32>,
+    pub turnover_imbalance: Option<f32>,
+    // NOTE(fork): issue #35 — forex quote-native spread; None on crypto bars.
+    /// (ask − bid) at the breach tick, in price units.
+    pub spread_close: Option<f32>,
+    /// Mean (ask − bid) across all quotes in the bar.
+    pub spread_mean: Option<f32>,
+    /// Producer sanity flag: true = inverted/implausibly wide spread.
+    pub spread_suspect: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TickAccumulation {
     pub tick_count: usize,
     pub kline: Kline,
     pub footprint: KlineTrades,
+    pub microstructure: Option<OdbMicrostructure>,
+    /// First and last agg_trade_id in this bar. Populated from ClickHouse
+    /// (`first_agg_trade_id`, `last_agg_trade_id` columns) or captured live
+    /// from WebSocket trades.
+    pub agg_trade_id_range: Option<(u64, u64)>,
+    /// Open timestamp in milliseconds UTC. For ODB bars: set from ClickHouse
+    /// `open_time_ms` column (authoritative) or from first WS trade time.
+    /// For non-ODB bars: None. Used by the crosshair legend to display the
+    /// correct open time instead of approximating from prev_bar.close_time.
+    pub open_time_ms: Option<u64>,
 }
 
 impl TickAccumulation {
@@ -27,10 +61,15 @@ impl TickAccumulation {
             volume: Volume::empty_buy_sell().add_trade_qty(trade.is_sell, trade.qty),
         };
 
+        let agg_trade_id_range = trade.agg_trade_id.map(|id| (id, id));
+
         Self {
             tick_count: 1,
             kline,
             footprint,
+            microstructure: None,
+            agg_trade_id_range,
+            open_time_ms: Some(trade.time),
         }
     }
 
@@ -41,6 +80,13 @@ impl TickAccumulation {
         self.kline.close = trade.price;
 
         self.kline.volume = self.kline.volume.add_trade_qty(trade.is_sell, trade.qty);
+
+        if let Some(id) = trade.agg_trade_id {
+            self.agg_trade_id_range = Some(match self.agg_trade_id_range {
+                Some((first, _)) => (first, id),
+                None => (id, id),
+            });
+        }
 
         self.add_trade(trade, step);
     }
@@ -56,6 +102,19 @@ impl TickAccumulation {
 
     pub fn is_full(&self, interval: aggr::TickCount) -> bool {
         self.tick_count >= interval.0 as usize
+    }
+
+    /// ODB completion: `|close - open| / open >= threshold_dbps / 1_000_000`
+    /// Uses integer Price units (i64, scale 10^8) for precision.
+    pub fn is_full_odb(&self, threshold_dbps: u32) -> bool {
+        let open = self.kline.open.units;
+        if open == 0 {
+            return false;
+        }
+        let diff = (self.kline.close.units - open).unsigned_abs();
+        // deviation = diff / open, threshold = dbps / 1_000_000
+        // => diff * 1_000_000 >= dbps * open
+        diff as u128 * 1_000_000 >= threshold_dbps as u128 * open.unsigned_abs() as u128
     }
 
     pub fn poc_price(&self) -> Option<Price> {
@@ -75,6 +134,9 @@ pub struct TickAggr {
     pub datapoints: Vec<TickAccumulation>,
     pub interval: aggr::TickCount,
     pub tick_size: PriceStep,
+    /// When set, `insert_trades()` uses price-based ODB completion
+    /// instead of tick-count. Value is threshold in dbps.
+    pub odb_threshold_dbps: Option<u32>,
 }
 
 impl TickAggr {
@@ -83,6 +145,7 @@ impl TickAggr {
             datapoints: Vec::new(),
             interval,
             tick_size,
+            odb_threshold_dbps: None,
         };
 
         if !raw_trades.is_empty() {
@@ -124,7 +187,11 @@ impl TickAggr {
             } else {
                 let last_idx = self.datapoints.len() - 1;
 
-                if self.datapoints[last_idx].is_full(self.interval) {
+                let bar_complete = match self.odb_threshold_dbps {
+                    Some(dbps) => self.datapoints[last_idx].is_full_odb(dbps),
+                    None => self.datapoints[last_idx].is_full(self.interval),
+                };
+                if bar_complete {
                     self.datapoints
                         .push(TickAccumulation::new(trade, self.tick_size));
                     updated_indices.push(self.datapoints.len() - 1);
@@ -183,14 +250,352 @@ impl TickAggr {
         }
     }
 
+    /// Create a TickAggr from precomputed klines (e.g., open deviation bars from ClickHouse).
+    /// Each kline becomes one TickAccumulation entry.
+    /// The `interval` is set to TickCount(1) since each entry is already a complete bar.
+    ///
+    /// Klines are stored in ascending order (oldest at index 0, newest at end).
+    /// `render_data_source` calls `.iter().rev().enumerate()` which gives
+    /// (0, newest), (1, ...), ..., (N-1, oldest) — matching `interval_to_x`
+    /// where index 0 maps to x=0 (rightmost = newest).
+    pub fn from_klines(tick_size: PriceStep, klines: &[Kline]) -> Self {
+        let datapoints: Vec<TickAccumulation> = klines
+            .iter()
+            .map(|kline| TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: None,
+                agg_trade_id_range: None,
+                open_time_ms: None,
+            })
+            .collect();
+
+        Self {
+            datapoints,
+            interval: aggr::TickCount(1),
+            tick_size,
+            odb_threshold_dbps: None,
+        }
+    }
+
+    /// Create a TickAggr from precomputed klines with microstructure sidecar data.
+    /// `micro` and `agg_id_ranges` must be the same length as `klines`.
+    pub fn from_klines_with_microstructure(
+        tick_size: PriceStep,
+        klines: &[Kline],
+        micro: &[Option<OdbMicrostructure>],
+        agg_id_ranges: &[Option<(u64, u64)>],
+        open_time_ms_list: &[Option<u64>],
+    ) -> Self {
+        let datapoints: Vec<TickAccumulation> = klines
+            .iter()
+            .zip(micro.iter())
+            .zip(agg_id_ranges.iter())
+            .zip(open_time_ms_list.iter())
+            .map(|(((kline, m), ids), otms)| TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: *m,
+                agg_trade_id_range: *ids,
+                open_time_ms: *otms,
+            })
+            .collect();
+
+        Self {
+            datapoints,
+            interval: aggr::TickCount(1),
+            tick_size,
+            odb_threshold_dbps: None,
+        }
+    }
+
+    /// Delta (buy_volume - sell_volume) per bar, keyed by index.
+    pub fn delta_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .map(|(idx, dp)| {
+                let delta = dp
+                    .kline
+                    .volume
+                    .buy_sell()
+                    .map(|(b, s)| f32::from(b) - f32::from(s))
+                    .unwrap_or(0.0);
+                (idx as u64, delta)
+            })
+            .collect()
+    }
+
+    /// Individual trade count per bar from microstructure sidecar.
+    pub fn trade_count_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .map(|m| (idx as u64, m.trade_count as f32))
+            })
+            .collect()
+    }
+
+    /// Order flow imbalance [-1, 1] per bar from microstructure sidecar.
+    pub fn ofi_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| dp.microstructure.map(|m| (idx as u64, m.ofi)))
+            .collect()
+    }
+
+    /// Trade intensity (trades/sec) per bar from microstructure sidecar.
+    pub fn trade_intensity_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| dp.microstructure.map(|m| (idx as u64, m.trade_intensity)))
+            .collect()
+    }
+
+    /// VWAP per bar from microstructure sidecar.
+    pub fn vwap_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.vwap)
+                    .map(|v| (idx as u64, v))
+            })
+            .collect()
+    }
+
+    /// Bar duration in seconds from microstructure sidecar.
+    pub fn duration_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.duration_us)
+                    .map(|v| (idx as u64, v as f32 / 1_000_000.0))
+            })
+            .collect()
+    }
+
+    /// Forex spread per bar from microstructure sidecar (issue #35).
+    /// Value: (spread_close, spread_mean, suspect) in price units.
+    pub fn spread_data(&self) -> BTreeMap<u64, (f32, f32, bool)> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure.and_then(|m| {
+                    m.spread_close.map(|close| {
+                        (
+                            idx as u64,
+                            (
+                                close,
+                                m.spread_mean.unwrap_or(close),
+                                m.spread_suspect.unwrap_or(false),
+                            ),
+                        )
+                    })
+                })
+            })
+            .collect()
+    }
+
+    /// Liquidation cascade flag per bar from microstructure sidecar.
+    pub fn liquidation_cascade_data(&self) -> BTreeMap<u64, bool> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .map(|m| (idx as u64, m.is_liquidation_cascade))
+            })
+            .collect()
+    }
+
+    /// VWAP close deviation [-1, 1] per bar from microstructure sidecar.
+    pub fn vwap_close_deviation_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.vwap_close_deviation)
+                    .map(|v| (idx as u64, v))
+            })
+            .collect()
+    }
+
+    /// Turnover imbalance [-1, 1] per bar from microstructure sidecar.
+    pub fn turnover_imbalance_data(&self) -> BTreeMap<u64, f32> {
+        self.datapoints
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, dp)| {
+                dp.microstructure
+                    .and_then(|m| m.turnover_imbalance)
+                    .map(|v| (idx as u64, v))
+            })
+            .collect()
+    }
+
+    /// Prepend older klines to the datapoints (for historical data loading).
+    /// Klines should be in ascending timestamp order.
+    /// Older data goes at the beginning (index 0) since datapoints is oldest-first.
+    /// Filters out any klines whose timestamp already exists in datapoints.
+    pub fn prepend_klines(&mut self, klines: &[Kline]) {
+        self.prepend_klines_with_microstructure(klines, None, None, None);
+    }
+
+    pub fn prepend_klines_with_microstructure(
+        &mut self,
+        klines: &[Kline],
+        micro: Option<&[Option<OdbMicrostructure>]>,
+        agg_id_ranges: Option<&[Option<(u64, u64)>]>,
+        open_time_ms_list: Option<&[Option<u64>]>,
+    ) {
+        // Deduplicate: only prepend klines older than the current oldest bar
+        let oldest_existing_ts = self.datapoints.first().map(|dp| dp.kline.time);
+        let new_entries: Vec<TickAccumulation> = klines
+            .iter()
+            .enumerate()
+            .filter(|(_, kline)| oldest_existing_ts.is_none_or(|oldest| kline.time < oldest))
+            .map(|(i, kline)| TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: micro.and_then(|m| m.get(i).copied().flatten()),
+                agg_trade_id_range: agg_id_ranges.and_then(|r| r.get(i).copied().flatten()),
+                open_time_ms: open_time_ms_list.and_then(|l| l.get(i).copied().flatten()),
+            })
+            .collect();
+
+        if !new_entries.is_empty() {
+            self.datapoints.splice(0..0, new_entries);
+        }
+    }
+
+    /// Append a newer kline to the end of datapoints (for streaming updates).
+    /// Skips if the timestamp already exists (dedup against streaming overlap).
+    pub fn append_kline(&mut self, kline: &Kline) {
+        let newest_ts = self.datapoints.last().map(|dp| dp.kline.time);
+        if newest_ts.is_none_or(|ts| kline.time > ts) {
+            self.datapoints.push(TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: None,
+                agg_trade_id_range: None,
+                open_time_ms: None,
+            });
+        }
+    }
+
+    /// Replace the last datapoint if timestamps match, otherwise append.
+    /// Used for reconciling ClickHouse completed bars with locally-built forming bars.
+    /// - Same timestamp → replace OHLCV with authoritative ClickHouse data
+    /// - Newer timestamp → append as new completed bar
+    /// - Older timestamp → ignore (stale)
+    pub fn replace_or_append_kline(&mut self, kline: &Kline, micro: Option<OdbMicrostructure>) {
+        #[cfg(feature = "telemetry")]
+        {
+            use crate::telemetry::{self, KlineSnapshot, ReconcileAction, TelemetryEvent};
+            let action = match self.datapoints.last() {
+                Some(last) if kline.time == last.kline.time => ReconcileAction::Replace,
+                Some(last) if kline.time > last.kline.time => ReconcileAction::Append,
+                Some(_) => ReconcileAction::Drop,
+                None => ReconcileAction::AppendEmpty,
+            };
+            let existing_last = self
+                .datapoints
+                .last()
+                .map(|dp| KlineSnapshot::from_kline(&dp.kline));
+            let micro_before = self.datapoints.last().and_then(|dp| dp.microstructure);
+
+            // Emit MicroLoss if we're about to replace a bar that has microstructure
+            if matches!(action, ReconcileAction::Replace)
+                && let Some(m) = micro_before
+            {
+                telemetry::emit(TelemetryEvent::MicroLoss {
+                    ts_ms: telemetry::now_ms(),
+                    bar_time_ms: kline.time,
+                    micro_before: m,
+                });
+            }
+
+            telemetry::emit(TelemetryEvent::Reconcile {
+                ts_ms: telemetry::now_ms(),
+                action,
+                incoming: KlineSnapshot::from_kline(kline),
+                existing_last,
+                micro_before,
+            });
+        }
+
+        // NOTE(fork): bounded backward scan instead of tail-only matching.
+        // With SSE bar-push (bars arrive at close time, ~10s ahead of the
+        // CH row), the CH poll re-delivers a bar that is no longer the tail
+        // datapoint. Tail-only matching silently dropped that re-delivery,
+        // losing the fully-graduated row (e.g. spread_suspect is only known
+        // at graduation). Scanning a bounded window lets the poll upgrade
+        // the pushed bar in place. Genuinely older bars beyond the window
+        // are still dropped (full reload self-corrects).
+        const REPLACE_SCAN_WINDOW: usize = 32;
+        let scan_start = self.datapoints.len().saturating_sub(REPLACE_SCAN_WINDOW);
+        if let Some(dp) = self.datapoints[scan_start..]
+            .iter_mut()
+            .rev()
+            .find(|dp| dp.kline.time == kline.time)
+        {
+            // Replace: use incoming microstructure if available, else preserve existing.
+            // Preserve agg_trade_id_range and open_time_ms — they are attached separately
+            // after this call (like a two-phase commit), so must not be cleared here.
+            let resolved_micro = micro.or(dp.microstructure);
+            let preserved_ids = dp.agg_trade_id_range;
+            let preserved_open_time = dp.open_time_ms;
+            dp.kline = *kline;
+            dp.microstructure = resolved_micro;
+            dp.agg_trade_id_range = preserved_ids;
+            dp.open_time_ms = preserved_open_time;
+        } else if let Some(last) = self.datapoints.last() {
+            if kline.time > last.kline.time {
+                self.datapoints.push(TickAccumulation {
+                    tick_count: 1,
+                    kline: *kline,
+                    footprint: KlineTrades::new(),
+                    microstructure: micro,
+                    agg_trade_id_range: None,
+                    open_time_ms: None,
+                });
+            }
+        } else {
+            self.datapoints.push(TickAccumulation {
+                tick_count: 1,
+                kline: *kline,
+                footprint: KlineTrades::new(),
+                microstructure: micro,
+                agg_trade_id_range: None,
+                open_time_ms: None,
+            });
+        }
+    }
+
     pub fn min_max_price_in_range_prices(
         &self,
         earliest: usize,
         latest: usize,
     ) -> Option<(Price, Price)> {
-        if earliest > latest {
-            return None;
-        }
+        let (earliest, latest) = if earliest > latest {
+            (latest, earliest)
+        } else {
+            (earliest, latest)
+        };
 
         let mut min_p: Option<Price> = None;
         let mut max_p: Option<Price> = None;
@@ -233,6 +638,11 @@ impl TickAggr {
         highest: Price,
         lowest: Price,
     ) -> Qty {
+        let (earliest, latest) = if earliest > latest {
+            (latest, earliest)
+        } else {
+            (earliest, latest)
+        };
         let mut max_cluster_qty: Qty = Qty::default();
 
         self.datapoints

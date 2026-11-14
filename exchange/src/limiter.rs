@@ -1,4 +1,5 @@
-use crate::adapter::AdapterError;
+use super::error::AdapterError;
+use crate::tg_alert;
 
 use reqwest::{Client, Method, Response, header};
 use serde_json::Value;
@@ -13,7 +14,9 @@ static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
 
     let builder = builder
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30));
+        .timeout(Duration::from_secs(30))
+        .brotli(true)
+        .gzip(true);
 
     builder
         .build()
@@ -89,6 +92,12 @@ pub async fn http_request_with_limiter<L: RateLimiter>(
             status,
             url
         );
+        tg_alert!(
+            crate::telegram::Severity::Critical,
+            "rate-limit",
+            "FATAL: HTTP {status} — rate limit or geo-block, exiting"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         std::process::exit(1);
     }
 
@@ -183,6 +192,13 @@ async fn read_response_body(
             body_preview(&body_text, 200)
         );
         log::error!("{}", msg);
+        if crate::telegram::should_alert("http-error", 300) {
+            tg_alert!(
+                crate::telegram::Severity::Warning,
+                "http",
+                "HTTP {status} for: {url}"
+            );
+        }
         return Err(AdapterError::http_status_failed(status, msg));
     }
 

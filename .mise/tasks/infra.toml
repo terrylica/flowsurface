@@ -1,0 +1,228 @@
+# Infrastructure tasks for flowsurface
+# ClickHouse connectivity checks + preflight validation
+#
+# TUNNEL LIFECYCLE IS NOT MANAGED HERE.
+# The SSH tunnel to <clickhouse-host> is managed by ssh-tunnel-companion (system-wide):
+#   Repo:      https://github.com/terrylica/cc-skills/tree/main/plugins/ssh-tunnel-companion
+#   Control:   make {start,stop,restart,status} (from that repo)
+#   SwiftBar:  menu bar indicator with start/stop actions
+#   Details:   https://github.com/terrylica/cc-skills/blob/main/plugins/ssh-tunnel-companion/CLAUDE.md
+#
+# These mise tasks only CHECK connectivity — they don't own the tunnel.
+
+["tunnel:start"]
+description = "Check tunnel (managed by ssh-tunnel-companion, not flowsurface)"
+run = """
+if lsof -ti:18123 >/dev/null 2>&1; then
+  echo "Tunnel UP on port 18123"
+  RESULT=$(curl -sf --connect-timeout 2 "http://localhost:18123" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1)
+  if [ "$RESULT" = "ok" ]; then
+    echo "ClickHouse: responding"
+  else
+    echo "WARNING: Tunnel exists but ClickHouse not responding"
+  fi
+else
+  echo "Tunnel DOWN on port 18123"
+  echo ""
+  echo "The tunnel is managed by ssh-tunnel-companion (system-wide):"
+  echo "  cd <your cc-skills checkout>/plugins/ssh-tunnel-companion && make start"
+  echo "  Or use the SwiftBar menu bar icon"
+  exit 1
+fi
+"""
+
+["tunnel:stop"]
+description = "Hint: tunnel is managed by ssh-tunnel-companion"
+run = """
+echo "The tunnel is managed by ssh-tunnel-companion (system-wide)."
+echo "  cd <your cc-skills checkout>/plugins/ssh-tunnel-companion && make stop"
+echo "  Or use the SwiftBar menu bar icon"
+"""
+
+["tunnel:status"]
+description = "Check tunnel connectivity + ClickHouse data"
+run = """
+echo "=== Tunnel Status (managed by ssh-tunnel-companion) ==="
+echo ""
+
+PID=$(lsof -ti:18123 2>/dev/null)
+if [ -n "$PID" ]; then
+  echo "Port 18123: OPEN (pid $PID)"
+  RESULT=$(curl -sf --connect-timeout 2 "http://localhost:18123" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1)
+  if [ "$RESULT" = "ok" ]; then
+    echo "ClickHouse: responding"
+    echo ""
+    echo "BTCUSDT thresholds:"
+    curl -s "http://localhost:18123" --data "SELECT threshold_decimal_bps, count(*) as bars FROM opendeviationbar_cache.open_deviation_bars WHERE symbol = 'BTCUSDT' GROUP BY threshold_decimal_bps ORDER BY threshold_decimal_bps FORMAT TabSeparated"
+  else
+    echo "ClickHouse: NOT responding (tunnel up but CH unreachable)"
+  fi
+else
+  echo "Port 18123: CLOSED (tunnel down)"
+  echo ""
+  echo "Start tunnel: cd <your cc-skills checkout>/plugins/ssh-tunnel-companion && make start"
+fi
+
+echo ""
+echo "Full status: cd <your cc-skills checkout>/plugins/ssh-tunnel-companion && make status"
+"""
+
+[preflight]
+description = "Validate ClickHouse connectivity and data before app launch"
+depends = ["tunnel:start"]
+run = """
+set -e
+
+CH="http://localhost:18123"
+MAX_RETRIES=3
+RETRY_DELAY=2
+
+echo "=== Flowsurface Preflight ==="
+
+# 0a. Auto-update opendeviationbar crates to latest compatible version
+echo ""
+echo "[0/5] Updating opendeviationbar crates..."
+BEFORE=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
+cargo update -p opendeviationbar-core -p opendeviationbar-client -p opendeviationbar-hurst --quiet 2>/dev/null || true
+AFTER=$(awk -F'"' '/name = "opendeviationbar-core"/{getline; print $2}' Cargo.lock)
+if [ "$BEFORE" != "$AFTER" ]; then
+  echo "  Updated: $BEFORE -> $AFTER"
+  # Auto-commit the lockfile so the bump persists across sessions
+  git add Cargo.lock && git commit -m "chore: auto-bump opendeviationbar crates $BEFORE → $AFTER" --no-verify --quiet 2>/dev/null || true
+else
+  echo "  Already at latest: $AFTER"
+fi
+
+# 0b. Sync upstream fork (fast-forward only — never conflicts)
+echo ""
+echo "[1/5] Syncing upstream (flowsurface-rs/flowsurface)..."
+git fetch upstream --quiet 2>/dev/null || true
+BEHIND=$(git rev-list --count HEAD..upstream/main 2>/dev/null || echo 0)
+if [ "$BEHIND" -gt 0 ]; then
+  if git merge-base --is-ancestor HEAD upstream/main 2>/dev/null; then
+    echo "  Fast-forwarding $BEHIND commits from upstream..."
+    git merge upstream/main --ff-only --quiet
+    echo "  Upstream synced (fast-forward)"
+  else
+    echo "  WARNING: $BEHIND upstream commits available but merge requires conflict resolution"
+    echo "  Run: mise run upstream:merge"
+  fi
+else
+  echo "  Already up to date with upstream"
+fi
+
+# 2. Verify ClickHouse responds
+echo ""
+echo "[2/5] Checking ClickHouse connectivity..."
+for i in $(seq 1 $MAX_RETRIES); do
+  RESULT=$(curl -sf --connect-timeout 3 "$CH" --data "SELECT 'ok' FORMAT TabSeparated" 2>&1) && break
+  echo "  Attempt $i/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+  sleep $RETRY_DELAY
+done
+if [ "$RESULT" != "ok" ]; then
+  echo "FATAL: ClickHouse not responding on port 18123 after $MAX_RETRIES attempts"
+  echo "  Is <clickhouse-host> online? Check: ssh <clickhouse-host> 'clickhouse client -q \"SELECT 1\"'"
+  exit 1
+fi
+echo "  ClickHouse responding"
+
+# 2. Verify opendeviationbar_cache database and table exist
+echo ""
+echo "[3/5] Checking opendeviationbar_cache schema..."
+TABLE_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='opendeviationbar_cache' AND name='open_deviation_bars' FORMAT TabSeparated" 2>&1)
+if [ "$TABLE_EXISTS" != "1" ]; then
+  echo "FATAL: opendeviationbar_cache.open_deviation_bars table not found"
+  echo "  Run populate_cache_resumable() from the bar producer first"
+  exit 1
+fi
+echo "  opendeviationbar_cache.open_deviation_bars exists"
+
+# 3. Verify data is present for at least one symbol/threshold
+echo ""
+echo "[4/5] Checking range bar data..."
+DATA=$(curl -sf "$CH" --data "
+  SELECT threshold_decimal_bps, count(*) as bars
+  FROM opendeviationbar_cache.open_deviation_bars
+  WHERE symbol = 'BTCUSDT'
+  GROUP BY threshold_decimal_bps
+  ORDER BY threshold_decimal_bps
+  FORMAT TabSeparated
+" 2>&1)
+
+if [ -z "$DATA" ]; then
+  echo "FATAL: No range bar data found for BTCUSDT"
+  echo "  Populate cache on <clickhouse-host> first"
+  exit 1
+fi
+
+echo "  BTCUSDT thresholds available:"
+echo "$DATA" | while IFS=$'\t' read -r threshold bars; do
+  printf "    BPR%-4s  %s bars\n" "$((threshold / 10))" "$bars"
+done
+
+# 4b. Non-fatal forex check — fxview_cache.forex_bars is the new home for
+# XAUUSD/EURUSD (migrated 2026-04-14 from the bar producer). Forex is
+# optional: app still works for crypto if fxview_cache is absent.
+echo ""
+FOREX_EXISTS=$(curl -sf "$CH" --data "SELECT count() FROM system.tables WHERE database='fxview_cache' AND name='forex_bars' FORMAT TabSeparated" 2>&1 || echo "0")
+if [ "$FOREX_EXISTS" = "1" ]; then
+  FOREX_DATA=$(curl -sf "$CH" --data "
+    SELECT symbol, count(*) as bars
+    FROM fxview_cache.forex_bars
+    GROUP BY symbol
+    ORDER BY symbol
+    FORMAT TabSeparated
+  " 2>&1)
+  if [ -n "$FOREX_DATA" ]; then
+    echo "  fxview_cache.forex_bars (forex) symbols:"
+    echo "$FOREX_DATA" | while IFS=$'\t' read -r sym bars; do
+      printf "    %-8s  %s bars\n" "$sym" "$bars"
+    done
+  else
+    echo "  fxview_cache.forex_bars exists (empty — MT5 sidecar may be starting)"
+  fi
+else
+  echo "  fxview_cache.forex_bars not found (forex pipeline offline — crypto still OK)"
+fi
+
+# 5. SSE sidecar health (only when enabled)
+echo ""
+if [ "${FLOWSURFACE_SSE_ENABLED:-false}" = "true" ]; then
+  echo "[5/5] Checking SSE sidecar..."
+  SSE_RESULT=$(curl -sf --connect-timeout 2 "http://localhost:${FLOWSURFACE_SSE_PORT:-18081}/health" 2>&1)
+  if [ $? -eq 0 ]; then
+    echo "  SSE sidecar OK"
+  else
+    echo "  WARNING: SSE sidecar not responding (app will fail to receive SSE bars)"
+  fi
+else
+  echo "[5/5] SSE disabled (FLOWSURFACE_SSE_ENABLED=false)"
+fi
+
+echo ""
+echo "=== Preflight PASSED ==="
+"""
+
+["symbols:list"]
+description = "List range bar symbols available in ClickHouse (SSoT for ticker filtering)"
+depends = ["tunnel:start"]
+run = """
+CH="http://localhost:18123"
+
+echo "Querying ClickHouse for available range bar symbols..."
+SYMBOLS=$(curl -sf "$CH" --data "
+  SELECT DISTINCT symbol
+  FROM opendeviationbar_cache.open_deviation_bars
+  ORDER BY symbol
+  FORMAT TabSeparated
+" 2>&1)
+
+if [ -z "$SYMBOLS" ]; then
+  echo "ERROR: No symbols found in opendeviationbar_cache.open_deviation_bars"
+  exit 1
+fi
+
+COUNT=$(echo "$SYMBOLS" | wc -l | tr -d ' ')
+echo "Found $COUNT symbols in ClickHouse (app queries this at startup):"
+echo "$SYMBOLS" | while read -r sym; do printf "  %s\\n" "$sym"; done
+"""

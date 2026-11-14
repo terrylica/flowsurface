@@ -3,15 +3,16 @@ use super::{
         Exchange, Kline, MarketKind, OpenInterest, Price, PushFrequency, Qty, Ticker, TickerInfo,
         TickerStats, Timeframe, Trade, Volume,
         adapter::{StreamKind, StreamTicksize, TRADE_BUCKET_INTERVAL, flush_trade_buffers},
-        connect::{State, channel, connect_ws},
+        connect::{self, State, channel, connect_ws},
         depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
         limiter::{self, RateLimiter},
-        serde_util,
+        resilience, serde_util,
         serde_util::de_string_to_number,
         unit::qty::{QtyNormalization, RawQtyUnit, SizeUnit, volume_size_unit},
     },
     AdapterError, Event,
 };
+use crate::tg_alert;
 
 use fastwebsockets::{Frame, OpCode};
 use futures::{SinkExt, Stream, channel::mpsc};
@@ -199,7 +200,6 @@ async fn try_connect(
             State::Connected(websocket)
         }
         Err(err) => {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             let _ = output
                 .send(Event::Disconnected(
                     exchange,
@@ -217,6 +217,7 @@ pub fn connect_depth_stream(
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state: State = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let ticker = ticker_info.ticker;
 
@@ -243,86 +244,104 @@ pub fn connect_depth_stream(
             match &mut state {
                 State::Disconnected => {
                     state = try_connect(&subscribe_message, exchange, &mut output, "public").await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(data) = feed_de(&msg.payload[..]) {
-                                match data {
-                                    StreamData::Depth(de_depth, data_type, time) => {
-                                        let depth = DepthPayload {
-                                            last_update_id: de_depth.update_id,
-                                            time,
-                                            bids: de_depth
-                                                .bids
-                                                .iter()
-                                                .map(|x| DeOrder {
-                                                    price: x.price,
-                                                    qty: x.qty,
-                                                })
-                                                .collect(),
-                                            asks: de_depth
-                                                .asks
-                                                .iter()
-                                                .map(|x| DeOrder {
-                                                    price: x.price,
-                                                    qty: x.qty,
-                                                })
-                                                .collect(),
-                                        };
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(data) = feed_de(&msg.payload[..]) {
+                                    match data {
+                                        StreamData::Depth(de_depth, data_type, time) => {
+                                            let depth = DepthPayload {
+                                                last_update_id: de_depth.update_id,
+                                                time,
+                                                bids: de_depth
+                                                    .bids
+                                                    .iter()
+                                                    .map(|x| DeOrder {
+                                                        price: x.price,
+                                                        qty: x.qty,
+                                                    })
+                                                    .collect(),
+                                                asks: de_depth
+                                                    .asks
+                                                    .iter()
+                                                    .map(|x| DeOrder {
+                                                        price: x.price,
+                                                        qty: x.qty,
+                                                    })
+                                                    .collect(),
+                                            };
 
-                                        if (data_type == "snapshot") || (depth.last_update_id == 1)
-                                        {
-                                            orderbook.update_with_qty_norm(
-                                                DepthUpdate::Snapshot(depth),
-                                                ticker_info.min_ticksize,
-                                                Some(qty_norm),
-                                            );
-                                        } else if data_type == "delta" {
-                                            orderbook.update_with_qty_norm(
-                                                DepthUpdate::Diff(depth),
-                                                ticker_info.min_ticksize,
-                                                Some(qty_norm),
-                                            );
+                                            if (data_type == "snapshot")
+                                                || (depth.last_update_id == 1)
+                                            {
+                                                orderbook.update_with_qty_norm(
+                                                    DepthUpdate::Snapshot(depth),
+                                                    ticker_info.min_ticksize,
+                                                    Some(qty_norm),
+                                                );
+                                            } else if data_type == "delta" {
+                                                orderbook.update_with_qty_norm(
+                                                    DepthUpdate::Diff(depth),
+                                                    ticker_info.min_ticksize,
+                                                    Some(qty_norm),
+                                                );
 
-                                            let _ = output
-                                                .send(Event::DepthReceived(
-                                                    StreamKind::Depth {
-                                                        ticker_info,
-                                                        depth_aggr: StreamTicksize::Client,
-                                                        push_freq,
-                                                    },
-                                                    time,
-                                                    orderbook.depth.clone(),
-                                                ))
-                                                .await;
+                                                let _ = output
+                                                    .send(Event::DepthReceived(
+                                                        StreamKind::Depth {
+                                                            ticker_info,
+                                                            depth_aggr: StreamTicksize::Client,
+                                                            push_freq,
+                                                        },
+                                                        time,
+                                                        orderbook.depth.clone(),
+                                                    ))
+                                                    .await;
+                                            }
                                         }
+                                        StreamData::Trade(_, _) => {}
                                     }
-                                    StreamData::Trade(_, _) => {}
                                 }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                        Err(_elapsed) => {
+                            log::warn!("[OKX] read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                },
+                }
             }
         }
     })
@@ -385,58 +404,92 @@ pub fn connect_trade_stream(
 
         let mut trades_buffer_map: FxHashMap<Ticker, Vec<Trade>> = FxHashMap::default();
         let mut last_flush = tokio::time::Instant::now();
+        let mut backoff = resilience::reconnect_backoff();
 
         loop {
             match &mut state {
                 State::Disconnected => {
                     state = try_connect(&subscribe_message, exchange, &mut output, "public").await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                     last_flush = tokio::time::Instant::now();
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
-                                feed_de(&msg.payload[..])
-                            {
-                                if let Some(ticker) = symbol_to_ticker.get(&inst_id)
-                                    && let Some((ticker_info, qty_norm)) =
-                                        ticker_info_map.get(ticker)
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(StreamData::Trade(inst_id, de_trade_vec)) =
+                                    feed_de(&msg.payload[..])
                                 {
-                                    let ticker_info = *ticker_info;
-                                    let trades_buffer =
-                                        trades_buffer_map.entry(*ticker).or_default();
+                                    if let Some(ticker) = symbol_to_ticker.get(&inst_id)
+                                        && let Some((ticker_info, qty_norm)) =
+                                            ticker_info_map.get(ticker)
+                                    {
+                                        let ticker_info = *ticker_info;
+                                        let trades_buffer =
+                                            trades_buffer_map.entry(*ticker).or_default();
 
-                                    for de_trade in &de_trade_vec {
-                                        let price = Price::from_f32(de_trade.price)
-                                            .round_to_min_tick(ticker_info.min_ticksize);
-                                        let qty =
-                                            qty_norm.normalize_qty(de_trade.qty, de_trade.price);
+                                        for de_trade in &de_trade_vec {
+                                            let price = Price::from_f32(de_trade.price)
+                                                .round_to_min_tick(ticker_info.min_ticksize);
+                                            let qty = qty_norm
+                                                .normalize_qty(de_trade.qty, de_trade.price);
 
-                                        let trade = Trade {
-                                            time: de_trade.time,
-                                            is_sell: de_trade.is_sell == "sell"
-                                                || de_trade.is_sell == "SELL",
-                                            price,
-                                            qty,
-                                        };
-                                        trades_buffer.push(trade);
+                                            let trade = Trade {
+                                                time: de_trade.time,
+                                                is_sell: de_trade.is_sell == "sell"
+                                                    || de_trade.is_sell == "SELL",
+                                                price,
+                                                qty,
+                                                agg_trade_id: None,
+                                            };
+                                            trades_buffer.push(trade);
+                                        }
+                                    } else {
+                                        log::error!(
+                                            "Ticker info not found for symbol: {}",
+                                            inst_id
+                                        );
+                                        tg_alert!(
+                                            crate::telegram::Severity::Warning,
+                                            "okx",
+                                            "Ticker not found: {inst_id}"
+                                        );
                                     }
-                                } else {
-                                    log::error!("Ticker info not found for symbol: {}", inst_id);
+                                }
+
+                                if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                                    flush_trade_buffers(
+                                        &mut output,
+                                        &ticker_info_map,
+                                        &mut trades_buffer_map,
+                                    )
+                                    .await;
+                                    last_flush = tokio::time::Instant::now();
                                 }
                             }
-
-                            if last_flush.elapsed() >= TRADE_BUCKET_INTERVAL {
+                            OpCode::Close => {
                                 flush_trade_buffers(
                                     &mut output,
                                     &ticker_info_map,
                                     &mut trades_buffer_map,
                                 )
                                 .await;
-                                last_flush = tokio::time::Instant::now();
+
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
                             }
-                        }
-                        OpCode::Close => {
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             flush_trade_buffers(
                                 &mut output,
                                 &ticker_info_map,
@@ -448,25 +501,29 @@ pub fn connect_trade_stream(
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        flush_trade_buffers(&mut output, &ticker_info_map, &mut trades_buffer_map)
+                        Err(_elapsed) => {
+                            flush_trade_buffers(
+                                &mut output,
+                                &ticker_info_map,
+                                &mut trades_buffer_map,
+                            )
                             .await;
 
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                            log::warn!("[OKX] trade stream read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                },
+                }
             }
         }
     })
@@ -478,6 +535,7 @@ pub fn connect_kline_stream(
 ) -> impl Stream<Item = Event> {
     channel(100, move |mut output| async move {
         let mut state = State::Disconnected;
+        let mut backoff = resilience::reconnect_backoff();
 
         let mut args = Vec::with_capacity(streams.len());
         let mut lookup = HashMap::new();
@@ -512,101 +570,128 @@ pub fn connect_kline_stream(
                 State::Disconnected => {
                     state =
                         try_connect(&subscribe_message, exchange, &mut output, "business").await;
+                    if matches!(state, State::Connected(_)) {
+                        backoff = resilience::reconnect_backoff();
+                    } else if let Some(delay) = backoff.next() {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
-                State::Connected(ws) => match ws.read_frame().await {
-                    Ok(msg) => match msg.opcode {
-                        OpCode::Text => {
-                            if let Ok(v) = serde_json::from_slice::<Value>(&msg.payload[..]) {
-                                let channel = v["arg"]["channel"].as_str().unwrap_or("");
-                                if !channel.starts_with("candle") {
-                                    continue;
-                                }
+                State::Connected(ws) => {
+                    match tokio::time::timeout(connect::WS_READ_TIMEOUT, ws.read_frame()).await {
+                        Ok(Ok(msg)) => match msg.opcode {
+                            OpCode::Text => {
+                                if let Ok(v) = serde_json::from_slice::<Value>(&msg.payload[..]) {
+                                    let channel = v["arg"]["channel"].as_str().unwrap_or("");
+                                    if !channel.starts_with("candle") {
+                                        continue;
+                                    }
 
-                                let inst = match v["arg"]["instId"].as_str() {
-                                    Some(s) => s,
-                                    None => continue,
-                                };
-                                let (ticker_info, timeframe) =
-                                    match lookup.get(&(channel.to_string(), inst.to_string())) {
+                                    let inst = match v["arg"]["instId"].as_str() {
+                                        Some(s) => s,
+                                        None => continue,
+                                    };
+                                    let (ticker_info, timeframe) = match lookup
+                                        .get(&(channel.to_string(), inst.to_string()))
+                                    {
                                         Some(t) => *t,
                                         None => continue,
                                     };
-                                let qty_norm = QtyNormalization::with_raw_qty_unit(
-                                    size_in_quote_ccy,
-                                    ticker_info,
-                                    raw_qty_unit_from_market_type(market_type),
-                                );
+                                    let qty_norm = QtyNormalization::with_raw_qty_unit(
+                                        size_in_quote_ccy,
+                                        ticker_info,
+                                        raw_qty_unit_from_market_type(market_type),
+                                    );
 
-                                if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
-                                    for row in data {
-                                        let time = row.get(0).and_then(serde_util::value_as_u64);
-                                        let open = row.get(1).and_then(serde_util::value_as_f32);
-                                        let high = row.get(2).and_then(serde_util::value_as_f32);
-                                        let low = row.get(3).and_then(serde_util::value_as_f32);
-                                        let close = row.get(4).and_then(serde_util::value_as_f32);
-                                        let volume = row.get(5).and_then(serde_util::value_as_f32);
+                                    if let Some(data) = v.get("data").and_then(|d| d.as_array()) {
+                                        for row in data {
+                                            let time =
+                                                row.get(0).and_then(serde_util::value_as_u64);
+                                            let open =
+                                                row.get(1).and_then(serde_util::value_as_f32);
+                                            let high =
+                                                row.get(2).and_then(serde_util::value_as_f32);
+                                            let low = row.get(3).and_then(serde_util::value_as_f32);
+                                            let close =
+                                                row.get(4).and_then(serde_util::value_as_f32);
+                                            let volume =
+                                                row.get(5).and_then(serde_util::value_as_f32);
 
-                                        let (ts, open, high, low, close) =
-                                            match (time, open, high, low, close) {
-                                                (
-                                                    Some(ts),
-                                                    Some(open),
-                                                    Some(high),
-                                                    Some(low),
-                                                    Some(close),
-                                                ) => (ts, open, high, low, close),
-                                                _ => continue,
+                                            let (ts, open, high, low, close) =
+                                                match (time, open, high, low, close) {
+                                                    (
+                                                        Some(ts),
+                                                        Some(open),
+                                                        Some(high),
+                                                        Some(low),
+                                                        Some(close),
+                                                    ) => (ts, open, high, low, close),
+                                                    _ => continue,
+                                                };
+
+                                            let volume_in_display = if let Some(vq) = volume {
+                                                qty_norm.normalize_qty(vq, close)
+                                            } else {
+                                                qty_norm.normalize_qty(0.0, close)
                                             };
 
-                                        let volume_in_display = if let Some(vq) = volume {
-                                            qty_norm.normalize_qty(vq, close)
-                                        } else {
-                                            qty_norm.normalize_qty(0.0, close)
-                                        };
-
-                                        let kline = Kline::new(
-                                            ts,
-                                            open,
-                                            high,
-                                            low,
-                                            close,
-                                            Volume::TotalOnly(volume_in_display),
-                                            ticker_info.min_ticksize,
-                                        );
-                                        let _ = output
-                                            .send(Event::KlineReceived(
-                                                StreamKind::Kline {
-                                                    ticker_info,
-                                                    timeframe,
-                                                },
-                                                kline,
-                                            ))
-                                            .await;
+                                            let kline = Kline::new(
+                                                ts,
+                                                open,
+                                                high,
+                                                low,
+                                                close,
+                                                Volume::TotalOnly(volume_in_display),
+                                                ticker_info.min_ticksize,
+                                            );
+                                            let _ = output
+                                                .send(Event::KlineReceived(
+                                                    StreamKind::Kline {
+                                                        ticker_info,
+                                                        timeframe,
+                                                    },
+                                                    kline,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                    None,
+                                                ))
+                                                .await;
+                                        }
                                     }
                                 }
                             }
-                        }
-                        OpCode::Close => {
+                            OpCode::Close => {
+                                state = State::Disconnected;
+                                let _ = output
+                                    .send(Event::Disconnected(
+                                        exchange,
+                                        "Connection closed".to_string(),
+                                    ))
+                                    .await;
+                            }
+                            _ => {}
+                        },
+                        Ok(Err(e)) => {
                             state = State::Disconnected;
                             let _ = output
                                 .send(Event::Disconnected(
                                     exchange,
-                                    "Connection closed".to_string(),
+                                    "Error reading frame: ".to_string() + &e.to_string(),
                                 ))
                                 .await;
                         }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        state = State::Disconnected;
-                        let _ = output
-                            .send(Event::Disconnected(
-                                exchange,
-                                "Error reading frame: ".to_string() + &e.to_string(),
-                            ))
-                            .await;
+                        Err(_elapsed) => {
+                            log::warn!("[OKX] kline read timeout — reconnecting");
+                            state = State::Disconnected;
+                            let _ = output
+                                .send(Event::Disconnected(
+                                    exchange,
+                                    "Read timeout (connection stale)".to_string(),
+                                ))
+                                .await;
+                        }
                     }
-                },
+                }
             }
         }
     })
@@ -669,7 +754,9 @@ pub async fn fetch_ticker_metadata(
                 continue;
             }
 
-            if item["quoteCcy"].as_str() != Some("USDT") {
+            if item["quoteCcy"].as_str() != Some("USDT")
+                && item["quoteCcy"].as_str() != Some("USDC")
+            {
                 continue;
             }
 

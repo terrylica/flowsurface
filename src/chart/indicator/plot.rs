@@ -1,3 +1,4 @@
+// Fork-specific: open deviation bar support
 use crate::chart::{Basis, Interaction, Message, ViewState};
 use crate::style::{self, dashed_line};
 use data::util::{guesstimate_ticks, round_to_tick};
@@ -9,6 +10,7 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 pub mod bar;
+pub mod bar_with_ema_overlay;
 pub mod line;
 
 pub trait Series {
@@ -85,17 +87,83 @@ impl<'m, Y> Series for ReversedBTreeSeries<'m, Y> {
     }
 }
 
+// Fork-specific: open deviation bar support
+/// Series backed by a contiguous `&[Y]` slice where index 0 = oldest bar (forward order).
+/// Used for Odb/Tick indicators that store data in `Vec<Y>` for O(1) rebuild.
+/// Translates the `.rev()` index space used by Odb rendering into slice indices.
+pub struct ReversedSliceSeries<'a, Y> {
+    inner: &'a [Y],
+    /// Largest `.rev()` index = index of the OLDEST bar = slice.len() - 1.
+    offset: u64,
+}
+
+impl<'a, Y> ReversedSliceSeries<'a, Y> {
+    pub fn new(inner: &'a [Y]) -> Self {
+        let offset = inner.len().saturating_sub(1) as u64;
+        Self { inner, offset }
+    }
+}
+
+impl<'a, Y> Series for ReversedSliceSeries<'a, Y> {
+    type Y = Y;
+
+    fn for_each_in<F: FnMut(u64, &Self::Y)>(&self, range: RangeInclusive<u64>, mut f: F) {
+        if self.inner.is_empty() {
+            return;
+        }
+        // Convert .rev() range to forward slice range.
+        // range.start() = earliest_visual (newer, smaller .rev() idx)
+        // range.end()   = latest_visual   (older,  larger  .rev() idx)
+        let earliest_fwd = self.offset.saturating_sub(*range.end()) as usize;
+        let latest_fwd =
+            (self.offset.saturating_sub(*range.start()) as usize).min(self.inner.len() - 1);
+        if earliest_fwd > latest_fwd {
+            return;
+        }
+        // Iterate newest → oldest (decreasing forward index = increasing .rev() index).
+        for fwd_idx in (earliest_fwd..=latest_fwd).rev() {
+            let rev_idx = self.offset - fwd_idx as u64;
+            f(rev_idx, &self.inner[fwd_idx]);
+        }
+    }
+
+    fn at(&self, x: u64) -> Option<&Self::Y> {
+        let fwd = self.offset.checked_sub(x)? as usize;
+        self.inner.get(fwd)
+    }
+
+    fn next_after<'b>(&'b self, x: u64) -> Option<(u64, &'b Self::Y)>
+    where
+        Self: 'b,
+    {
+        // Next bar in .rev() order = older bar = lower forward index.
+        let fwd = self.offset.checked_sub(x)? as usize;
+        if fwd == 0 {
+            return None;
+        }
+        self.inner.get(fwd - 1).map(|v| (x + 1, v))
+    }
+}
+
 pub enum AnySeries<'a, Y> {
     Forward(&'a BTreeMap<u64, Y>),
     Reversed(ReversedBTreeSeries<'a, Y>),
+    /// Slice-backed series for Vec-based indicators (Odb/Tick only).
+    ReversedSlice(ReversedSliceSeries<'a, Y>),
 }
 
 impl<'a, Y> AnySeries<'a, Y> {
     pub fn for_basis(basis: Basis, data: &'a BTreeMap<u64, Y>) -> Self {
         match basis {
-            Basis::Tick(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
+            Basis::Tick(_) | Basis::Odb(_) => Self::Reversed(ReversedBTreeSeries::new(data)),
             Basis::Time(_) => Self::Forward(data),
         }
+    }
+
+    /// Create a slice-backed series for Vec-based indicators.
+    /// `data` is forward-indexed (0 = oldest bar). Only valid for Odb/Tick basis.
+    pub fn for_basis_slice(data: &'a [Y]) -> Self {
+        Self::ReversedSlice(ReversedSliceSeries::new(data))
     }
 }
 
@@ -110,6 +178,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
                 }
             }
             AnySeries::Reversed(rv) => rv.for_each_in(range, f),
+            AnySeries::ReversedSlice(rv) => rv.for_each_in(range, f),
         }
     }
 
@@ -117,6 +186,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         match self {
             AnySeries::Forward(map) => (**map).get(&x),
             AnySeries::Reversed(rv) => rv.at(x),
+            AnySeries::ReversedSlice(rv) => rv.at(x),
         }
     }
 
@@ -127,6 +197,7 @@ impl<'a, Y> Series for AnySeries<'a, Y> {
         match self {
             AnySeries::Forward(map) => (**map).range((x + 1)..).next().map(|(k, v)| (*k, v)),
             AnySeries::Reversed(rv) => rv.next_after(x),
+            AnySeries::ReversedSlice(rv) => rv.next_after(x),
         }
     }
 }
@@ -169,6 +240,11 @@ pub trait Plot<S: Series> {
     fn tooltip(&self, y: &S::Y, next: Option<&S::Y>, _theme: &Theme) -> Option<PlotTooltip> {
         self.tooltip_fn().map(|tt| tt(y, next))
     }
+
+    /// Draw a persistent screen-space overlay on top of the indicator panel.
+    /// Called in a separate, untransformed frame (screen coordinates, no scaling/translation).
+    /// Default: no-op. Override to draw legends, watermarks, or other fixed-position overlays.
+    fn draw_panel_legend(&self, _frame: &mut canvas::Frame) {}
 }
 
 pub struct ChartCanvas<'a, P, S>
@@ -178,6 +254,9 @@ where
 {
     pub indicator_cache: &'a Cache,
     pub crosshair_cache: &'a Cache,
+    /// If `Some`, a third untransformed geometry layer is rendered by calling
+    /// `plot.draw_panel_legend()`. Reuses this cache to avoid redrawing every frame.
+    pub legend_cache: Option<&'a Cache>,
     pub ctx: &'a ViewState,
     pub plot: P,
     pub series: S,
@@ -288,23 +367,29 @@ where
                         };
                         (rx, sr)
                     }
-                    Basis::Tick(_) => {
+                    Basis::Tick(_) | Basis::Odb(_) => {
                         let world_x = region.x + (cursor_position.x / bounds.width) * region.width;
                         let snapped_world_x = (world_x / ctx.cell_width).round() * ctx.cell_width;
 
-                        let sr = (snapped_world_x - region.x) / region.width;
+                        let sr = if region.width.abs() > f32::EPSILON {
+                            (snapped_world_x - region.x) / region.width
+                        } else {
+                            0.5
+                        };
                         let rx = ctx.x_to_interval(snapped_world_x);
                         (rx, sr)
                     }
                 };
 
-                frame.stroke(
-                    &Path::line(
-                        Point::new(snap_ratio * bounds.width, 0.0),
-                        Point::new(snap_ratio * bounds.width, bounds.height),
-                    ),
-                    dashed,
-                );
+                if snap_ratio.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(snap_ratio * bounds.width, 0.0),
+                            Point::new(snap_ratio * bounds.width, bounds.height),
+                        ),
+                        dashed,
+                    );
+                }
 
                 // tooltip text
                 if let Some(y) = self.series.at(rounded_x) {
@@ -318,24 +403,38 @@ where
                 // horizontal snap uses label extents
                 let highest = self.max_for_labels;
                 let lowest = self.min_for_labels;
-                let tick = guesstimate_ticks(highest - lowest);
+                let label_range = lowest - highest;
+                let tick = guesstimate_ticks(label_range);
 
                 let ratio = cursor_position.y / bounds.height;
-                let value = highest + ratio * (lowest - highest);
+                let value = highest + ratio * label_range;
                 let rounded = round_to_tick(value, tick);
-                let snap_ratio = (rounded - highest) / (lowest - highest);
+                let snap_ratio = if label_range.abs() > f32::EPSILON {
+                    (rounded - highest) / label_range
+                } else {
+                    0.5
+                };
 
-                frame.stroke(
-                    &Path::line(
-                        Point::new(0.0, snap_ratio * bounds.height),
-                        Point::new(bounds.width, snap_ratio * bounds.height),
-                    ),
-                    dashed,
-                );
+                if snap_ratio.is_finite() {
+                    frame.stroke(
+                        &Path::line(
+                            Point::new(0.0, snap_ratio * bounds.height),
+                            Point::new(bounds.width, snap_ratio * bounds.height),
+                        ),
+                        dashed,
+                    );
+                }
             }
         });
 
-        vec![indicator, crosshair]
+        let mut geoms = vec![indicator, crosshair];
+        if let Some(lc) = self.legend_cache {
+            let legend = lc.draw(renderer, bounds.size(), |frame| {
+                self.plot.draw_panel_legend(frame);
+            });
+            geoms.push(legend);
+        }
+        geoms
     }
 
     fn mouse_interaction(
@@ -353,7 +452,7 @@ where
     }
 }
 
-type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
+pub type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 
 const TOOLTIP_MARGIN: f32 = 4.0; // px from edge of canvas
 const TOOLTIP_PADDING: f32 = 8.0; // px inside tooltip box

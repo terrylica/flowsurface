@@ -2,3 +2,13 @@
 /target
 /.vscode
 *.log
+
+# App bundle (built artifact)
+Flowsurface.app/
+
+.gitnexus
+.claude/*
+!.claude/skills/
+!.claude/commands/
+.autoloop/
+.loop-state/
